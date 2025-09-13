@@ -1,0 +1,25 @@
+[project]
+name = "zeroque-common"
+version = "0.0.1"
+description = "Shared utilities for ZeroQue services (dev scaffold)"
+authors = [{ name = "ZeroQue", email = "dev@zeroque.local" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","UP"]
+ignore = []
+exclude = ["infra", ".venv"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
