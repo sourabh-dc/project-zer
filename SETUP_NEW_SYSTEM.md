@@ -81,6 +81,12 @@ alembic upgrade head
 
 # If you get "orders relation does not exist" error, the migrations have been fixed
 # Just run the migrations again - the missing tables will be created
+
+# If you get "multiple head revisions" error, run:
+./scripts/fix_migration_heads.sh
+
+# If migrations are completely broken, reset them:
+./scripts/reset_migrations.sh
 ```
 
 ## Step 4: Start All Services
