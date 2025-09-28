@@ -1,0 +1,259 @@
+version: "3.9"
+
+services:
+  # ===== Infrastructure Services =====
+  postgres:
+    image: postgres:15
+    container_name: zeroque_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zeroque
+      POSTGRES_PASSWORD: zeroque
+      POSTGRES_DB: zeroque_dev
+    ports:
+      - "5000:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeroque"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: zeroque_redis
+    restart: unless-stopped
+    ports:
+      - "4000:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Microservices =====
+  provisioning:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: provisioning
+    container_name: zeroque_provisioning
+    restart: unless-stopped
+    ports:
+      - "8201:8201"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8201
+    command: ["uvicorn", "services.provisioning.main:app", "--host", "0.0.0.0", "--port", "8201"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8201/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  catalog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: catalog
+    container_name: zeroque_catalog
+    restart: unless-stopped
+    ports:
+      - "8202:8202"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8202
+    command: ["uvicorn", "services.catalog.main:app", "--host", "0.0.0.0", "--port", "8202"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8202/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  entry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: entry
+    container_name: zeroque_entry
+    restart: unless-stopped
+    ports:
+      - "8204:8204"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8204
+    command: ["uvicorn", "services.entry.main:app", "--host", "0.0.0.0", "--port", "8204"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8204/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  identity:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: identity
+    container_name: zeroque_identity
+    restart: unless-stopped
+    ports:
+      - "8210:8210"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8210
+    command: ["uvicorn", "services.identity.main:app", "--host", "0.0.0.0", "--port", "8210"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8210/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  orders:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: orders
+    container_name: zeroque_orders
+    restart: unless-stopped
+    ports:
+      - "8208:8208"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8208
+      - PAYMENTS_BASE=http://billing:8206
+      - BILLING_BASE=http://billing:8206
+    command: ["uvicorn", "services.orders.main:app", "--host", "0.0.0.0", "--port", "8208"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      billing:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8208/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  billing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: billing
+    container_name: zeroque_billing
+    restart: unless-stopped
+    ports:
+      - "8206:8206"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8206
+    command: ["uvicorn", "services.billing.main:app", "--host", "0.0.0.0", "--port", "8206"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8206/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  pricing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: pricing
+    container_name: zeroque_pricing
+    restart: unless-stopped
+    ports:
+      - "8209:8209"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8209
+    command: ["uvicorn", "services.pricing.main:app", "--host", "0.0.0.0", "--port", "8209"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8209/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== Demo Application =====
+  streamlit-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: streamlit
+    container_name: zeroque_streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - PROV_BASE=http://provisioning:8201
+      - CATALOG_BASE=http://catalog:8202
+      - ENTRY_BASE=http://entry:8204
+      - IDENTITY_BASE=http://identity:8210
+      - ORDERS_BASE=http://orders:8208
+      - BILLING_BASE=http://billing:8206
+      - PRICING_BASE=http://pricing:8209
+    command: ["streamlit", "run", "demo/streamlit_e2e.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    depends_on:
+      provisioning:
+        condition: service_healthy
+      catalog:
+        condition: service_healthy
+      entry:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      orders:
+        condition: service_healthy
+      billing:
+        condition: service_healthy
+      pricing:
+        condition: service_healthy
+
+volumes:
+  pgdata:
