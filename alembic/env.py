@@ -5,6 +5,9 @@ import os
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # this is the Alembic Config object, which provides access
 # to the values within the .ini file in use.
@@ -15,6 +18,7 @@ fileConfig(config.config_file_name)
 
 # Allow overriding URL from env
 db_url = os.getenv("DATABASE_URL")
+print(db_url)
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 
@@ -34,8 +38,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    configuration = config.get_section(config.config_ini_section)
+    configuration["sqlalchemy.url"] = db_url
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
+        configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

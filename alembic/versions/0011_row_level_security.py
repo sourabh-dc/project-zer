@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = '0011_rls_policies'
-down_revision = '0010_enhanced_webhook_rbac'
+down_revision = 'cbfa19c43658'
 branch_labels = None
 depends_on = None
 

@@ -1,7 +1,7 @@
 """convert_prices_to_pounds
 
 Revision ID: c2a02f699c83
-Revises: 0011_rls_policies
+Revises: 0010_enhanced_webhook_rbac
 Create Date: 2025-09-28 07:50:17.207712+00:00
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'c2a02f699c83'
-down_revision = '0011_rls_policies'
+down_revision = 'e7813d2c341e'
 branch_labels = None
 depends_on = None
 
