@@ -11,3 +11,4 @@ class Notification(Base):
     subject: Mapped[str] = mapped_column(String(200))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped["DateTime"] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped["DateTime | None"] = mapped_column(DateTime(timezone=True), nullable=True)
