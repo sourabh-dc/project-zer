@@ -42,7 +42,7 @@ class StoreProductUpsert(BaseModel):
     store_id: str = Field(..., min_length=1)
     sku: str = Field(..., min_length=1)
     active: bool = True
-    base_price_minor: Optional[float] = Field(None, ge=0, description="store-specific base price in pounds")
+    base_price_gbp: Optional[float] = Field(None, ge=0, description="store-specific base price in pounds")
     currency: str = Field("GBP", pattern=r"^[A-Z]{3}$")
 
 class PriceRuleCreate(BaseModel):
@@ -104,7 +104,7 @@ def upsert_store_product(payload: StoreProductUpsert = Body(...)):
                 UPDATE store_products
                    SET active=:a, base_price_minor=:p, currency=:c, updated_at=NOW()
                  WHERE id=:id
-            """), {"a": payload.active, "p": payload.base_price_minor, "c": payload.currency, "id": int(exists[0])})
+            """), {"a": payload.active, "p": payload.base_price_gbp, "c": payload.currency, "id": int(exists[0])})
             db.commit()
             log.info("store_product_updated store=%s sku=%s active=%s", payload.store_id, payload.sku, payload.active)
             return {"store_id": payload.store_id, "sku": payload.sku, "updated": True}
@@ -112,7 +112,7 @@ def upsert_store_product(payload: StoreProductUpsert = Body(...)):
             db.execute(text("""
                 INSERT INTO store_products(store_id, sku, active, base_price_minor, currency)
                 VALUES(:st, :s, :a, :p, :c)
-            """), {"st": payload.store_id, "s": payload.sku, "a": payload.active, "p": payload.base_price_minor, "c": payload.currency})
+            """), {"st": payload.store_id, "s": payload.sku, "a": payload.active, "p": payload.base_price_gbp, "c": payload.currency})
             db.commit()
             log.info("store_product_created store=%s sku=%s", payload.store_id, payload.sku)
             return {"store_id": payload.store_id, "sku": payload.sku, "created": True}
@@ -299,8 +299,8 @@ def calculate_price(payload: PriceCalculationRequest = Body(...)):
                         payload.store_id, payload.sku, payload.user_id, int(cached[1]))
                 return {
                     "store_id": payload.store_id, "sku": payload.sku, "user_id": payload.user_id,
-                    "currency": payload.currency, "base_price_minor": float(cached[0]),
-                    "final_price_minor": float(cached[1]), "applied_rules": cached[2], 
+                    "currency": payload.currency, "base_price_gbp": float(cached[0]),
+                    "final_price_gbp": float(cached[1]), "applied_rules": cached[2], 
                     "applied_promotions": cached[3], "cached": True
                 }
 
@@ -322,7 +322,7 @@ def calculate_price(payload: PriceCalculationRequest = Body(...)):
             
             base_price = float(global_price_row[0])
         else:
-            base_price = float(base_price_row[0]) or 0.0
+            base_price = float(base_price_row[0]) if base_price_row[0] is not None else 0.0
 
         # Apply pricing rules and promotions
         final_price = base_price
@@ -488,8 +488,8 @@ def calculate_price(payload: PriceCalculationRequest = Body(...)):
                     "store_id": payload.store_id,
                     "user_id": payload.user_id,
                     "currency": payload.currency,
-                    "base_price_minor": base_price,
-                    "final_price_minor": final_price,
+                    "base_price_gbp": base_price,
+                    "final_price_gbp": final_price,
                     "applied_rules": applied_rules,
                     "applied_promotions": applied_promotions,
                     "quantity": payload.quantity,
@@ -510,8 +510,8 @@ def calculate_price(payload: PriceCalculationRequest = Body(...)):
         
         return {
             "store_id": payload.store_id, "sku": payload.sku, "user_id": payload.user_id,
-            "currency": payload.currency, "base_price_minor": base_price,
-            "final_price_minor": final_price, "applied_rules": applied_rules,
+            "currency": payload.currency, "base_price_gbp": base_price,
+            "final_price_gbp": final_price, "applied_rules": applied_rules,
             "applied_promotions": applied_promotions, "cached": False
         }
 
@@ -538,6 +538,6 @@ def get_calculated_price(
         
         return {
             "store_id": store_id, "sku": sku, "user_id": user_id, "currency": currency,
-            "base_price_minor": int(row[0]), "final_price_minor": int(row[1]),
+            "base_price_gbp": float(row[0]), "final_price_gbp": float(row[1]),
             "applied_rules": row[2], "applied_promotions": row[3], "calculated_at": row[4]
         }

@@ -370,7 +370,7 @@ with tabs[3]:
                 "store_id": st.session_state.store_id,
                 "sku": st.session_state.store_sku,
                 "active": st.session_state.store_product_active,
-                "base_price_minor": float(st.session_state.store_base_price),
+                "base_price_gbp": float(st.session_state.store_base_price),
                 "currency": "GBP"
             }
             sc, js = put(url, payload)
@@ -501,8 +501,8 @@ with tabs[3]:
             }
             sc, js = post(url, payload)
             if sc == 200:
-                base_price = js.get('base_price_minor', 0)
-                final_price = js.get('final_price_minor', 0)
+                base_price = js.get('base_price_gbp', 0)
+                final_price = js.get('final_price_gbp', 0)
                 st.success(f"💰 Final Price: £{final_price:.2f} (Base: £{base_price:.2f})")
                 if js.get('applied_rules'):
                     st.write("📋 Applied Rules:", js.get('applied_rules', []))
@@ -534,7 +534,7 @@ with tabs[4]:
             if p.get('active', False):  # Only show active products
                 c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
                 with c1:
-                    price_display = f"£{p.get('base_price_minor', 0) / 100:.2f}" if p.get('base_price_minor') else "Global price"
+                    price_display = f"£{p.get('base_price_gbp', 0):.2f}" if p.get('base_price_gbp') else "Global price"
                     st.write(f"{p.get('sku')} – {p.get('name')} ({price_display})")
                 with c2:
                     qty = st.number_input(f"Qty {p.get('sku')}", min_value=0, step=1, key=f"qty_{p.get('sku')}")
@@ -594,7 +594,7 @@ with tabs[4]:
                         "shopper_id": header.get("shopper_id"),
                         "sku": it.get("sku"),
                         "qty": it.get("qty"),
-                        "price_minor": it.get("price_minor"),
+                        "price_gbp": it.get("price_gbp"),
                         "currency": header.get("currency"),
                         "status": header.get("status"),
                         "occurred_at": header.get("occurred_at"),
@@ -620,7 +620,7 @@ with tabs[4]:
                 "shopper_id": header.get("shopper_id"),
                 "sku": it.get("sku"),
                 "qty": it.get("qty"),
-                "price_minor": it.get("price_minor"),
+                "price_gbp": it.get("price_gbp"),
                 "currency": header.get("currency"),
                 "status": header.get("status"),
                 "occurred_at": header.get("occurred_at"),

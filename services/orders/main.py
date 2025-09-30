@@ -222,8 +222,8 @@ def create_order(payload: NewOrder = Body(...)):
                 )
                 if pricing_response.status_code == 200:
                     pricing_data = pricing_response.json()
-                    unit = pricing_data["final_price_minor"]  # Now in pounds
-                    base_price = pricing_data.get("base_price_minor", pricing_data["final_price_minor"])  # Now in pounds
+                    unit = pricing_data["final_price_gbp"]  # Price in pounds
+                    base_price = pricing_data.get("base_price_gbp", pricing_data["final_price_gbp"])  # Price in pounds
                     logger.info(f"pricing_engine_used sku={it.sku} base={base_price} final={unit} rules={len(pricing_data.get('applied_rules', []))} promos={len(pricing_data.get('applied_promotions', []))}")
                 else:
                     raise Exception(f"Pricing service error: {pricing_response.status_code}")
@@ -316,7 +316,7 @@ def create_order(payload: NewOrder = Body(...)):
                 "ok": True,
                 "order_id": int(order_id),
                 "status": "payment_pending",
-                "total_minor": totals,
+                "total_gbp": totals,
                 "currency": payload.currency,
                 "payment": {
                     "provider": "stripe",
@@ -415,7 +415,7 @@ def create_order(payload: NewOrder = Body(...)):
                 user_id=payload.shopper_id,
                 data={
                     "order_id": int(order_id),
-                    "total_minor": totals,
+                    "total_gbp": totals,
                     "currency": payload.currency,
                     "payment_method": "trade",
                     "items": validated
@@ -432,7 +432,7 @@ def create_order(payload: NewOrder = Body(...)):
                 user_id=payload.shopper_id,
                 data={
                     "order_id": int(order_id),
-                    "total_minor": totals,
+                    "total_gbp": totals,
                     "currency": payload.currency,
                     "payment_method": "trade",
                     "status": "completed"
@@ -462,7 +462,7 @@ def create_order(payload: NewOrder = Body(...)):
         return {
             "ok": True,
             "order_id": int(order_id),
-            "total_minor": totals,
+            "total_gbp": totals,
             "currency": payload.currency,
             "payment": {"provider": "trade"}
         }
@@ -479,7 +479,7 @@ def list_orders(tenant_id: str = Query(...), limit: int = Query(50)):
         """), {"t": tenant_id, "l": limit}).all()
         return [
             {"order_id": int(r[0]), "tenant_id": r[1], "site_id": r[2], "store_id": r[3], "shopper_id": r[4],
-             "total_minor": float(r[5]), "currency": r[6], "status": r[7], "occurred_at": str(r[8])}
+             "total_gbp": float(r[5]), "currency": r[6], "status": r[7], "occurred_at": str(r[8])}
             for r in rows
         ]
 
@@ -498,9 +498,9 @@ def get_order(order_id: int):
         """), {"id": order_id}).all()
         return {
             "order": {"order_id": int(header[0]), "tenant_id": header[1], "site_id": header[2], "store_id": header[3],
-                      "shopper_id": header[4], "total_minor": float(header[5]), "currency": header[6], "status": header[7],
+                      "shopper_id": header[4], "total_gbp": float(header[5]), "currency": header[6], "status": header[7],
                       "occurred_at": str(header[8])},
-            "items": [{"sku": i[0], "name": i[1], "qty": int(i[2]), "price_minor": float(i[3])} for i in items]
+            "items": [{"sku": i[0], "name": i[1], "qty": int(i[2]), "price_gbp": float(i[3])} for i in items]
         }
 
 @app.post("/orders/{order_id}/settle")
