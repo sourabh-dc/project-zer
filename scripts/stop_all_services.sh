@@ -58,24 +58,8 @@ stop_service_by_pid() {
 # Stop services by PID files
 services=(
     "provisioning"
-    "catalog"
-    "entry"
-    "identity"
     "orders"
     "pricing"
-    "billing"
-    "approvals"
-    "cv_connector"
-    "cv_gateway"
-    "entitlements"
-    "events"
-    "ledger"
-    "notifications"
-    "payments"
-    "reports"
-    "subscriptions"
-    "usage"
-    "observability"
 )
 
 for service in "${services[@]}"; do

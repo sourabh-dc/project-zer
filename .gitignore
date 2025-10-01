@@ -1,3 +1,193 @@
+# Python
 __pycache__/
-.idea/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database
+*.db
+*.sqlite3
+*.sqlite
+
+# Redis
+dump.rdb
+appendonly.aof
+
+# Docker
+.dockerignore
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Stripe
+stripe_test_keys.txt
+stripe_live_keys.txt
+
+# API Keys and Secrets
+api_keys.txt
+secrets.txt
+credentials.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Node modules (if any)
+node_modules/
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+
+# Local development
+local_config.py
+dev_settings.py
+
+# Alembic (keep versions but ignore other files)
+alembic/versions/__pycache__/
+
+# Service specific
+services/*/logs/
+services/*/tmp/
+services/*/temp/
+
+# Docker volumes
+docker-volumes/
+
+# Monitoring
+prometheus_data/
+grafana_data/
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+
+# Documentation build
+docs/_build/
+docs/build/
+
+# MacOS
+.AppleDouble
+.LSOverride
+
+# Windows
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*

@@ -57,20 +57,8 @@ start_worker "inventory-worker" "inventory" 4 "info"
 # 3. Pricing calculation worker
 start_worker "pricing-worker" "pricing" 6 "info"
 
-# 4. Notification worker
-start_worker "notification-worker" "notifications" 4 "info"
-
-# 5. Webhook processing worker
-start_worker "webhook-worker" "webhooks" 2 "info"
-
-# 6. Catalog management worker
-start_worker "catalog-worker" "catalog" 3 "info"
-
-# 7. Analytics and reporting worker
-start_worker "analytics-worker" "analytics" 2 "info"
-
-# 8. General purpose worker for default queue
-start_worker "general-worker" "default,budget,provisioning,identity" 4 "info"
+# 4. General purpose worker for V2 services
+start_worker "general-worker" "default,provisioning,orders,pricing" 4 "info"
 
 echo -e "${GREEN}🎉 All Celery workers started successfully!${NC}"
 echo -e "${BLUE}📊 Monitor workers with: celery -A zeroque_common.events.celery_app inspect active${NC}"

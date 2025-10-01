@@ -294,3 +294,4 @@ Model-based migrations provide:
 - ✅ **IDE support** with autocomplete and validation
 
 This approach eliminates the need for manual CREATE TABLE statements and ensures that your database schema always matches your application models.
+

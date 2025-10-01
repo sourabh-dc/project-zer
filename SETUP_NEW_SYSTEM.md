@@ -1,21 +1,21 @@
-# ZeroQue Application Setup Guide for New System
+# ZeroQue V2 Setup Guide
 
-This guide will help you set up and run the complete ZeroQue application on a new system.
+This guide will help you set up and run the ZeroQue V2 multi-tenant marketplace platform on a new system.
 
 ## Prerequisites
 
-- Python 3.11+ installed
-- PostgreSQL 13+ installed and running
-- Redis 6+ installed and running
-- Git installed
-- curl installed (for testing)
+- **Python 3.13+** installed
+- **PostgreSQL 15+** installed and running
+- **Redis 7+** installed and running
+- **Git** installed
+- **curl** installed (for testing)
+- **Docker & Docker Compose** (optional but recommended)
 
 ## Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/sourabh-dc/project-zer.git
-cd project-zer
-git checkout sourabh/develop-new
+git clone <repository-url>
+cd zeroque-sprint15-working-copy
 ```
 
 ## Step 2: Set Up Environment
@@ -23,314 +23,308 @@ git checkout sourabh/develop-new
 ### Create Virtual Environment
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
 ### Install Dependencies
 
 ```bash
 pip install -r requirements.txt
-pip install -e packages/zeroque_common
-```
-
-### Set Up Environment Variables
-
-```bash
-cp .env.example .env
-# Edit .env with your database and Redis credentials
 ```
 
 ## Step 3: Database Setup
 
-### Start PostgreSQL and Redis
+### Option A: Using Docker (Recommended)
 
 ```bash
-# Start PostgreSQL (adjust for your system)
-sudo systemctl start postgresql  # Linux
-# or
-brew services start postgresql   # macOS
+# Start PostgreSQL and Redis
+docker-compose up postgres redis -d
 
-# Start Redis
-sudo systemctl start redis       # Linux
-# or
-brew services start redis        # macOS
+# Wait for services to be ready
+sleep 10
+
+# Verify services are running
+docker-compose ps
 ```
 
-### Create Database
+### Option B: Local Installation
 
+#### PostgreSQL Setup
 ```bash
-# Connect to PostgreSQL
-psql -U postgres
+# Create database
+createdb zeroque_dev
 
-# Create database and user
-CREATE DATABASE zeroque_dev;
-CREATE USER zeroque WITH PASSWORD 'zeroque';
-GRANT ALL PRIVILEGES ON DATABASE zeroque_dev TO zeroque;
-\q
+# Create user (if needed)
+psql -c "CREATE USER zeroque WITH PASSWORD 'zeroque';"
+psql -c "GRANT ALL PRIVILEGES ON DATABASE zeroque_dev TO zeroque;"
 ```
 
-### Run Migrations
+#### Redis Setup
+```bash
+# Start Redis server
+redis-server
+
+# Verify Redis is running
+redis-cli ping  # Should return PONG
+```
+
+## Step 4: Run Database Migrations
 
 ```bash
-# Set database URL
-export DATABASE_URL="postgresql+psycopg2://zeroque:zeroque@localhost:5432/zeroque_dev"
+# Check current migration status
+alembic current
 
-# Run migrations
+# Apply all migrations
 alembic upgrade head
 
-# If you get "orders relation does not exist" error, the migrations have been fixed
-# Just run the migrations again - the missing tables will be created
-
-# If you get "multiple head revisions" error, run:
-./scripts/fix_migration_heads.sh
-
-# If migrations are completely broken, reset them:
-./scripts/reset_migrations.sh
+# Verify tables were created
+psql -h localhost -p 5000 -U zeroque -d zeroque_dev -c "\dt"
 ```
 
-## Step 4: Start All Services
+## Step 5: Start Services
 
-### Option A: Manual Start (Recommended for Development)
+### Option A: Using Docker Compose (Recommended)
 
 ```bash
-# Terminal 1: Start Infrastructure
-docker-compose up -d  # If using Docker for PostgreSQL/Redis
+# Start all V2 services
+docker-compose up provisioning orders pricing -d
 
-# Terminal 2: Start Core Services
-source .venv/bin/activate
-uvicorn services.provisioning.main:app --reload --port 8200 &
-uvicorn services.catalog.main:app --reload --port 8201 &
-uvicorn services.entry.main:app --reload --port 8202 &
-uvicorn services.identity.main:app --reload --port 8203 &
-uvicorn services.orders.main:app --reload --port 8208 &
-uvicorn services.billing.main:app --reload --port 8210 &
-uvicorn services.pricing.main:app --reload --port 8209 &
-uvicorn services.approvals.main:app --reload --port 8211 &
-uvicorn services.cv_connector.main:app --reload --port 8213 &
-uvicorn services.cv_gateway.main:app --reload --port 8214 &
-uvicorn services.entitlements.main:app --reload --port 8215 &
-uvicorn services.events.main:app --reload --port 8200 &
-uvicorn services.ledger.main:app --reload --port 8216 &
-uvicorn services.notifications.main:app --reload --port 8217 &
-uvicorn services.payments.main:app --reload --port 8218 &
-uvicorn services.reports.main:app --reload --port 8219 &
-uvicorn services.subscriptions.main:app --reload --port 8220 &
-uvicorn services.usage.main:app --reload --port 8221 &
-uvicorn services.observability.main:app --reload --port 8222 &
+# Check service status
+docker-compose ps
 
-# Terminal 3: Start Celery Workers
-source .venv/bin/activate
-celery -A zeroque_common.events.celery_app worker --loglevel=info --concurrency=4 --queues=default,orders,inventory,budget,notifications,webhooks,pricing,analytics --hostname=zeroque-worker@%h &
-
-# Terminal 4: Start Streamlit E2E App
-source .venv/bin/activate
-streamlit run demo/streamlit_e2e.py --server.port 8501 &
+# View logs
+docker-compose logs provisioning
+docker-compose logs orders
+docker-compose logs pricing
 ```
 
-### Option B: Automated Start Script
+### Option B: Manual Start
 
 ```bash
-# Make the startup script executable
-chmod +x scripts/start_all_services.sh
+# Terminal 1 - Provisioning Service
+uvicorn services.provisioning.main:app --port 8201 --reload
 
-# Run the startup script
-./scripts/start_all_services.sh
+# Terminal 2 - Orders Service
+uvicorn services.orders.main:app --port 8203 --reload
+
+# Terminal 3 - Pricing Service
+uvicorn services.pricing.main:app --port 8209 --reload
 ```
 
-## Step 5: Verify Services are Running
+## Step 6: Verify Installation
+
+### Health Checks
 
 ```bash
-# Check all services health
-curl http://localhost:8200/health  # Provisioning
-curl http://localhost:8201/health  # Catalog
-curl http://localhost:8202/health  # Entry
-curl http://localhost:8203/health  # Identity
-curl http://localhost:8208/health  # Orders
+# Check service health
+curl http://localhost:8201/health  # Provisioning
+curl http://localhost:8203/health  # Orders
 curl http://localhost:8209/health  # Pricing
-curl http://localhost:8210/health  # Billing
-curl http://localhost:8211/health  # Approvals
-curl http://localhost:8213/health  # CV Connector
-curl http://localhost:8214/health  # CV Gateway
-curl http://localhost:8215/health  # Entitlements
-curl http://localhost:8200/health  # Events
-curl http://localhost:8216/health  # Ledger
-curl http://localhost:8217/health  # Notifications
-curl http://localhost:8218/health  # Payments
-curl http://localhost:8219/health  # Reports
-curl http://localhost:8220/health  # Subscriptions
-curl http://localhost:8221/health  # Usage
-curl http://localhost:8222/health  # Observability
 ```
 
-## Step 6: Run Complete Test Suite
-
-### Test All Services
-
-```bash
-# Run the comprehensive test script
-python tests/test_smoke_services.py
+Expected response:
+```json
+{
+  "status": "ok",
+  "service": "provisioning",
+  "version": "2.0.0",
+  "enhanced": true
+}
 ```
 
-### Test Enhanced Communication
+### API Documentation
+
+Open the following URLs in your browser:
+- **Provisioning API**: http://localhost:8201/docs
+- **Orders API**: http://localhost:8203/docs
+- **Pricing API**: http://localhost:8209/docs
+
+## Step 7: Test the System
+
+### Create a Tenant
 
 ```bash
-python tests/test_enhanced_communication.py
-```
-
-## Step 7: Access Applications
-
-- **Streamlit E2E App**: http://localhost:8501
-- **API Documentation**:
-  - Provisioning: http://localhost:8200/docs
-  - Catalog: http://localhost:8201/docs
-  - Orders: http://localhost:8208/docs
-  - Pricing: http://localhost:8209/docs
-  - And so on for each service...
-
-## Step 8: Run Sample Curl Commands
-
-### Basic Setup Commands
-
-```bash
-# Create tenant
-curl -X POST "http://localhost:8200/tenants" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Test Tenant", "domain": "test.com"}'
-
-# Create site
-curl -X POST "http://localhost:8200/sites" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id": "test-tenant", "name": "Test Site", "domain": "test.com"}'
-
-# Create store
-curl -X POST "http://localhost:8200/stores" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id": "test-tenant", "site_id": "test-site", "name": "Test Store", "address": "123 Main St"}'
-```
-
-### Product Management
-
-```bash
-# Create product
-curl -X POST "http://localhost:8201/products" \
-  -H "Content-Type: application/json" \
-  -d '{"sku": "TEST-001", "name": "Test Product", "description": "A test product"}'
-
-# Set price
-curl -X POST "http://localhost:8201/prices" \
-  -H "Content-Type: application/json" \
-  -d '{"sku": "TEST-001", "currency": "GBP", "unit_minor": 9.99, "active": true}'
-```
-
-### Order Processing
-
-```bash
-# Create order
-curl -X POST "http://localhost:8208/orders" \
+curl -X POST "http://localhost:8201/provisioning/v2/tenants" \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "test-tenant",
-    "site_id": "test-site",
-    "store_id": "test-store",
-    "shopper_id": "test-user",
-    "items": [{"sku": "TEST-001", "qty": 2}],
-    "currency": "GBP"
+    "name": "Test Marketplace",
+    "type": "marketplace",
+    "active": true
   }'
+```
+
+### Create a Site
+
+```bash
+curl -X POST "http://localhost:8201/provisioning/v2/sites" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Main Warehouse",
+    "site_type": "warehouse",
+    "address": "123 Main St, London, UK",
+    "geo_lat": 51.5074,
+    "geo_lng": -0.1278,
+    "timezone": "Europe/London",
+    "active": true
+  }'
+```
+
+### Create a Store
+
+```bash
+curl -X POST "http://localhost:8201/provisioning/v2/stores" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "London Store",
+    "store_type": "cashierless",
+    "address": "456 High St, London, UK",
+    "geo_lat": 51.5074,
+    "geo_lng": -0.1278,
+    "timezone": "Europe/London",
+    "active": true
+  }'
+```
+
+### Test Order Creation
+
+```bash
+curl -X POST "http://localhost:8203/orders/v2" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+    "store_id": "550e8400-e29b-41d4-a716-446655440002",
+    "customer_id": "550e8400-e29b-41d4-a716-446655440001",
+    "currency": "GBP",
+    "items": [
+      {
+        "offer_id": "579ad27d-48f0-430a-84f5-bfec84524756",
+        "quantity": 2,
+        "unit_price_minor": 1000,
+        "total_minor": 2000
+      }
+    ],
+    "payment_method": "trade"
+  }'
+```
+
+## Step 8: Development Setup
+
+### Using Scripts
+
+```bash
+# Start all services
+./scripts/start_all_services.sh
+
+# Health check all services
+./scripts/health_check.sh
+
+# Test all endpoints
+./scripts/test_all_endpoints.sh
+
+# Stop all services
+./scripts/stop_all_services.sh
+```
+
+### Celery Workers (Optional)
+
+```bash
+# Start Celery workers for background tasks
+./scripts/celery_workers.sh
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Port Already in Use**
+#### Database Connection Issues
+```bash
+# Check PostgreSQL is running
+docker-compose ps postgres
 
-   ```bash
-   # Find and kill processes using ports
-   lsof -i :8200
-   kill -9 <PID>
-   ```
+# Check connection
+psql -h localhost -p 5000 -U zeroque -d zeroque_dev -c "SELECT 1;"
+```
 
-2. **Database Connection Issues**
+#### Redis Connection Issues
+```bash
+# Check Redis is running
+docker-compose ps redis
 
-   ```bash
-   # Check PostgreSQL is running
-   sudo systemctl status postgresql
+# Test Redis connection
+redis-cli -h localhost -p 4000 ping
+```
 
-   # Check database exists
-   psql -U zeroque -d zeroque_dev -c "\dt"
-   ```
+#### Service Startup Issues
+```bash
+# Check service logs
+docker-compose logs provisioning
+docker-compose logs orders
+docker-compose logs pricing
 
-3. **Redis Connection Issues**
+# Check port availability
+netstat -tulpn | grep :8201
+netstat -tulpn | grep :8203
+netstat -tulpn | grep :8209
+```
 
-   ```bash
-   # Check Redis is running
-   redis-cli ping
-   ```
+#### Migration Issues
+```bash
+# Check migration status
+alembic current
 
-4. **Service Not Starting**
+# Reset migrations (if needed)
+./scripts/reset_migrations.sh
 
-   ```bash
-   # Check logs
-   tail -f logs/service.log
+# Fix migration heads (if needed)
+./scripts/fix_migration_heads.sh
+```
 
-   # Check Python path
-   echo $PYTHONPATH
-   ```
+### Environment Variables
 
-### Health Check Script
+Create a `.env` file in the project root:
 
 ```bash
-#!/bin/bash
-# health_check.sh
+# Database
+DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@localhost:5000/zeroque_dev
 
-services=(
-  "8200:provisioning"
-  "8201:catalog"
-  "8202:entry"
-  "8203:identity"
-  "8208:orders"
-  "8209:pricing"
-  "8210:billing"
-  "8211:approvals"
-  "8213:cv_connector"
-  "8214:cv_gateway"
-  "8215:entitlements"
-  "8216:ledger"
-  "8217:notifications"
-  "8218:payments"
-  "8219:reports"
-  "8220:subscriptions"
-  "8221:usage"
-  "8222:observability"
-)
+# Redis
+REDIS_URL=redis://localhost:4000/0
 
-for service in "${services[@]}"; do
-  port=$(echo $service | cut -d: -f1)
-  name=$(echo $service | cut -d: -f2)
+# Service Configuration
+V2=true
+USE_V2_SCHEMA=true
+MULTI_TENANT_ENABLED=true
+VENDOR_MARKETPLACE_ENABLED=true
 
-  if curl -s http://localhost:$port/health > /dev/null; then
-    echo "✅ $name (port $port): OK"
-  else
-    echo "❌ $name (port $port): FAILED"
-  fi
-done
+# Service URLs
+PAYMENTS_BASE=http://localhost:8216
+PRICING_BASE=http://localhost:8209
+INVENTORY_BASE=http://localhost:8202
 ```
 
 ## Next Steps
 
-1. **Run the Streamlit E2E App** to test all functionalities
-2. **Execute the curl commands** to test API endpoints
-3. **Monitor logs** for any issues
-4. **Test the enhanced communication system** with Celery workers
-5. **Verify AIFI integration** if needed
+### Development
+1. **Read the Architecture**: Check `architecture_v4.1.md` for detailed architecture
+2. **Explore APIs**: Use the `/docs` endpoints to explore available APIs
+3. **Run Tests**: Execute the test suite to verify functionality
+4. **Monitor Logs**: Watch service logs for debugging
+
+### Production Deployment
+1. **Environment Setup**: Configure production environment variables
+2. **Security**: Set up proper authentication and authorization
+3. **Monitoring**: Configure comprehensive monitoring and alerting
+4. **Backup**: Set up regular database backups
+5. **Scaling**: Plan for horizontal scaling of services
 
 ## Support
 
-If you encounter any issues:
+- **Documentation**: Check `README_v2.md` for comprehensive documentation
+- **API Docs**: Use the `/docs` endpoints for interactive API documentation
+- **Issues**: Create GitHub issues for bugs or feature requests
+- **Discussions**: Use GitHub discussions for questions
 
-1. Check the logs in each service terminal
-2. Verify all prerequisites are installed
-3. Ensure all services are running on correct ports
-4. Check database and Redis connections
-5. Review the README.md for detailed documentation
+---
+
+**ZeroQue V2** - Ready for development! 🚀

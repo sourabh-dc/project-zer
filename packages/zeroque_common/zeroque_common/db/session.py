@@ -27,7 +27,7 @@ def init_db():
     from zeroque_common.models import usage as _mu  # noqa
     # NEW in Sprint 3
     from zeroque_common.models import budgets as _bg  # noqa
-    from zeroque_common.models import commerce as _cm  # noqa
+    # from zeroque_common.models import commerce as _cm  # noqa  # Disabled - using V2 models
     from zeroque_common.models import ledger as _lg  # noqa
     from zeroque_common.models import products as _pd
     from zeroque_common.models import tenancy as _tn  # NEW

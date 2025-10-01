@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, BigInteger, Boolean, ForeignKey, UniqueConstraint, DateTime, func
+from sqlalchemy import String, Integer, BigInteger, Boolean, ForeignKey, UniqueConstraint, DateTime, func, Numeric
 from sqlalchemy.orm import Mapped, mapped_column
 from zeroque_common.db.session import Base
 

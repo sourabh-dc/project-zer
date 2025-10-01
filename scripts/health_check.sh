@@ -46,24 +46,9 @@ check_service() {
 
 # Services to check
 services=(
-    "8200:provisioning:http://localhost:8200/health"
-    "8201:catalog:http://localhost:8201/health"
-    "8202:entry:http://localhost:8202/health"
-    "8203:identity:http://localhost:8203/health"
-    "8208:orders:http://localhost:8208/health"
+    "8201:provisioning:http://localhost:8201/health"
+    "8203:orders:http://localhost:8203/health"
     "8209:pricing:http://localhost:8209/health"
-    "8210:billing:http://localhost:8210/health"
-    "8211:approvals:http://localhost:8211/health"
-    "8213:cv_connector:http://localhost:8213/admin/health"
-    "8214:cv_gateway:http://localhost:8214/health"
-    "8215:entitlements:http://localhost:8215/health"
-    "8216:ledger:http://localhost:8216/health"
-    "8217:notifications:http://localhost:8217/health"
-    "8218:payments:http://localhost:8218/health"
-    "8219:reports:http://localhost:8219/health"
-    "8220:subscriptions:http://localhost:8220/health"
-    "8221:usage:http://localhost:8221/health"
-    "8222:observability:http://localhost:8222/health"
 )
 
 # Check all services

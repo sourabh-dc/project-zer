@@ -126,25 +126,9 @@ start_service() {
 print_status "Starting all microservices..."
 
 services=(
-    "provisioning:services.provisioning.main:app:8200"
-    "catalog:services.catalog.main:app:8201"
-    "entry:services.entry.main:app:8202"
-    "identity:services.identity.main:app:8203"
-    "orders:services.orders.main:app:8208"
+    "provisioning:services.provisioning.main:app:8201"
+    "orders:services.orders.main:app:8203"
     "pricing:services.pricing.main:app:8209"
-    "billing:services.billing.main:app:8210"
-    "approvals:services.approvals.main:app:8211"
-    "cv_connector:services.cv_connector.main:app:8213"
-    "cv_gateway:services.cv_gateway.main:app:8214"
-    "entitlements:services.entitlements.main:app:8215"
-    "events:services.events.main:app:8200"
-    "ledger:services.ledger.main:app:8216"
-    "notifications:services.notifications.main:app:8217"
-    "payments:services.payments.main:app:8218"
-    "reports:services.reports.main:app:8219"
-    "subscriptions:services.subscriptions.main:app:8220"
-    "usage:services.usage.main:app:8221"
-    "observability:services.observability.main:app:8222"
 )
 
 # Start services
@@ -175,24 +159,9 @@ sleep 10
 print_status "Performing health checks..."
 
 health_check_services=(
-    "8200:provisioning"
-    "8201:catalog"
-    "8202:entry"
-    "8203:identity"
-    "8208:orders"
+    "8201:provisioning"
+    "8203:orders"
     "8209:pricing"
-    "8210:billing"
-    "8211:approvals"
-    "8213:cv_connector"
-    "8214:cv_gateway"
-    "8215:entitlements"
-    "8216:ledger"
-    "8217:notifications"
-    "8218:payments"
-    "8219:reports"
-    "8220:subscriptions"
-    "8221:usage"
-    "8222:observability"
 )
 
 healthy_services=0

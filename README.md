@@ -1,16 +1,59 @@
 # ZeroQue - Complete Developer Guide
 
-A comprehensive multi-service backend platform for retail operations, featuring provisioning, catalog management, pricing engine, order processing, billing, and computer vision integration.
+A comprehensive **multi-tenant marketplace platform** for retail operations, featuring advanced provisioning, order processing with saga orchestration, and sophisticated pricing engine.
 
-## Architecture Overview
+## 🚀 V2 Architecture Overview
 
-ZeroQue is built as a microservices architecture with the following core components:
+ZeroQue V2 is built as a microservices architecture with the following core components:
 
-- **Infrastructure**: PostgreSQL database, Redis cache, Docker containers
-- **Core Services**: 19 microservices handling different business domains
+- **Infrastructure**: PostgreSQL database with RLS, Redis cache, Docker containers
+- **Core Services**: 3 production-ready microservices with enhanced capabilities
 - **Event System**: Redis Streams + Celery workers for asynchronous processing
-- **Integration Layer**: Computer vision connectors and webhook processing
-- **Frontend**: Streamlit-based E2E testing application
+- **Multi-Tenancy**: Complete tenant isolation with Row-Level Security
+- **Marketplace Model**: Vendor management, product catalog, and advanced pricing
+
+## 📋 Current Status
+
+**✅ Production Ready Services:**
+
+- **Provisioning Service** (Port 8201) - Tenant, site, store, user management
+- **Orders Service** (Port 8203) - Order processing with saga orchestration
+- **Pricing Service** (Port 8209) - Advanced pricing with pricebooks and rules
+
+**📚 Documentation:**
+
+- **V2 Architecture**: See `README_v2.md` for comprehensive V2 documentation
+- **Setup Guide**: See `SETUP_NEW_SYSTEM.md` for installation instructions
+- **API Specifications**: See `services/*/API_SPECIFICATION.md` for detailed API docs
+
+## 🚀 Quick Start
+
+```bash
+# Clone repository
+git clone <repository-url>
+cd zeroque-sprint15-working-copy
+
+# Setup environment
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Start infrastructure
+docker-compose up postgres redis -d
+
+# Run migrations
+alembic upgrade head
+
+# Start V2 services
+docker-compose up provisioning orders pricing -d
+
+# Verify installation
+curl http://localhost:8201/health  # Provisioning
+curl http://localhost:8203/health  # Orders
+curl http://localhost:8209/health  # Pricing
+```
+
+**📖 For detailed setup instructions, see [SETUP_NEW_SYSTEM.md](SETUP_NEW_SYSTEM.md)**
 
 ## Enhanced Microservice Communication System
 

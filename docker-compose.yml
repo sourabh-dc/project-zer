@@ -47,7 +47,19 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8201
-    command: ["uvicorn", "services.provisioning.main:app", "--host", "0.0.0.0", "--port", "8201"]
+      - V2=true
+      - USE_V2_SCHEMA=true
+      - MULTI_TENANT_ENABLED=true
+      - VENDOR_MARKETPLACE_ENABLED=true
+    command:
+      [
+        "uvicorn",
+        "services.provisioning.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8201",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,7 +85,15 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8202
-    command: ["uvicorn", "services.catalog.main:app", "--host", "0.0.0.0", "--port", "8202"]
+    command:
+      [
+        "uvicorn",
+        "services.catalog.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8202",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,7 +119,15 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8204
-    command: ["uvicorn", "services.entry.main:app", "--host", "0.0.0.0", "--port", "8204"]
+    command:
+      [
+        "uvicorn",
+        "services.entry.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8204",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,7 +153,15 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8210
-    command: ["uvicorn", "services.identity.main:app", "--host", "0.0.0.0", "--port", "8210"]
+    command:
+      [
+        "uvicorn",
+        "services.identity.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8210",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,23 +182,36 @@ services:
     container_name: zeroque_orders
     restart: unless-stopped
     ports:
-      - "8208:8208"
+      - "8203:8203"
     environment:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8208
-      - PAYMENTS_BASE=http://billing:8206
-      - BILLING_BASE=http://billing:8206
-    command: ["uvicorn", "services.orders.main:app", "--host", "0.0.0.0", "--port", "8208"]
+      - PORT=8203
+      - V2=true
+      - USE_V2_SCHEMA=true
+      - MULTI_TENANT_ENABLED=true
+      - VENDOR_MARKETPLACE_ENABLED=true
+      - PAYMENTS_BASE=http://localhost:8216
+      - PRICING_BASE=http://pricing:8209
+      - INVENTORY_BASE=http://localhost:8202
+    command:
+      [
+        "uvicorn",
+        "services.orders.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8203",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      billing:
+      pricing:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8208/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8203/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -181,7 +230,15 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8206
-    command: ["uvicorn", "services.billing.main:app", "--host", "0.0.0.0", "--port", "8206"]
+    command:
+      [
+        "uvicorn",
+        "services.billing.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8206",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -207,7 +264,19 @@ services:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
       - PORT=8209
-    command: ["uvicorn", "services.pricing.main:app", "--host", "0.0.0.0", "--port", "8209"]
+      - V2=true
+      - USE_V2_SCHEMA=true
+      - MULTI_TENANT_ENABLED=true
+      - VENDOR_MARKETPLACE_ENABLED=true
+    command:
+      [
+        "uvicorn",
+        "services.pricing.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8209",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -238,7 +307,16 @@ services:
       - ORDERS_BASE=http://orders:8208
       - BILLING_BASE=http://billing:8206
       - PRICING_BASE=http://pricing:8209
-    command: ["streamlit", "run", "demo/streamlit_e2e.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    command:
+      [
+        "streamlit",
+        "run",
+        "demo/streamlit_e2e.py",
+        "--server.port",
+        "8501",
+        "--server.address",
+        "0.0.0.0",
+      ]
     depends_on:
       provisioning:
         condition: service_healthy
