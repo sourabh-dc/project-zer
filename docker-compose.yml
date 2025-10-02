@@ -288,30 +288,26 @@ services:
       timeout: 10s
       retries: 3
 
-  # ===== Demo Application =====
-  streamlit-demo:
+  # ===== Demo Application V2 =====
+  streamlit-demo-v2:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: streamlit
-    container_name: zeroque_streamlit
+    container_name: zeroque_streamlit_v2
     restart: unless-stopped
     ports:
       - "8501:8501"
     environment:
-      - PROV_BASE=http://provisioning:8201
-      - CATALOG_BASE=http://catalog:8202
-      - ENTRY_BASE=http://entry:8204
-      - IDENTITY_BASE=http://identity:8210
-      - ORDERS_BASE=http://orders:8208
-      - BILLING_BASE=http://billing:8206
+      - PROVISIONING_BASE=http://provisioning:8201
+      - ORDERS_BASE=http://orders:8203
       - PRICING_BASE=http://pricing:8209
     command:
       [
         "streamlit",
         "run",
-        "demo/streamlit_e2e.py",
+        "demo/streamlit_e2e_v2.py",
         "--server.port",
         "8501",
         "--server.address",
@@ -320,15 +316,7 @@ services:
     depends_on:
       provisioning:
         condition: service_healthy
-      catalog:
-        condition: service_healthy
-      entry:
-        condition: service_healthy
-      identity:
-        condition: service_healthy
       orders:
-        condition: service_healthy
-      billing:
         condition: service_healthy
       pricing:
         condition: service_healthy

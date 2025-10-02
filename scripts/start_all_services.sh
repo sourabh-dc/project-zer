@@ -144,12 +144,12 @@ celery_pid=$!
 echo "$celery_pid" > logs/celery.pid
 print_success "Celery workers started (PID: $celery_pid)"
 
-# Start Streamlit E2E app
-print_status "Starting Streamlit E2E application..."
-nohup streamlit run demo/streamlit_e2e.py --server.port 8501 > logs/streamlit.log 2>&1 &
+# Start Streamlit V2 E2E app
+print_status "Starting Streamlit V2 E2E application..."
+nohup streamlit run demo/streamlit_e2e_v2.py --server.port 8501 > logs/streamlit.log 2>&1 &
 streamlit_pid=$!
 echo "$streamlit_pid" > logs/streamlit.pid
-print_success "Streamlit E2E app started (PID: $streamlit_pid)"
+print_success "Streamlit V2 E2E app started (PID: $streamlit_pid)"
 
 # Wait for all services to be ready
 print_status "Waiting for all services to be ready..."
