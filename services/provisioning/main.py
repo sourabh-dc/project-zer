@@ -17,12 +17,12 @@ import sys
 import asyncio
 import logging
 import uuid
-from fastapi import FastAPI, HTTPException, Body, Path, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Body, Path, Query, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from sqlalchemy import text, String, Boolean, DateTime, func, JSON, Numeric, Integer, BigInteger
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import text, String, Boolean, DateTime, func, JSON, Numeric, Integer, BigInteger, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship, Session
 from sqlalchemy.dialects.postgresql import UUID
 
 # Add the packages path to sys.path
@@ -47,9 +47,51 @@ from zeroque_common.middleware.usage_middleware import add_api_call_meter
 from zeroque_common.middleware.idempotency import add_idempotency_middleware
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
 
+# Import service layer and repositories
+from .services import ServiceFactory
+from .repositories import RepositoryFactory, ProvisioningError, ValidationError, NotFoundError, DuplicateError
+from .models import *
+
 # Service configuration
 SERVICE_NAME = "provisioning"
 app = FastAPI(title="Enhanced ZeroQue Provisioning Service", version="2.0.0")
+
+# Dependency injection for database sessions
+def get_db() -> Session:
+    """Get database session with proper lifecycle management"""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+# Custom exception handlers
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request, exc: ValidationError):
+    """Handle validation errors"""
+    logger.warning(f"Validation error: {exc}")
+    return HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(NotFoundError)
+async def not_found_exception_handler(request, exc: NotFoundError):
+    """Handle not found errors"""
+    logger.warning(f"Not found error: {exc}")
+    return HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(DuplicateError)
+async def duplicate_exception_handler(request, exc: DuplicateError):
+    """Handle duplicate errors"""
+    logger.warning(f"Duplicate error: {exc}")
+    return HTTPException(status_code=409, detail=str(exc))
+
+@app.exception_handler(ProvisioningError)
+async def provisioning_exception_handler(request, exc: ProvisioningError):
+    """Handle general provisioning errors"""
+    logger.error(f"Provisioning error: {exc}")
+    return HTTPException(status_code=500, detail="Internal provisioning error")
 
 # Initialize enhanced communication
 service_bus = global_service_bus
@@ -82,155 +124,8 @@ add_idempotency_middleware(app, routes=[
     ("PUT", "/provisioning/role-assignments"),
 ])
 
-# V2 SQLAlchemy Models for the new architecture
-class TenantV2(Base):
-    __tablename__ = "tenants_new"
-    tenant_id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    name: Mapped[str] = mapped_column(String(200))
-    type: Mapped[str] = mapped_column(String(50), default="customer")
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    scenario_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class SiteV2(Base):
-    __tablename__ = "sites_new"
-    site_id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    name: Mapped[str] = mapped_column(String(200))
-    geo: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class StoreV2(Base):
-    __tablename__ = "stores_new"
-    store_id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    name: Mapped[str] = mapped_column(String(200))
-    timezone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class UserV2(Base):
-    __tablename__ = "users_new"
-    user_id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True)
-    display_name: Mapped[str] = mapped_column(String(200))
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class RoleV2(Base):
-    __tablename__ = "roles_new"
-    role_id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    code: Mapped[str] = mapped_column(String(100), unique=True)
-    description: Mapped[str] = mapped_column(String(200), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class PermissionV2(Base):
-    __tablename__ = "permissions_new"
-    permission_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    code: Mapped[str] = mapped_column(String(100), unique=True)
-    name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class RolePermissionV2(Base):
-    __tablename__ = "role_permissions_new"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    role_id: Mapped[str] = mapped_column(String(255))
-    permission_id: Mapped[str] = mapped_column(String(255))
-    granted: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class RoleAssignmentV2(Base):
-    __tablename__ = "role_assignments"
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    user_id: Mapped[str] = mapped_column(UUID)
-    role_id: Mapped[str] = mapped_column(UUID)
-    scope_type: Mapped[str] = mapped_column(String(50), default="GLOBAL")
-    scope_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class PermissionGrantV2(Base):
-    __tablename__ = "permission_grants"
-    grant_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    grantee_type: Mapped[str] = mapped_column(String(50))
-    grantee_id: Mapped[str] = mapped_column(String(255))
-    permission_id: Mapped[str] = mapped_column(String(255))
-    scope_type: Mapped[str] = mapped_column(String(50))
-    scope_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    priority: Mapped[int] = mapped_column(Integer, default=1000)
-    is_granted: Mapped[bool] = mapped_column(Boolean, default=True)
-    granted_by: Mapped[str] = mapped_column(String(255))
-    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-class VendorV2(Base):
-    __tablename__ = "vendors"
-    vendor_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(255))
-    name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    rating: Mapped[Optional[float]] = mapped_column(Numeric(3, 2), nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class VendorOnboardingV2(Base):
-    __tablename__ = "vendor_onboarding"
-    onboarding_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    vendor_id: Mapped[str] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(50), default="pending")
-    requirements: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    approver_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    notes: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class TenantSiteV2(Base):
-    __tablename__ = "tenant_sites"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(255))
-    site_id: Mapped[str] = mapped_column(String(255))
-    role_type: Mapped[str] = mapped_column(String(50), default="manager")
-    rights_expire_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class SiteStoreV2(Base):
-    __tablename__ = "site_stores"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    site_id: Mapped[str] = mapped_column(String(255))
-    store_id: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class TenantStoreAdminV2(Base):
-    __tablename__ = "tenant_store_admins"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(255))
-    store_id: Mapped[str] = mapped_column(String(255))
-    role_code: Mapped[str] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class StoreVendorV2(Base):
-    __tablename__ = "store_vendors"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    store_id: Mapped[str] = mapped_column(String(255))
-    vendor_id: Mapped[str] = mapped_column(String(255))
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-class TenantLinkV2(Base):
-    __tablename__ = "tenant_links_new"
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    parent_tenant_id: Mapped[str] = mapped_column(String(255))
-    child_tenant_id: Mapped[str] = mapped_column(String(255))
-    relationship: Mapped[str] = mapped_column(String(50), default="distributor")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+# Import existing models from zeroque_common and alias them for V2 use
+# Note: We'll use the _new tables directly
 
 # Event handlers
 async def handle_tenant_created(event: ServiceEvent):
@@ -321,7 +216,7 @@ class ProvisioningSaga:
             db.add(tenant)
             db.commit()
             
-            return {"tenant_id": tenant.tenant_id, "tenant_created": True}
+            return {"tenant_id": str(tenant.tenant_id), "tenant_created": True}
             
         except Exception as e:
             db.rollback()
@@ -410,7 +305,7 @@ async def startup():
     # Initialize database
     get_engine()
     init_db()
-    
+
     logger.info(f"Enhanced {SERVICE_NAME} service started successfully")
 
 # Enhanced health check
@@ -431,20 +326,24 @@ def readiness():
 # ---------------- V2 Payload Models ----------------
 class TenantV2Payload(BaseModel):
     name: str = Field(..., description="Human-friendly tenant name")
-    type: str = Field(default="customer", description="Tenant type: customer, marketplace, vendor_org, partner")
+    type: str = Field(default="customer", description="Tenant type: customer, marketplace, vendor_org, partner, end_user, retailer, distributor")
     scenario_id: Optional[str] = Field(None, description="Scenario ID for tenant")
 
 class SiteV2Payload(BaseModel):
     name: str = Field(..., description="Site name")
+    site_type: str = Field(default="retail", description="Site type: onsite, retail, distributor")
     geo: Optional[dict] = Field(None, description="Geographic information")
 
 class StoreV2Payload(BaseModel):
     name: str = Field(..., description="Store name")
+    store_type: str = Field(default="cashierless", description="Store type: cashierless, vending, kiosk, traditional, custom")
+    geo: Optional[dict] = Field(None, description="Geographic information")
     timezone: Optional[str] = Field(None, description="Store timezone")
 
 class UserV2Payload(BaseModel):
     email: str = Field(..., description="User email")
     display_name: str = Field(..., description="User display name")
+    active: bool = Field(default=True, description="User active status")
 
 class RoleV2Payload(BaseModel):
     code: str = Field(..., description="Role code")
@@ -466,6 +365,7 @@ class VendorV2Payload(BaseModel):
     tenant_id: str = Field(..., description="Tenant ID")
     name: str = Field(..., description="Vendor name")
     description: Optional[str] = Field(None, description="Vendor description")
+    rating: Optional[float] = Field(None, description="Vendor rating (0-5)")
 
 class TenantSiteV2Payload(BaseModel):
     tenant_id: str = Field(..., description="Tenant ID")
@@ -514,7 +414,7 @@ class ZeroqueRailPayload(BaseModel):
     config: dict = Field(..., description="Rail configuration")
 
 # ---------------- V2 Enhanced Endpoints ----------------
-@app.post("/provisioning/v2/tenants", response_model=Dict[str, Any])
+@app.post("/provisioning/tenants", response_model=Dict[str, Any])
 async def create_tenant_v2(payload: TenantV2Payload = Body(...)):
     """Create tenant with enhanced communication patterns"""
     
@@ -559,92 +459,146 @@ async def create_tenant_v2(payload: TenantV2Payload = Body(...)):
         logger.error(f"Tenant creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/provisioning/v2/tenants/{tenant_id}")
+@app.put("/provisioning/tenants/{tenant_id}")
 async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload = Body(...)):
     """Create or update a Tenant (V2 architecture)."""
     with SessionLocal() as db:
-        # Set RLS context
-        set_rls_context(db, tenant_id=tenant_id)
+        # Convert string tenant_id to UUID if needed
+        try:
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            # If not a valid UUID, generate a new one
+            tenant_uuid = uuid.uuid4()
         
-        t = db.query(TenantV2).filter(TenantV2.tenant_id == tenant_id).one_or_none()
+        # Set RLS context
+        set_rls_context(db, tenant_id=str(tenant_uuid))
+        
+        t = db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none()
         if t:
             t.name = payload.name
             t.type = payload.type
-            t.scenario_id = payload.scenario_id
-            t.updated_at = datetime.now()
             db.commit()
-            logger.info("tenant_updated", extra={"tenant_id": tenant_id})
-            return {"tenant_id": t.tenant_id, "name": t.name, "type": t.type, "updated": True}
+            logger.info("tenant_updated", extra={"tenant_id": str(tenant_uuid)})
+            return {"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type, "updated": True}
         
         t = TenantV2(
-            tenant_id=tenant_id, 
+            tenant_id=tenant_uuid, 
             name=payload.name, 
-            type=payload.type,
-            scenario_id=payload.scenario_id
+            type=payload.type
         )
         db.add(t)
         db.commit()
-        logger.info("tenant_created", extra={"tenant_id": tenant_id})
-        return {"tenant_id": t.tenant_id, "name": t.name, "type": t.type, "created": True}
+        logger.info("tenant_created", extra={"tenant_id": str(tenant_uuid)})
+        return {"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type, "created": True}
 
-@app.put("/provisioning/v2/sites/{site_id}")
-async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body(...)):
+@app.put("/provisioning/sites/{site_id}")
+async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body(...), tenant_id: str = Query(...)):
     """Create or update a Site (V2 architecture)."""
     with SessionLocal() as db:
-        s = db.query(SiteV2).filter(SiteV2.site_id == site_id).one_or_none()
+        # Convert string IDs to UUIDs if needed
+        try:
+            site_uuid = uuid.UUID(site_id)
+        except ValueError:
+            site_uuid = uuid.uuid4()
+        
+        try:
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            tenant_uuid = uuid.uuid4()
+        
+        # Validate tenant exists
+        if not db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none():
+            raise HTTPException(status_code=400, detail="Tenant not found")
+        
+        s = db.query(SiteV2).filter(SiteV2.site_id == site_uuid).one_or_none()
         if s:
             s.name = payload.name
+            s.site_type = payload.site_type
             s.geo = payload.geo
-            s.updated_at = datetime.now()
             db.commit()
-            logger.info("site_updated", extra={"site_id": site_id})
-            return {"site_id": s.site_id, "name": s.name, "geo": s.geo, "updated": True}
+            logger.info("site_updated", extra={"site_id": str(site_uuid)})
+            return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "updated": True}
         
-        s = SiteV2(site_id=site_id, name=payload.name, geo=payload.geo)
+        s = SiteV2(site_id=site_uuid, tenant_id=tenant_uuid, name=payload.name, site_type=payload.site_type, geo=payload.geo)
         db.add(s)
         db.commit()
-        logger.info("site_created", extra={"site_id": site_id})
-        return {"site_id": s.site_id, "name": s.name, "geo": s.geo, "created": True}
+        logger.info("site_created", extra={"site_id": str(site_uuid)})
+        return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "created": True}
 
-@app.put("/provisioning/v2/stores/{store_id}")
-async def upsert_store_v2(store_id: str = Path(...), payload: StoreV2Payload = Body(...)):
+@app.put("/provisioning/stores/{store_id}")
+async def upsert_store_v2(store_id: str = Path(...), payload: StoreV2Payload = Body(...), site_id: str = Query(...)):
     """Create or update a Store (V2 architecture)."""
     with SessionLocal() as db:
-        st = db.query(StoreV2).filter(StoreV2.store_id == store_id).one_or_none()
+        # Convert string IDs to UUIDs if needed
+        try:
+            store_uuid = uuid.UUID(store_id)
+        except ValueError:
+            store_uuid = uuid.uuid4()
+        
+        try:
+            site_uuid = uuid.UUID(site_id)
+        except ValueError:
+            site_uuid = uuid.uuid4()
+        
+        # Validate site exists
+        if not db.query(SiteV2).filter(SiteV2.site_id == site_uuid).one_or_none():
+            raise HTTPException(status_code=400, detail="Site not found")
+        
+        st = db.query(StoreV2).filter(StoreV2.store_id == store_uuid).one_or_none()
         if st:
             st.name = payload.name
-            st.timezone = payload.timezone
-            st.updated_at = datetime.now()
+            st.store_type = payload.store_type
+            st.geo = payload.geo
             db.commit()
-            logger.info("store_updated", extra={"store_id": store_id})
-            return {"store_id": st.store_id, "name": st.name, "timezone": st.timezone, "updated": True}
+            logger.info("store_updated", extra={"store_id": str(store_uuid)})
+            return {"store_id": str(st.store_id), "name": st.name, "store_type": st.store_type, "geo": st.geo, "updated": True}
         
-        st = StoreV2(store_id=store_id, name=payload.name, timezone=payload.timezone)
+        st = StoreV2(store_id=store_uuid, site_id=site_uuid, name=payload.name, store_type=payload.store_type, geo=payload.geo)
         db.add(st)
         db.commit()
-        logger.info("store_created", extra={"store_id": store_id})
-        return {"store_id": st.store_id, "name": st.name, "timezone": st.timezone, "created": True}
+        logger.info("store_created", extra={"store_id": str(store_uuid)})
+        return {"store_id": str(st.store_id), "name": st.name, "store_type": st.store_type, "geo": st.geo, "created": True}
 
-@app.put("/provisioning/v2/users/{user_id}")
+@app.put("/provisioning/users/{user_id}")
 async def upsert_user_v2(user_id: str = Path(...), payload: UserV2Payload = Body(...)):
     """Create or update a User (V2 architecture)."""
     with SessionLocal() as db:
-        u = db.query(UserV2).filter(UserV2.user_id == user_id).one_or_none()
-        if u:
-            u.email = payload.email
-            u.display_name = payload.display_name
-            u.updated_at = datetime.now()
+        try:
+            # Convert string user_id to UUID if needed
+            try:
+                user_uuid = uuid.UUID(user_id)
+            except ValueError:
+                user_uuid = uuid.uuid4()
+            
+            u = db.query(UserV2).filter(UserV2.user_id == user_uuid).one_or_none()
+            if u:
+                u.email = payload.email
+                u.display_name = payload.display_name
+                u.active = payload.active
+                u.updated_at = datetime.now()
+                db.commit()
+                logger.info("user_updated", extra={"user_id": str(user_uuid)})
+                return {"user_id": str(u.user_id), "email": u.email, "display_name": u.display_name, "updated": True}
+            
+            # Check if email already exists for a different user
+            existing_user = db.query(UserV2).filter(UserV2.email == payload.email).first()
+            if existing_user:
+                raise HTTPException(status_code=400, detail=f"Email {payload.email} already exists for user {existing_user.user_id}")
+            
+            u = UserV2(user_id=user_uuid, email=payload.email, display_name=payload.display_name, active=payload.active)
+            db.add(u)
             db.commit()
-            logger.info("user_updated", extra={"user_id": user_id})
-            return {"user_id": u.user_id, "email": u.email, "display_name": u.display_name, "updated": True}
-        
-        u = UserV2(user_id=user_id, email=payload.email, display_name=payload.display_name)
-        db.add(u)
-        db.commit()
-        logger.info("user_created", extra={"user_id": user_id})
-        return {"user_id": u.user_id, "email": u.email, "display_name": u.display_name, "created": True}
+            logger.info("user_created", extra={"user_id": str(user_uuid)})
+            return {"user_id": str(u.user_id), "email": u.email, "display_name": u.display_name, "created": True}
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"User creation/update failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/roles/{role_id}")
+@app.put("/provisioning/roles/{role_id}")
 async def upsert_role_v2(role_id: str = Path(...), payload: RoleV2Payload = Body(...)):
     """Create or update a Role (V2 architecture)."""
     with SessionLocal() as db:
@@ -662,65 +616,82 @@ async def upsert_role_v2(role_id: str = Path(...), payload: RoleV2Payload = Body
         logger.info("role_created", extra={"role_id": role_id})
         return {"role_id": r.role_id, "code": r.code, "description": r.description, "created": True}
 
-@app.put("/provisioning/v2/role-assignments")
-async def upsert_role_assignment_v2(payload: RoleAssignmentV2Payload = Body(...)):
+@app.put("/provisioning/role-assignments")
+async def upsert_role_assignment_v2(payload: RoleAssignmentV2Payload = Body(...), db: Session = Depends(get_db)):
     """Assign a Role to a User with scope (V2 architecture)."""
-    with SessionLocal() as db:
-        if not db.query(UserV2).filter(UserV2.user_id == payload.user_id).one_or_none():
-            raise HTTPException(status_code=400, detail="User not found")
-        if not db.query(RoleV2).filter(RoleV2.role_id == payload.role_id).one_or_none():
-            raise HTTPException(status_code=400, detail="Role not found")
+    try:
+        role_assignment_repo = RepositoryFactory.get_role_assignment_repository()
+        
+        assignment = role_assignment_repo.assign_role(
+            db=db,
+            user_id=payload.user_id,
+            role_id=payload.role_id,
+            scope_type=payload.scope_type,
+            scope_id=payload.scope_id
+        )
+        
+        logger.info("role_assignment_created", extra={"id": assignment.id})
+        return {"id": assignment.id, "created": True}
+        
+    except Exception as e:
+        logger.error(f"Role assignment failed: {str(e)}")
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=400, detail=str(e))
+        elif "already exists" in str(e).lower():
+            return {"id": str(e).split("'")[1] if "'" in str(e) else "unknown", "exists": True}
+        else:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-        existing = db.execute(text("""
-            SELECT id FROM role_assignments
-             WHERE user_id=:u AND role_id=:r AND scope_type=:st AND (scope_id=:si OR (scope_id IS NULL AND :si IS NULL))
-        """), {"u": payload.user_id, "r": payload.role_id, "st": payload.scope_type, "si": payload.scope_id}).first()
-
-        if existing:
-            logger.info("role_assignment_exists", extra={"id": existing[0]})
-            return {"id": existing[0], "updated": False, "exists": True}
-
-        assignment_id = str(uuid.uuid4())
-        db.execute(text("""
-            INSERT INTO role_assignments(id, user_id, role_id, scope_type, scope_id)
-            VALUES(:id,:u,:r,:st,:si)
-        """), {"id": assignment_id, "u": payload.user_id, "r": payload.role_id, "st": payload.scope_type, "si": payload.scope_id})
-        db.commit()
-        logger.info("role_assignment_created", extra={"id": assignment_id})
-        return {"id": assignment_id, "created": True}
-
-@app.put("/provisioning/v2/vendors/{vendor_id}")
+@app.put("/provisioning/vendors/{vendor_id}")
 async def upsert_vendor_v2(vendor_id: str = Path(...), payload: VendorV2Payload = Body(...)):
     """Create or update a Vendor (V2 architecture)."""
     with SessionLocal() as db:
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == payload.tenant_id).one_or_none():
+        # Convert string IDs to UUIDs if needed
+        try:
+            vendor_uuid = uuid.UUID(vendor_id)
+        except ValueError:
+            vendor_uuid = uuid.uuid4()
+        
+        try:
+            tenant_uuid = uuid.UUID(payload.tenant_id)
+        except ValueError:
+            tenant_uuid = uuid.uuid4()
+        
+        if not db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none():
             raise HTTPException(status_code=400, detail="Tenant not found")
         
-        v = db.query(VendorV2).filter(VendorV2.vendor_id == vendor_id).one_or_none()
+        v = db.query(VendorV2).filter(VendorV2.vendor_id == vendor_uuid).one_or_none()
         if v:
-            v.tenant_id = payload.tenant_id
+            v.tenant_id = tenant_uuid
             v.name = payload.name
             v.description = payload.description
+            if payload.rating is not None:
+                v.rating = payload.rating
             v.updated_at = datetime.now()
             db.commit()
-            logger.info("vendor_updated", extra={"vendor_id": vendor_id})
-            return {"vendor_id": v.vendor_id, "tenant_id": v.tenant_id, "name": v.name, "updated": True}
+            logger.info("vendor_updated", extra={"vendor_id": str(vendor_uuid)})
+            return {"vendor_id": str(v.vendor_id), "tenant_id": str(v.tenant_id), "name": v.name, "updated": True}
         
-        v = VendorV2(vendor_id=vendor_id, tenant_id=payload.tenant_id, name=payload.name, description=payload.description)
+        v = VendorV2(vendor_id=vendor_uuid, tenant_id=tenant_uuid, name=payload.name, description=payload.description, rating=payload.rating)
         db.add(v)
         db.commit()
-        logger.info("vendor_created", extra={"vendor_id": vendor_id})
-        return {"vendor_id": v.vendor_id, "tenant_id": v.tenant_id, "name": v.name, "created": True}
+        logger.info("vendor_created", extra={"vendor_id": str(vendor_uuid)})
+        return {"vendor_id": str(v.vendor_id), "tenant_id": str(v.tenant_id), "name": v.name, "created": True}
 
-@app.put("/provisioning/v2/tenant-sites")
-async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...)):
+@app.put("/provisioning/tenant-sites")
+async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Tenant to a Site (V2 architecture)."""
-    with SessionLocal() as db:
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == payload.tenant_id).one_or_none():
+    try:
+        # Validate tenant and site exist
+        tenant_repo = RepositoryFactory.get_tenant_repository()
+        site_repo = RepositoryFactory.get_site_repository()
+        
+        if not tenant_repo.get_by_id(db, payload.tenant_id):
             raise HTTPException(status_code=400, detail="Tenant not found")
-        if not db.query(SiteV2).filter(SiteV2.site_id == payload.site_id).one_or_none():
+        if not site_repo.get_by_id(db, payload.site_id):
             raise HTTPException(status_code=400, detail="Site not found")
 
+        # Check if link already exists
         existing = db.execute(text("""
             SELECT id FROM tenant_sites WHERE tenant_id=:t AND site_id=:s
         """), {"t": payload.tenant_id, "s": payload.site_id}).first()
@@ -729,6 +700,7 @@ async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...)):
             logger.info("tenant_site_exists", extra={"id": existing[0]})
             return {"id": existing[0], "exists": True}
 
+        # Create new link
         link_id = str(uuid.uuid4())
         db.execute(text("""
             INSERT INTO tenant_sites(id, tenant_id, site_id, role_type, rights_expire_at)
@@ -737,16 +709,27 @@ async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...)):
         db.commit()
         logger.info("tenant_site_created", extra={"id": link_id})
         return {"id": link_id, "created": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Tenant-site linking failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/site-stores")
-async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...)):
+@app.put("/provisioning/site-stores")
+async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Site to a Store (V2 architecture)."""
-    with SessionLocal() as db:
-        if not db.query(SiteV2).filter(SiteV2.site_id == payload.site_id).one_or_none():
+    try:
+        # Validate site and store exist
+        site_repo = RepositoryFactory.get_site_repository()
+        store_repo = RepositoryFactory.get_store_repository()
+        
+        if not site_repo.get_by_id(db, payload.site_id):
             raise HTTPException(status_code=400, detail="Site not found")
-        if not db.query(StoreV2).filter(StoreV2.store_id == payload.store_id).one_or_none():
+        if not store_repo.get_by_id(db, payload.store_id):
             raise HTTPException(status_code=400, detail="Store not found")
 
+        # Check if link already exists
         existing = db.execute(text("""
             SELECT id FROM site_stores WHERE site_id=:s AND store_id=:st
         """), {"s": payload.site_id, "st": payload.store_id}).first()
@@ -755,6 +738,7 @@ async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...)):
             logger.info("site_store_exists", extra={"id": existing[0]})
             return {"id": existing[0], "exists": True}
 
+        # Create new link
         link_id = str(uuid.uuid4())
         db.execute(text("""
             INSERT INTO site_stores(id, site_id, store_id)
@@ -763,16 +747,27 @@ async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...)):
         db.commit()
         logger.info("site_store_created", extra={"id": link_id})
         return {"id": link_id, "created": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Site-store linking failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/store-vendors")
-async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...)):
+@app.put("/provisioning/store-vendors")
+async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Store to a Vendor (V2 architecture)."""
-    with SessionLocal() as db:
-        if not db.query(StoreV2).filter(StoreV2.store_id == payload.store_id).one_or_none():
+    try:
+        # Validate store and vendor exist
+        store_repo = RepositoryFactory.get_store_repository()
+        vendor_repo = RepositoryFactory.get_vendor_repository()
+        
+        if not store_repo.get_by_id(db, payload.store_id):
             raise HTTPException(status_code=400, detail="Store not found")
-        if not db.query(VendorV2).filter(VendorV2.vendor_id == payload.vendor_id).one_or_none():
+        if not vendor_repo.get_by_id(db, payload.vendor_id):
             raise HTTPException(status_code=400, detail="Vendor not found")
 
+        # Check if link already exists
         existing = db.execute(text("""
             SELECT id FROM store_vendors WHERE store_id=:s AND vendor_id=:v
         """), {"s": payload.store_id, "v": payload.vendor_id}).first()
@@ -781,6 +776,7 @@ async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...)):
             logger.info("store_vendor_exists", extra={"id": existing[0]})
             return {"id": existing[0], "exists": True}
 
+        # Create new link
         link_id = str(uuid.uuid4())
         db.execute(text("""
             INSERT INTO store_vendors(id, store_id, vendor_id)
@@ -789,16 +785,26 @@ async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...)):
         db.commit()
         logger.info("store_vendor_created", extra={"id": link_id})
         return {"id": link_id, "created": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Store-vendor linking failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/tenant-links")
-async def upsert_tenant_link_v2(payload: TenantLinkV2Payload = Body(...)):
+@app.put("/provisioning/tenant-links")
+async def upsert_tenant_link_v2(payload: TenantLinkV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create a parent→child tenant link (V2 architecture)."""
-    with SessionLocal() as db:
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == payload.parent_tenant_id).one_or_none():
+    try:
+        # Validate parent and child tenants exist
+        tenant_repo = RepositoryFactory.get_tenant_repository()
+        
+        if not tenant_repo.get_by_id(db, payload.parent_tenant_id):
             raise HTTPException(status_code=400, detail="Parent tenant not found")
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == payload.child_tenant_id).one_or_none():
+        if not tenant_repo.get_by_id(db, payload.child_tenant_id):
             raise HTTPException(status_code=400, detail="Child tenant not found")
 
+        # Check if link already exists
         existing = db.execute(text("""
             SELECT id FROM tenant_links_new WHERE parent_tenant_id=:p AND child_tenant_id=:c AND relationship=:r
         """), {"p": payload.parent_tenant_id, "c": payload.child_tenant_id, "r": payload.relationship}).first()
@@ -807,6 +813,7 @@ async def upsert_tenant_link_v2(payload: TenantLinkV2Payload = Body(...)):
             logger.info("tenant_link_exists", extra={"id": existing[0]})
             return {"id": existing[0], "exists": True}
 
+        # Create new link
         link_id = str(uuid.uuid4())
         db.execute(text("""
             INSERT INTO tenant_links_new(id, parent_tenant_id, child_tenant_id, relationship)
@@ -815,93 +822,119 @@ async def upsert_tenant_link_v2(payload: TenantLinkV2Payload = Body(...)):
         db.commit()
         logger.info("tenant_link_created", extra={"id": link_id})
         return {"id": link_id, "created": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Tenant linking failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # ---------------- Additional V2 Endpoints ----------------
-@app.put("/provisioning/v2/erp-integrations/{integration_id}")
-async def upsert_erp_integration_v2(integration_id: str = Path(...), payload: ErpIntegrationPayload = Body(...)):
+@app.put("/provisioning/erp-integrations/{integration_id}")
+async def upsert_erp_integration_v2(integration_id: str = Path(...), payload: ErpIntegrationPayload = Body(...), db: Session = Depends(get_db)):
     """Create or update an ERP Integration (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Validate tenant or vendor exists
-        if payload.tenant_id and not db.query(TenantV2).filter(TenantV2.tenant_id == payload.tenant_id).one_or_none():
-            raise HTTPException(status_code=400, detail="Tenant not found")
-        if payload.vendor_id and not db.query(VendorV2).filter(VendorV2.vendor_id == payload.vendor_id).one_or_none():
-            raise HTTPException(status_code=400, detail="Vendor not found")
+        if payload.tenant_id:
+            tenant_repo = RepositoryFactory.get_tenant_repository()
+            if not tenant_repo.get_by_id(db, payload.tenant_id):
+                raise HTTPException(status_code=400, detail="Tenant not found")
+        
+        if payload.vendor_id:
+            vendor_repo = RepositoryFactory.get_vendor_repository()
+            if not vendor_repo.get_by_id(db, payload.vendor_id):
+                raise HTTPException(status_code=400, detail="Vendor not found")
         
         # Check if integration exists
-        existing = db.execute(text("""
-            SELECT id FROM erp_integrations WHERE id=:id
-        """), {"id": integration_id}).first()
+        erp_repo = RepositoryFactory.get_erp_integration_repository()
+        existing = erp_repo.get_by_id(db, integration_id)
         
         if existing:
             # Update existing integration
-            db.execute(text("""
-                UPDATE erp_integrations 
-                SET tenant_id=:t, vendor_id=:v, type=:type, config=:config, updated_at=NOW()
-                WHERE id=:id
-            """), {"id": integration_id, "t": payload.tenant_id, "v": payload.vendor_id, 
-                   "type": payload.type, "config": payload.config})
-            db.commit()
+            erp_repo.update(db, integration_id, 
+                           tenant_id=payload.tenant_id,
+                           vendor_id=payload.vendor_id,
+                           type=payload.type,
+                           config=payload.config)
             logger.info("erp_integration_updated", extra={"integration_id": integration_id})
             return {"integration_id": integration_id, "updated": True}
         else:
             # Create new integration
-            db.execute(text("""
-                INSERT INTO erp_integrations(id, tenant_id, vendor_id, type, config)
-                VALUES(:id,:t,:v,:type,:config)
-            """), {"id": integration_id, "t": payload.tenant_id, "v": payload.vendor_id, 
-                   "type": payload.type, "config": payload.config})
-            db.commit()
+            erp_repo.create(db,
+                          id=integration_id,
+                          tenant_id=payload.tenant_id,
+                          vendor_id=payload.vendor_id,
+                          type=payload.type,
+                          config=payload.config)
             logger.info("erp_integration_created", extra={"integration_id": integration_id})
             return {"integration_id": integration_id, "created": True}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ERP integration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/access-controls/{control_id}")
-async def upsert_access_control_v2(control_id: str = Path(...), payload: AccessControlPayload = Body(...)):
+@app.put("/provisioning/access-controls/{control_id}")
+async def upsert_access_control_v2(control_id: str = Path(...), payload: AccessControlPayload = Body(...), db: Session = Depends(get_db)):
     """Create or update an Access Control (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Validate site or store exists
-        if payload.site_id and not db.query(SiteV2).filter(SiteV2.site_id == payload.site_id).one_or_none():
-            raise HTTPException(status_code=400, detail="Site not found")
-        if payload.store_id and not db.query(StoreV2).filter(StoreV2.store_id == payload.store_id).one_or_none():
-            raise HTTPException(status_code=400, detail="Store not found")
+        if payload.site_id:
+            site_repo = RepositoryFactory.get_site_repository()
+            if not site_repo.get_by_id(db, payload.site_id):
+                raise HTTPException(status_code=400, detail="Site not found")
+        
+        if payload.store_id:
+            store_repo = RepositoryFactory.get_store_repository()
+            if not store_repo.get_by_id(db, payload.store_id):
+                raise HTTPException(status_code=400, detail="Store not found")
         
         # Check if control exists
-        existing = db.execute(text("""
-            SELECT id FROM access_controls WHERE id=:id
-        """), {"id": control_id}).first()
+        access_repo = RepositoryFactory.get_access_control_repository()
+        existing = access_repo.get_by_id(db, control_id)
         
         if existing:
             # Update existing control
-            db.execute(text("""
-                UPDATE access_controls 
-                SET site_id=:s, store_id=:st, type=:type, config=:config, updated_at=NOW()
-                WHERE id=:id
-            """), {"id": control_id, "s": payload.site_id, "st": payload.store_id, 
-                   "type": payload.type, "config": payload.config})
-            db.commit()
+            access_repo.update(db, control_id,
+                              site_id=payload.site_id,
+                              store_id=payload.store_id,
+                              type=payload.type,
+                              config=payload.config)
             logger.info("access_control_updated", extra={"control_id": control_id})
             return {"control_id": control_id, "updated": True}
         else:
             # Create new control
-            db.execute(text("""
-                INSERT INTO access_controls(id, site_id, store_id, type, config)
-                VALUES(:id,:s,:st,:type,:config)
-            """), {"id": control_id, "s": payload.site_id, "st": payload.store_id, 
-                   "type": payload.type, "config": payload.config})
-            db.commit()
+            access_repo.create(db,
+                             id=control_id,
+                             site_id=payload.site_id,
+                             store_id=payload.store_id,
+                             type=payload.type,
+                             config=payload.config)
             logger.info("access_control_created", extra={"control_id": control_id})
             return {"control_id": control_id, "created": True}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Access control failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/user-access-grants")
-async def upsert_user_access_grant_v2(payload: UserAccessGrantPayload = Body(...)):
+@app.put("/provisioning/user-access-grants")
+async def upsert_user_access_grant_v2(payload: UserAccessGrantPayload = Body(...), db: Session = Depends(get_db)):
     """Create or update a User Access Grant (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Validate user and access control exist
-        if not db.query(UserV2).filter(UserV2.user_id == payload.user_id).one_or_none():
-            raise HTTPException(status_code=400, detail="User not found")
-        if not db.execute(text("SELECT id FROM access_controls WHERE id=:id"), {"id": payload.access_control_id}).first():
-            raise HTTPException(status_code=400, detail="Access control not found")
+        user_repo = RepositoryFactory.get_user_repository()
+        access_repo = RepositoryFactory.get_access_control_repository()
         
+        if not user_repo.get_by_id(db, payload.user_id):
+            raise HTTPException(status_code=400, detail="User not found")
+        if not access_repo.get_by_id(db, payload.access_control_id):
+            raise HTTPException(status_code=400, detail="Access control not found")
+
         # Check if grant exists
+        grant_repo = RepositoryFactory.get_user_access_grant_repository()
         existing = db.execute(text("""
             SELECT id FROM user_access_grants 
             WHERE user_id=:u AND access_control_id=:ac
@@ -910,7 +943,7 @@ async def upsert_user_access_grant_v2(payload: UserAccessGrantPayload = Body(...
         if existing:
             logger.info("user_access_grant_exists", extra={"id": existing[0]})
             return {"id": existing[0], "exists": True}
-        
+
         # Create new grant
         grant_id = str(uuid.uuid4())
         db.execute(text("""
@@ -921,40 +954,47 @@ async def upsert_user_access_grant_v2(payload: UserAccessGrantPayload = Body(...
         db.commit()
         logger.info("user_access_grant_created", extra={"grant_id": grant_id})
         return {"grant_id": grant_id, "created": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User access grant failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/scenarios/{scenario_id}")
-async def upsert_scenario_v2(scenario_id: str = Path(...), payload: ScenarioPayload = Body(...)):
+@app.put("/provisioning/scenarios/{scenario_id}")
+async def upsert_scenario_v2(scenario_id: str = Path(...), payload: ScenarioPayload = Body(...), db: Session = Depends(get_db)):
     """Create or update a Scenario (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Check if scenario exists
-        existing = db.execute(text("""
-            SELECT id FROM scenarios WHERE id=:id
-        """), {"id": scenario_id}).first()
+        scenario_repo = RepositoryFactory.get_scenario_repository()
+        existing = scenario_repo.get_by_id(db, scenario_id)
         
         if existing:
             # Update existing scenario
-            db.execute(text("""
-                UPDATE scenarios 
-                SET code=:code, name=:name, config=:config
-                WHERE id=:id
-            """), {"id": scenario_id, "code": payload.code, "name": payload.name, "config": payload.config})
-            db.commit()
+            scenario_repo.update(db, scenario_id,
+                               code=payload.code,
+                               name=payload.name,
+                               config=payload.config)
             logger.info("scenario_updated", extra={"scenario_id": scenario_id})
             return {"scenario_id": scenario_id, "updated": True}
         else:
             # Create new scenario
-            db.execute(text("""
-                INSERT INTO scenarios(id, code, name, config)
-                VALUES(:id,:code,:name,:config)
-            """), {"id": scenario_id, "code": payload.code, "name": payload.name, "config": payload.config})
-            db.commit()
+            scenario_repo.create(db,
+                               id=scenario_id,
+                               code=payload.code,
+                               name=payload.name,
+                               config=payload.config)
             logger.info("scenario_created", extra={"scenario_id": scenario_id})
             return {"scenario_id": scenario_id, "created": True}
+            
+    except Exception as e:
+        logger.error(f"Scenario failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.put("/provisioning/v2/zeroque-rails/{rail_id}")
-async def upsert_zeroque_rail_v2(rail_id: str = Path(...), payload: ZeroqueRailPayload = Body(...)):
+@app.put("/provisioning/zeroque-rails/{rail_id}")
+async def upsert_zeroque_rail_v2(rail_id: str = Path(...), payload: ZeroqueRailPayload = Body(...), db: Session = Depends(get_db)):
     """Create or update a ZeroQue Rail (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Check if rail exists
         existing = db.execute(text("""
             SELECT id FROM zeroque_rails WHERE id=:id
@@ -979,19 +1019,23 @@ async def upsert_zeroque_rail_v2(rail_id: str = Path(...), payload: ZeroqueRailP
             db.commit()
             logger.info("zeroque_rail_created", extra={"rail_id": rail_id})
             return {"rail_id": rail_id, "created": True}
+            
+    except Exception as e:
+        logger.error(f"ZeroQue rail failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # Enhanced monitoring and management endpoints
-@app.get("/provisioning/v2/circuit-breakers")
+@app.get("/provisioning/circuit-breakers")
 async def get_circuit_breakers():
     """Get circuit breaker status"""
     return service_circuit_breaker.get_all_states()
 
-@app.get("/provisioning/v2/events/metrics")
+@app.get("/provisioning/events/metrics")
 async def get_event_metrics():
     """Get event system metrics"""
     return service_bus.get_service_metrics()
 
-@app.get("/provisioning/v2/sagas/{saga_id}")
+@app.get("/provisioning/sagas/{saga_id}")
 async def get_saga_status(saga_id: str):
     """Get saga execution status"""
     status = saga_orchestrator.get_saga_status(saga_id)
@@ -999,105 +1043,295 @@ async def get_saga_status(saga_id: str):
         raise HTTPException(status_code=404, detail="Saga not found")
     return status
 
-@app.get("/provisioning/v2/events/{entity_id}")
+@app.get("/provisioning/events/{entity_id}")
 async def get_entity_events(entity_id: str, limit: int = 100):
     """Get events for an entity"""
     events = await event_store.get_events(entity_id=entity_id, limit=limit)
     return {"entity_id": entity_id, "events": events}
 
-@app.get("/provisioning/v2/services")
+@app.get("/provisioning/services")
 async def get_services():
     """Get all registered services"""
     return service_registry.get_all_services()
 
-@app.get("/provisioning/v2/system/health")
+@app.get("/provisioning/system/health")
 async def get_system_health():
     """Get overall system health"""
     return await health_monitor.check_system_health()
 
 # ---------------- V2 List Endpoints ----------------
-@app.get("/provisioning/v2/tenants")
-async def list_tenants_v2(limit: int = Query(100)):
+@app.get("/provisioning/tenants")
+async def list_tenants_v2(limit: int = Query(100), db: Session = Depends(get_db)):
     """List tenants (V2 architecture)"""
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT tenant_id, name, type, active, scenario_id, created_at FROM tenants_new 
-            ORDER BY created_at DESC LIMIT :l
-        """), {"l": limit}).all()
-        return [{"tenant_id": r[0], "name": r[1], "type": r[2], "active": r[3], "scenario_id": r[4], "created_at": r[5]} for r in rows]
+    try:
+        tenant_repo = RepositoryFactory.get_tenant_repository()
+        tenants = tenant_repo.get_all(db, limit)
+        
+        return [
+            {
+                "tenant_id": str(tenant.tenant_id),
+                "name": tenant.name,
+                "type": tenant.type,
+                "active": tenant.active,
+                "created_at": tenant.created_at
+            }
+            for tenant in tenants
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list tenants: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/sites")
-async def list_sites_v2(limit: int = Query(200)):
+@app.get("/provisioning/sites")
+async def list_sites_v2(limit: int = Query(200), db: Session = Depends(get_db)):
     """List sites (V2 architecture)"""
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT site_id, name, geo, active, created_at FROM sites_new 
-            ORDER BY created_at DESC LIMIT :l
-        """), {"l": limit}).all()
-        return [{"site_id": r[0], "name": r[1], "geo": r[2], "active": r[3], "created_at": r[4]} for r in rows]
+    try:
+        site_repo = RepositoryFactory.get_site_repository()
+        sites = site_repo.get_all(db, limit)
+        
+        return [
+            {
+                "site_id": str(site.site_id),
+                "tenant_id": str(site.tenant_id),
+                "name": site.name,
+                "site_type": site.site_type,
+                "geo": site.geo,
+                "created_at": site.created_at
+            }
+            for site in sites
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list sites: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/stores")
-async def list_stores_v2(limit: int = Query(200)):
+@app.get("/provisioning/stores")
+async def list_stores_v2(limit: int = Query(200), db: Session = Depends(get_db)):
     """List stores (V2 architecture)"""
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT store_id, name, timezone, active, created_at FROM stores_new 
-            ORDER BY created_at DESC LIMIT :l
-        """), {"l": limit}).all()
-        return [{"store_id": r[0], "name": r[1], "timezone": r[2], "active": r[3], "created_at": r[4]} for r in rows]
+    try:
+        store_repo = RepositoryFactory.get_store_repository()
+        stores = store_repo.get_all(db, limit)
+        
+        return [
+            {
+                "store_id": str(store.store_id),
+                "site_id": str(store.site_id),
+                "name": store.name,
+                "store_type": store.store_type,
+                "geo": store.geo,
+                "created_at": store.created_at
+            }
+            for store in stores
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list stores: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/users")
-async def list_users_v2(limit: int = Query(200)):
+@app.get("/provisioning/users")
+async def list_users_v2(limit: int = Query(200), db: Session = Depends(get_db)):
     """List users (V2 architecture)"""
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT user_id, email, display_name, active, created_at FROM users_new 
-            ORDER BY created_at DESC LIMIT :l
-        """), {"l": limit}).all()
-        return [{"user_id": r[0], "email": r[1], "display_name": r[2], "active": r[3], "created_at": r[4]} for r in rows]
+    try:
+        user_repo = RepositoryFactory.get_user_repository()
+        users = user_repo.get_all(db, limit)
+        
+        return [
+            {
+                "user_id": str(user.user_id),
+                "email": user.email,
+                "display_name": user.display_name,
+                "active": user.active,
+                "created_at": user.created_at
+            }
+            for user in users
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list users: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/roles")
-async def list_roles_v2(limit: int = Query(200)):
+@app.get("/provisioning/roles")
+async def list_roles_v2(limit: int = Query(200), db: Session = Depends(get_db)):
     """List roles (V2 architecture)"""
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT role_id, code, description, created_at FROM roles_new 
-            ORDER BY created_at DESC LIMIT :l
-        """), {"l": limit}).all()
-        return [{"role_id": r[0], "code": r[1], "description": r[2], "created_at": r[3]} for r in rows]
+    try:
+        role_repo = RepositoryFactory.get_role_repository()
+        roles = role_repo.get_all(db, limit)
+        
+        return [
+            {
+                "role_id": str(role.role_id),
+                "code": role.code,
+                "description": role.description,
+                "created_at": role.created_at
+            }
+            for role in roles
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list roles: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/vendors")
-async def list_vendors_v2(tenant_id: Optional[str] = Query(None), limit: int = Query(200)):
+@app.get("/provisioning/vendors")
+async def list_vendors_v2(tenant_id: Optional[str] = Query(None), limit: int = Query(200), db: Session = Depends(get_db)):
     """List vendors (V2 architecture)"""
-    with SessionLocal() as db:
+    try:
+        vendor_repo = RepositoryFactory.get_vendor_repository()
+        
         if tenant_id:
-            rows = db.execute(text("""
-                SELECT vendor_id, tenant_id, name, description, rating, active, created_at FROM vendors 
-                WHERE tenant_id=:t ORDER BY created_at DESC LIMIT :l
-            """), {"t": tenant_id, "l": limit}).all()
+            vendors = vendor_repo.get_by_tenant(db, tenant_id)
         else:
-            rows = db.execute(text("""
-                SELECT vendor_id, tenant_id, name, description, rating, active, created_at FROM vendors 
-                ORDER BY created_at DESC LIMIT :l
-            """), {"l": limit}).all()
-        return [{"vendor_id": r[0], "tenant_id": r[1], "name": r[2], "description": r[3], "rating": r[4], "active": r[5], "created_at": r[6]} for r in rows]
+            vendors = vendor_repo.get_all(db, limit)
+        
+        return [
+            {
+                "vendor_id": str(vendor.vendor_id),
+                "tenant_id": str(vendor.tenant_id),
+                "name": vendor.name,
+                "description": vendor.description,
+                "rating": vendor.rating,
+                "active": vendor.active,
+                "created_at": vendor.created_at
+            }
+            for vendor in vendors
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list vendors: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/provisioning/v2/role-assignments")
-async def list_role_assignments_v2(user_id: Optional[str] = Query(None), limit: int = Query(200)):
+@app.get("/provisioning/role-assignments")
+async def list_role_assignments_v2(user_id: Optional[str] = Query(None), limit: int = Query(200), db: Session = Depends(get_db)):
     """List role assignments (V2 architecture)"""
-    with SessionLocal() as db:
+    try:
+        role_assignment_repo = RepositoryFactory.get_role_assignment_repository()
+        
         if user_id:
-            rows = db.execute(text("""
-                SELECT id, user_id, role_id, scope_type, scope_id, created_at FROM role_assignments 
-                WHERE user_id=:u ORDER BY created_at DESC LIMIT :l
+            # Get assignments for specific user
+            assignments = db.execute(text("""
+                SELECT id, user_id, role_id, scope_type, scope_id FROM role_assignments 
+                WHERE user_id=:u ORDER BY id DESC LIMIT :l
             """), {"u": user_id, "l": limit}).all()
         else:
-            rows = db.execute(text("""
-                SELECT id, user_id, role_id, scope_type, scope_id, created_at FROM role_assignments 
-                ORDER BY created_at DESC LIMIT :l
+            # Get all assignments
+            assignments = db.execute(text("""
+                SELECT id, user_id, role_id, scope_type, scope_id FROM role_assignments 
+                ORDER BY id DESC LIMIT :l
             """), {"l": limit}).all()
-        return [{"id": r[0], "user_id": r[1], "role_id": r[2], "scope_type": r[3], "scope_id": r[4], "created_at": r[5]} for r in rows]
+        
+        return [
+            {
+                "id": str(assignment[0]),
+                "user_id": str(assignment[1]),
+                "role_id": str(assignment[2]),
+                "scope_type": assignment[3],
+                "scope_id": str(assignment[4]) if assignment[4] else None
+            }
+            for assignment in assignments
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list role assignments: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+# ---------------- Additional List Endpoints ----------------
+@app.get("/provisioning/scenarios")
+async def list_scenarios_v2(limit: int = Query(200), db: Session = Depends(get_db)):
+    """List scenarios (V2 architecture)"""
+    try:
+        scenario_repo = RepositoryFactory.get_scenario_repository()
+        scenarios = scenario_repo.get_all(db, limit)
+        
+        return [
+            {
+                "id": str(scenario.id),
+                "code": scenario.code,
+                "name": scenario.name,
+                "config": scenario.config,
+                "created_at": scenario.created_at
+            }
+            for scenario in scenarios
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list scenarios: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/provisioning/erp-integrations")
+async def list_erp_integrations_v2(tenant_id: Optional[str] = Query(None), limit: int = Query(200), db: Session = Depends(get_db)):
+    """List ERP integrations (V2 architecture)"""
+    try:
+        erp_repo = RepositoryFactory.get_erp_integration_repository()
+        
+        if tenant_id:
+            integrations = erp_repo.get_by_tenant(db, tenant_id)
+        else:
+            integrations = erp_repo.get_all(db, limit)
+        
+        return [
+            {
+                "id": str(integration.id),
+                "tenant_id": str(integration.tenant_id) if integration.tenant_id else None,
+                "vendor_id": str(integration.vendor_id) if integration.vendor_id else None,
+                "type": integration.type,
+                "config": integration.config,
+                "active": integration.active,
+                "last_sync_at": integration.last_sync_at,
+                "created_at": integration.created_at
+            }
+            for integration in integrations
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list ERP integrations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/provisioning/access-controls")
+async def list_access_controls_v2(site_id: Optional[str] = Query(None), store_id: Optional[str] = Query(None), limit: int = Query(200), db: Session = Depends(get_db)):
+    """List access controls (V2 architecture)"""
+    try:
+        access_repo = RepositoryFactory.get_access_control_repository()
+        
+        if site_id:
+            controls = access_repo.get_by_site(db, site_id)
+        elif store_id:
+            controls = access_repo.get_by_store(db, store_id)
+        else:
+            controls = access_repo.get_all(db, limit)
+        
+        return [
+            {
+                "id": str(control.id),
+                "site_id": str(control.site_id) if control.site_id else None,
+                "store_id": str(control.store_id) if control.store_id else None,
+                "type": control.type,
+                "config": control.config,
+                "active": control.active,
+                "created_at": control.created_at
+            }
+            for control in controls
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list access controls: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/provisioning/user-access-grants")
+async def list_user_access_grants_v2(user_id: Optional[str] = Query(None), limit: int = Query(200), db: Session = Depends(get_db)):
+    """List user access grants (V2 architecture)"""
+    try:
+        grant_repo = RepositoryFactory.get_user_access_grant_repository()
+        
+        if user_id:
+            grants = grant_repo.get_by_user(db, user_id)
+        else:
+            grants = grant_repo.get_all(db, limit)
+        
+        return [
+            {
+                "id": str(grant.id),
+                "user_id": str(grant.user_id),
+                "access_control_id": str(grant.access_control_id),
+                "grant_type": grant.grant_type,
+                "valid_from": grant.valid_from,
+                "valid_until": grant.valid_until,
+                "created_at": grant.created_at
+            }
+            for grant in grants
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list user access grants: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8202)
+    uvicorn.run(app, host="0.0.0.0", port=8204)

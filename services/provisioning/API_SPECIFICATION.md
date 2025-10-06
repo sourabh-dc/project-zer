@@ -1,26 +1,25 @@
-# Provisioning Service API Specification
+# ZeroQue Provisioning Service API Specification
 
 ## Overview
 
-The Provisioning Service manages tenant onboarding, site/store provisioning, and user management in the Zeroque V2 multi-tenant marketplace architecture.
+The ZeroQue Provisioning Service provides V2 multi-tenant marketplace architecture with scenario-specific tenant, site, and store management. The service has been enhanced with:
 
-**Base URL:** `http://localhost:8201`  
-**Version:** 2.0.0  
-**Service:** provisioning
+- **Repository Pattern**: Clean separation of data access logic from business logic
+- **Service Layer**: Business logic orchestration and transaction management
+- **Dependency Injection**: Proper session management with FastAPI dependencies
+- **Enhanced Error Handling**: Custom exception handlers with proper HTTP status codes
+- **Production-Ready**: Transaction management, rollback mechanisms, and consistent error handling
 
-## Authentication
+**Base URL**: `http://localhost:8201`  
+**Version**: 2.0.0  
+**Architecture**: Multi-tenant marketplace with scenario-specific types
 
-All endpoints require proper tenant context via RLS (Row-Level Security).
+## Health Endpoints
 
-## Endpoints
+### GET /health
 
-### Health & Status
-
-#### GET /health
-
-**Description:** Service health check endpoint
-
-**Response:**
+**Description**: Service health check  
+**Response**:
 
 ```json
 {
@@ -31,408 +30,858 @@ All endpoints require proper tenant context via RLS (Row-Level Security).
 }
 ```
 
-### Tenant Management
+### GET /readiness
 
-#### GET /provisioning/v2/tenants
+**Description**: Service readiness check  
+**Response**:
 
-**Description:** List all tenants
+```json
+{
+  "service": "provisioning",
+  "db": true,
+  "redis": true
+}
+```
 
-**Response:**
+## Tenant Types
+
+The system supports the following tenant types:
+
+- `end_user`: End users with budgets and approvals
+- `retailer`: Retailers with guest access and loyalty programs
+- `distributor`: Distributors with control tower and global catalog
+- `custom`: Custom configuration for special use cases
+
+## Site Types
+
+The system supports the following site types:
+
+- `onsite`: End users with budgets (M:N tenant_sites)
+- `unmanned`: Retailer public guest access
+- `distributor_centre`: Distributor client installs with ERP sync
+
+## Store Types
+
+The system supports the following store types:
+
+- `unmanned_onsite`: Budgets and approvals for end users
+- `unmanned_public`: Guest access and loyalty for retailers
+- `unmanned_distributed`: Global catalog for distributors
+
+## Tenant Management
+
+### PUT /provisioning/tenants/{tenant_id}
+
+**Description**: Create or update a tenant  
+**Request Body**:
+
+```json
+{
+  "name": "Acme Corporation",
+  "type": "end_user",
+  "scenario_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response**:
+
+```json
+{
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "name": "Acme Corporation",
+  "type": "end_user",
+  "created": true,
+  "saga_id": "tenant_provision_1696248000"
+}
+```
+
+### PUT /provisioning/tenants/{tenant_id}
+
+**Description**: Create or update a tenant  
+**Parameters**:
+
+- `tenant_id` (path): Tenant identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "name": "string (required)",
+  "type": "string (optional, default: 'customer') - end_user, retailer, distributor, custom",
+  "scenario_id": "string (optional)"
+}
+```
+
+**Response**:
+
+```json
+{
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "name": "Acme Corporation",
+  "type": "end_user",
+  "created": true
+}
+```
+
+### GET /provisioning/tenants
+
+**Description**: List all tenants  
+**Query Parameters**:
+
+- `limit` (integer, optional): Maximum number of tenants to return (default: 100)
+
+**Response**:
 
 ```json
 [
   {
-    "tenant_id": "string",
-    "name": "string",
-    "type": "marketplace|customer",
-    "active": true,
-    "scenario_id": "string|null",
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
+    "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+    "name": "Acme Corporation",
+    "type": "end_user"
   }
 ]
 ```
 
-#### POST /provisioning/v2/tenants
+## Site Management
 
-**Description:** Create a new tenant
+### PUT /provisioning/sites/{site_id}
 
-**Request Body:**
+**Description**: Create or update a site  
+**Parameters**:
 
-```json
-{
-  "name": "string",
-  "type": "marketplace|customer",
-  "active": true,
-  "scenario_id": "string|null"
-}
-```
+- `site_id` (path): Site identifier (UUID)
+- `tenant_id` (query): Tenant identifier (UUID, required)
 
-**Response:**
+**Request Body**:
 
 ```json
 {
-  "tenant_id": "string",
-  "name": "string",
-  "type": "string",
-  "active": true,
-  "scenario_id": "string|null",
-  "created_at": "2025-10-01T05:21:19.093243+00:00"
+  "name": "string (required)",
+  "site_type": "string (optional, default: 'unmanned') - onsite, unmanned, distributor_centre",
+  "geo": {
+    "lat": 51.5074,
+    "lng": -0.1278,
+    "address": "string (optional)"
+  }
 }
 ```
 
-#### PUT /provisioning/v2/tenants/{tenant_id}
-
-**Description:** Update an existing tenant
-
-**Path Parameters:**
-
-- `tenant_id` (string): The tenant ID
-
-**Request Body:**
+**Response**:
 
 ```json
 {
-  "name": "string",
-  "type": "marketplace|customer",
-  "active": true,
-  "scenario_id": "string|null"
+  "site_id": "550e8400-e29b-41d4-a716-446655440002",
+  "name": "Main Campus",
+  "site_type": "onsite",
+  "geo": {
+    "lat": 51.5074,
+    "lng": -0.1278
+  },
+  "created": true
 }
 ```
 
-**Response:**
+### GET /provisioning/sites
 
-```json
-{
-  "tenant_id": "string",
-  "name": "string",
-  "type": "string",
-  "active": true,
-  "scenario_id": "string|null",
-  "created_at": "2025-10-01T05:21:19.093243+00:00",
-  "updated_at": "2025-10-01T05:21:19.093243+00:00"
-}
-```
+**Description**: List all sites  
+**Query Parameters**:
 
-#### GET /provisioning/v2/tenants/{tenant_id}
+- `limit` (integer, optional): Maximum number of sites to return (default: 200)
 
-**Description:** Get tenant details
-
-**Path Parameters:**
-
-- `tenant_id` (string): The tenant ID
-
-**Response:**
-
-```json
-{
-  "tenant_id": "string",
-  "name": "string",
-  "type": "string",
-  "active": true,
-  "scenario_id": "string|null",
-  "created_at": "2025-10-01T05:21:19.093243+00:00",
-  "updated_at": "2025-10-01T05:21:19.093243+00:00"
-}
-```
-
-### Site Management
-
-#### GET /provisioning/v2/sites
-
-**Description:** List all sites
-
-**Response:**
+**Response**:
 
 ```json
 [
   {
-    "site_id": "string",
-    "name": "string",
-    "site_type": "warehouse|office|retail",
-    "address": "string",
-    "geo_lat": 0.0,
-    "geo_lng": 0.0,
-    "timezone": "string",
-    "active": true,
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
+    "site_id": "550e8400-e29b-41d4-a716-446655440002",
+    "name": "Main Campus",
+    "site_type": "onsite",
+    "geo": {
+      "lat": 51.5074,
+      "lng": -0.1278
+    }
   }
 ]
 ```
 
-#### POST /provisioning/v2/sites
+## Store Management
 
-**Description:** Create a new site
+### PUT /provisioning/stores/{store_id}
 
-**Request Body:**
+**Description**: Create or update a store  
+**Parameters**:
+
+- `store_id` (path): Store identifier (UUID)
+- `site_id` (query): Site identifier (UUID, required)
+
+**Request Body**:
 
 ```json
 {
-  "name": "string",
-  "site_type": "warehouse|office|retail",
-  "address": "string",
-  "geo_lat": 0.0,
-  "geo_lng": 0.0,
-  "timezone": "string",
-  "active": true
+  "name": "string (required)",
+  "store_type": "string (optional, default: 'cashierless') - unmanned_onsite, unmanned_public, unmanned_distributed",
+  "geo": {
+    "lat": 51.5074,
+    "lng": -0.1278,
+    "address": "string (optional)"
+  }
 }
 ```
 
-**Response:**
+**Response**:
+
+```json
+{
+  "store_id": "550e8400-e29b-41d4-a716-446655440003",
+  "name": "ToolRoom",
+  "store_type": "unmanned_onsite",
+  "geo": {
+    "lat": 51.5074,
+    "lng": -0.1278
+  },
+  "created": true
+}
+```
+
+### GET /provisioning/stores
+
+**Description**: List all stores  
+**Query Parameters**:
+
+- `limit` (integer, optional): Maximum number of stores to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "store_id": "550e8400-e29b-41d4-a716-446655440003",
+    "name": "ToolRoom",
+    "store_type": "unmanned_onsite",
+    "geo": {
+      "lat": 51.5074,
+      "lng": -0.1278
+    }
+  }
+]
+```
+
+## User Management
+
+### PUT /provisioning/users/{user_id}
+
+**Description**: Create or update a user  
+**Parameters**:
+
+- `user_id` (path): User identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "email": "string (required)",
+  "display_name": "string (required)"
+}
+```
+
+**Response**:
+
+```json
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440004",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "created": true
+}
+```
+
+### GET /provisioning/users
+
+**Description**: List all users  
+**Query Parameters**:
+
+- `limit` (integer, optional): Maximum number of users to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "user_id": "550e8400-e29b-41d4-a716-446655440004",
+    "email": "user@example.com",
+    "display_name": "John Doe"
+  }
+]
+```
+
+## Vendor Management
+
+### PUT /provisioning/vendors/{vendor_id}
+
+**Description**: Create or update a vendor  
+**Parameters**:
+
+- `vendor_id` (path): Vendor identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "name": "string (required)",
+  "description": "string (optional)",
+  "rating": 4.5
+}
+```
+
+**Response**:
+
+```json
+{
+  "vendor_id": "550e8400-e29b-41d4-a716-446655440005",
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "name": "Vendor Corp",
+  "created": true
+}
+```
+
+### GET /provisioning/vendors
+
+**Description**: List all vendors  
+**Query Parameters**:
+
+- `tenant_id` (string, optional): Filter by tenant ID
+- `limit` (integer, optional): Maximum number of vendors to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "vendor_id": "550e8400-e29b-41d4-a716-446655440005",
+    "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+    "name": "Vendor Corp",
+    "description": "Test vendor",
+    "rating": 4.5,
+    "active": true
+  }
+]
+```
+
+## Scenario Management
+
+### PUT /provisioning/scenarios/{scenario_id}
+
+**Description**: Create or update a scenario  
+**Parameters**:
+
+- `scenario_id` (path): Scenario identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "code": "string (required)",
+  "name": "string (required)",
+  "config": {
+    "feature": "string (optional)"
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "scenario_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created": true
+}
+```
+
+### GET /provisioning/scenarios
+
+**Description**: List all scenarios  
+**Query Parameters**:
+
+- `limit` (integer, optional): Maximum number of scenarios to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "code": "test_scenario",
+    "name": "Test Scenario",
+    "config": {
+      "feature": "test"
+    },
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+## ERP Integration Management
+
+### PUT /provisioning/erp-integrations/{integration_id}
+
+**Description**: Create or update an ERP integration  
+**Parameters**:
+
+- `integration_id` (path): Integration identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "tenant_id": "string (optional)",
+  "vendor_id": "string (optional)",
+  "type": "string (required) - ERP or CRM",
+  "config": {
+    "api_key": "string (optional)",
+    "endpoint": "string (optional)"
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "integration_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created": true
+}
+```
+
+### GET /provisioning/erp-integrations
+
+**Description**: List ERP integrations  
+**Query Parameters**:
+
+- `tenant_id` (string, optional): Filter by tenant ID
+- `limit` (integer, optional): Maximum number of integrations to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+    "vendor_id": null,
+    "type": "ERP",
+    "config": {
+      "api_key": "test"
+    },
+    "active": true,
+    "last_sync_at": null,
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+## Access Control Management
+
+### PUT /provisioning/access-controls/{control_id}
+
+**Description**: Create or update an access control device  
+**Parameters**:
+
+- `control_id` (path): Control identifier (UUID)
+
+**Request Body**:
+
+```json
+{
+  "site_id": "string (optional)",
+  "store_id": "string (optional)",
+  "type": "string (required) - gate, RFID, lock, card_reader",
+  "config": {
+    "device_id": "string (optional)",
+    "settings": "object (optional)"
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "control_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created": true
+}
+```
+
+### GET /provisioning/access-controls
+
+**Description**: List access controls  
+**Query Parameters**:
+
+- `site_id` (string, optional): Filter by site ID
+- `store_id` (string, optional): Filter by store ID
+- `limit` (integer, optional): Maximum number of controls to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "site_id": "550e8400-e29b-41d4-a716-446655440002",
+    "store_id": null,
+    "type": "gate",
+    "config": {
+      "device_id": "gate_001"
+    },
+    "active": true,
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+## User Access Grant Management
+
+### PUT /provisioning/user-access-grants
+
+**Description**: Create or update a user access grant  
+**Request Body**:
+
+```json
+{
+  "user_id": "string (required)",
+  "access_control_id": "string (required)",
+  "grant_type": "string (optional, default: 'permanent') - permanent or temporary",
+  "valid_until": "datetime (optional)"
+}
+```
+
+**Response**:
+
+```json
+{
+  "grant_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created": true
+}
+```
+
+### GET /provisioning/user-access-grants
+
+**Description**: List user access grants  
+**Query Parameters**:
+
+- `user_id` (string, optional): Filter by user ID
+- `limit` (integer, optional): Maximum number of grants to return (default: 200)
+
+**Response**:
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "user_id": "550e8400-e29b-41d4-a716-446655440004",
+    "access_control_id": "550e8400-e29b-41d4-a716-446655440005",
+    "grant_type": "permanent",
+    "valid_from": "2024-01-01T00:00:00Z",
+    "valid_until": null,
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+## Examples
+
+**Example**:
+
+```bash
+curl -X PUT "http://localhost:8201/provisioning/v2/tenants/tenant-retailer-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test Retailer Tenant",
+    "type": "retailer"
+  }'
+```
+
+## Site Management
+
+### PUT /provisioning/sites/{site_id}
+
+**Description**: Create or update a site  
+**Parameters**:
+
+- `site_id` (path): Site identifier (string, max 100 chars)
+- `tenant_id` (query): Tenant identifier (required)
+
+**Request Body**:
+
+```json
+{
+  "name": "string (required)",
+  "site_type": "string (optional, default: 'unmanned')",
+  "geo": {
+    "lat": "number (optional)",
+    "lng": "number (optional)",
+    "address": "string (optional)"
+  }
+}
+```
+
+**Site Types**:
+
+- `onsite`: Internal 24/7 access
+- `unmanned`: Public-facing guest access
+- `warehouse`: Storage facilities
+- `distribution_center`: Client installs
+- `custom`: Flexible type
+
+**Response**:
 
 ```json
 {
   "site_id": "string",
   "name": "string",
   "site_type": "string",
-  "address": "string",
-  "geo_lat": 0.0,
-  "geo_lng": 0.0,
-  "timezone": "string",
-  "active": true,
-  "created_at": "2025-10-01T05:21:19.093243+00:00"
+  "geo": "object (optional)",
+  "created": true
 }
 ```
 
-### Store Management
+**Example**:
 
-#### GET /provisioning/v2/stores
+```bash
+curl -X PUT "http://localhost:8201/provisioning/v2/sites/site-unmanned-001?tenant_id=tenant-retailer-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test Unmanned Site",
+    "site_type": "unmanned",
+    "geo": {
+      "lat": 51.5074,
+      "lng": -0.1278,
+      "address": "123 Retail St, London, UK"
+    }
+  }'
+```
 
-**Description:** List all stores
+### GET /provisioning/sites
 
-**Response:**
+**Description**: List sites  
+**Parameters**:
+
+- `limit` (query): Maximum number of sites to return (default: 200)
+
+**Response**:
 
 ```json
 [
   {
-    "store_id": "string",
+    "site_id": "string",
     "name": "string",
-    "store_type": "cashierless|traditional|warehouse",
-    "address": "string",
-    "geo_lat": 0.0,
-    "geo_lng": 0.0,
-    "timezone": "string",
-    "active": true,
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
+    "geo": "object (optional)",
+    "active": "boolean",
+    "created_at": "datetime"
   }
 ]
 ```
 
-#### POST /provisioning/v2/stores
+## Store Management
 
-**Description:** Create a new store
+### PUT /provisioning/stores/{store_id}
 
-**Request Body:**
+**Description**: Create or update a store  
+**Parameters**:
+
+- `store_id` (path): Store identifier (string, max 100 chars)
+- `site_id` (query): Site identifier (required)
+
+**Request Body**:
 
 ```json
 {
-  "name": "string",
-  "store_type": "cashierless|traditional|warehouse",
-  "address": "string",
-  "geo_lat": 0.0,
-  "geo_lng": 0.0,
-  "timezone": "string",
-  "active": true
+  "name": "string (required)",
+  "store_type": "string (optional, default: 'cashierless')",
+  "geo": {
+    "lat": "number (optional)",
+    "lng": "number (optional)",
+    "address": "string (optional)"
+  },
+  "timezone": "string (optional)"
 }
 ```
 
-**Response:**
+**Store Types**:
+
+- `cashierless`: 24/7 employee access
+- `vending`: Automated vending machines
+- `kiosk`: Self-service units
+- `traditional`: Standard retail with cashiers
+- `custom`: Flexible type
+
+**Response**:
 
 ```json
 {
   "store_id": "string",
   "name": "string",
   "store_type": "string",
-  "address": "string",
-  "geo_lat": 0.0,
-  "geo_lng": 0.0,
-  "timezone": "string",
-  "active": true,
-  "created_at": "2025-10-01T05:21:19.093243+00:00"
+  "geo": "object (optional)",
+  "created": true
 }
 ```
 
-### User Management
+**Example**:
 
-#### GET /provisioning/v2/users
+```bash
+curl -X PUT "http://localhost:8201/provisioning/v2/stores/store-kiosk-001?site_id=site-unmanned-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test Kiosk Store",
+    "store_type": "kiosk",
+    "geo": {
+      "lat": 51.5074,
+      "lng": -0.1278,
+      "address": "456 Kiosk St, London, UK"
+    }
+  }'
+```
 
-**Description:** List all users
+### GET /provisioning/stores
 
-**Response:**
+**Description**: List stores  
+**Parameters**:
+
+- `limit` (query): Maximum number of stores to return (default: 200)
+
+**Response**:
 
 ```json
 [
   {
-    "user_id": "string",
-    "email": "string",
-    "display_name": "string",
-    "active": true,
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
+    "store_id": "string",
+    "name": "string",
+    "active": "boolean",
+    "created_at": "datetime"
   }
 ]
 ```
 
-#### POST /provisioning/v2/users
+## User Management
 
-**Description:** Create a new user
+### PUT /provisioning/users/{user_id}
 
-**Request Body:**
+**Description**: Create or update a user  
+**Parameters**:
+
+- `user_id` (path): User identifier (UUID)
+
+**Request Body**:
 
 ```json
 {
-  "email": "string",
-  "display_name": "string",
-  "active": true
+  "email": "string (required)",
+  "display_name": "string (required)"
 }
 ```
 
-**Response:**
+**Response**:
 
 ```json
 {
   "user_id": "string",
   "email": "string",
   "display_name": "string",
-  "active": true,
-  "created_at": "2025-10-01T05:21:19.093243+00:00"
+  "created": true
 }
 ```
 
-### ERP Integration Management
+## Vendor Management
 
-#### GET /provisioning/v2/erp-integrations
+### PUT /provisioning/vendors/{vendor_id}
 
-**Description:** List all ERP integrations
+**Description**: Create or update a vendor  
+**Parameters**:
 
-**Response:**
+- `vendor_id` (path): Vendor identifier (UUID)
 
-```json
-[
-  {
-    "id": "string",
-    "tenant_id": "string|null",
-    "vendor_id": "string|null",
-    "type": "ERP|CRM",
-    "config": {},
-    "active": true,
-    "last_sync_at": "2025-10-01T05:21:19.093243+00:00|null",
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
-  }
-]
-```
-
-#### POST /provisioning/v2/erp-integrations
-
-**Description:** Create a new ERP integration
-
-**Request Body:**
+**Request Body**:
 
 ```json
 {
-  "tenant_id": "string|null",
-  "vendor_id": "string|null",
-  "type": "ERP|CRM",
-  "config": {},
-  "active": true
+  "tenant_id": "string (required)",
+  "name": "string (required)",
+  "description": "string (optional)"
 }
 ```
 
-### Access Control Management
-
-#### GET /provisioning/v2/access-controls
-
-**Description:** List all access controls
-
-**Response:**
-
-```json
-[
-  {
-    "id": "string",
-    "site_id": "string|null",
-    "store_id": "string|null",
-    "type": "gate|RFID|lock|card_reader",
-    "config": {},
-    "active": true,
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
-  }
-]
-```
-
-#### POST /provisioning/v2/access-controls
-
-**Description:** Create a new access control
-
-**Request Body:**
+**Response**:
 
 ```json
 {
-  "site_id": "string|null",
-  "store_id": "string|null",
-  "type": "gate|RFID|lock|card_reader",
-  "config": {},
-  "active": true
-}
-```
-
-### Scenario Management
-
-#### GET /provisioning/v2/scenarios
-
-**Description:** List all scenarios
-
-**Response:**
-
-```json
-[
-  {
-    "id": "string",
-    "code": "string",
-    "name": "string",
-    "config": {},
-    "created_at": "2025-10-01T05:21:19.093243+00:00"
-  }
-]
-```
-
-#### POST /provisioning/v2/scenarios
-
-**Description:** Create a new scenario
-
-**Request Body:**
-
-```json
-{
-  "code": "string",
+  "vendor_id": "string",
   "name": "string",
-  "config": {}
+  "description": "string",
+  "created": true
 }
 ```
 
-## Error Responses
+## Enhanced Error Handling
 
-All endpoints may return the following error responses:
+The service implements comprehensive error handling with custom exception handlers:
 
-### 400 Bad Request
+### HTTP Status Codes
+
+- `200 OK`: Success
+- `201 Created`: Resource created successfully
+- `400 Bad Request`: Validation error (invalid request data)
+- `404 Not Found`: Resource not found
+- `409 Conflict`: Duplicate resource error
+- `422 Unprocessable Entity`: Validation error
+- `500 Internal Server Error`: Server error
+
+### Custom Exception Types
+
+- **ValidationError**: Invalid request data or business rule violations
+- **NotFoundError**: Requested resource does not exist
+- **DuplicateError**: Resource already exists (conflict)
+- **ProvisioningError**: General provisioning service errors
+
+### Error Response Format
 
 ```json
 {
-  "detail": "Validation error message"
+  "detail": "Error message description"
 }
 ```
 
-### 404 Not Found
+### Error Examples
+
+**400 Bad Request (Validation Error)**:
 
 ```json
 {
-  "detail": "Resource not found"
+  "detail": "Tenant with name 'Test Tenant' already exists"
 }
 ```
 
-### 500 Internal Server Error
+**404 Not Found**:
 
 ```json
 {
-  "detail": "Internal server error message"
+  "detail": "Tenant 550e8400-e29b-41d4-a716-446655440000 not found"
+}
+```
+
+**409 Conflict (Duplicate Error)**:
+
+```json
+{
+  "detail": "User with email 'test@example.com' already exists"
+}
+```
+
+**500 Internal Server Error**:
+
+```json
+{
+  "detail": "Internal provisioning error"
 }
 ```
 
@@ -440,82 +889,145 @@ All endpoints may return the following error responses:
 
 ### Tenant
 
-```json
-{
-  "tenant_id": "string (UUID)",
-  "name": "string",
-  "type": "marketplace|customer",
-  "active": "boolean",
-  "scenario_id": "string (UUID)|null",
-  "created_at": "string (ISO 8601)",
-  "updated_at": "string (ISO 8601)|null"
-}
-```
+- `tenant_id`: String (100 chars, primary key)
+- `name`: String (200 chars)
+- `tenant_type`: String (50 chars, default: 'customer')
 
 ### Site
 
-```json
-{
-  "site_id": "string (UUID)",
-  "name": "string",
-  "site_type": "warehouse|office|retail",
-  "address": "string",
-  "geo_lat": "number (float)",
-  "geo_lng": "number (float)",
-  "timezone": "string",
-  "active": "boolean",
-  "created_at": "string (ISO 8601)",
-  "updated_at": "string (ISO 8601)|null"
-}
-```
+- `site_id`: String (100 chars, primary key)
+- `tenant_id`: String (100 chars, foreign key)
+- `name`: String (200 chars)
+- `site_type`: String (50 chars, default: 'unmanned')
+- `geo`: JSONB (optional)
 
 ### Store
 
+- `store_id`: String (100 chars, primary key)
+- `site_id`: String (100 chars, foreign key)
+- `name`: String (200 chars)
+- `store_type`: String (50 chars, default: 'cashierless')
+- `geo`: JSONB (optional)
+
+## Scenario-Specific Usage
+
+### Large End-User Sites
+
+- **Tenant Type**: `end_user`
+- **Site Type**: `onsite`
+- **Store Type**: `cashierless`
+- **Features**: Budget enforcement, approval workflows, 24/7 employee access
+
+### Retailers
+
+- **Tenant Type**: `retailer`
+- **Site Type**: `unmanned`
+- **Store Type**: `kiosk` or `traditional`
+- **Features**: Guest/loyalty focus, payments/analytics, public access
+
+### Distributors
+
+- **Tenant Type**: `distributor`
+- **Site Type**: `distribution_center`
+- **Store Type**: `cashierless`
+- **Features**: Global views, client installs, ERP sync
+
+## Geographic Information
+
+The `geo` field is optional and can contain:
+
 ```json
 {
-  "store_id": "string (UUID)",
-  "name": "string",
-  "store_type": "cashierless|traditional|warehouse",
-  "address": "string",
-  "geo_lat": "number (float)",
-  "geo_lng": "number (float)",
-  "timezone": "string",
-  "active": "boolean",
-  "created_at": "string (ISO 8601)",
-  "updated_at": "string (ISO 8601)|null"
+  "lat": 51.5074,
+  "lng": -0.1278,
+  "address": "123 Main St, London, UK"
 }
 ```
 
-### User
+- **lat**: Latitude coordinate (number)
+- **lng**: Longitude coordinate (number)
+- **address**: Human-readable address (string)
 
-```json
-{
-  "user_id": "string (UUID)",
-  "email": "string",
-  "display_name": "string",
-  "active": "boolean",
-  "created_at": "string (ISO 8601)",
-  "updated_at": "string (ISO 8601)|null"
-}
+## Production-Ready Features
+
+The provisioning service has been enhanced with production-ready features:
+
+### Repository Pattern
+
+- Clean separation of data access logic from business logic
+- Consistent CRUD operations across all entities
+- Proper error handling and transaction management
+- Easy testing and mocking capabilities
+
+### Service Layer
+
+- Business logic orchestration
+- Transaction management at service level
+- Validation and orchestration of multiple repository calls
+- Consistent error handling
+
+### Dependency Injection
+
+- Proper session management with FastAPI dependencies
+- Automatic session cleanup
+- Connection pooling support
+- Lifecycle management
+
+### Enhanced Error Handling
+
+- Custom exception classes for different error types
+- Consistent HTTP status codes
+- Structured error responses
+- Proper logging and monitoring
+
+### Transaction Management
+
+- Automatic rollback on errors
+- Proper transaction boundaries
+- Concurrent access handling
+- Retry logic for transient failures
+
+### Testing Examples
+
+**Complete Tenant Setup Flow**:
+
+```bash
+# 1. Create tenant
+curl -X PUT "http://localhost:8201/provisioning/tenants/tenant-001" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Test Company", "type": "end_user"}'
+
+# 2. Create site
+curl -X PUT "http://localhost:8201/provisioning/sites/site-001?tenant_id=tenant-001" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Main Office", "site_type": "onsite"}'
+
+# 3. Create store
+curl -X PUT "http://localhost:8201/provisioning/stores/store-001?site_id=site-001" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Employee Store", "store_type": "cashierless"}'
+
+# 4. Link tenant to site
+curl -X PUT "http://localhost:8201/provisioning/tenant-sites" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "tenant-001", "site_id": "site-001", "role_type": "manager"}'
+
+# 5. Link site to store
+curl -X PUT "http://localhost:8201/provisioning/site-stores" \
+  -H "Content-Type: application/json" \
+  -d '{"site_id": "site-001", "store_id": "store-001"}'
 ```
 
-## Features
+**Error Handling Examples**:
 
-- **Multi-tenant Architecture**: Full tenant isolation with RLS
-- **Enhanced Communication**: Service bus integration with event publishing
-- **Health Monitoring**: Comprehensive health checks
-- **Circuit Breaker**: Resilient external service calls
-- **Event Sourcing**: Event-driven architecture with saga support
-- **Metrics & Logging**: OpenTelemetry integration with Prometheus metrics
-- **Time-sortable UUIDs**: Uses uuid7 for better performance
-- **Timezone Support**: Full timezone-aware timestamps
+```bash
+# Duplicate tenant name (409 Conflict)
+curl -X PUT "http://localhost:8201/provisioning/tenants/tenant-002" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Test Company", "type": "end_user"}'
 
-## Service Integration
-
-The Provisioning Service integrates with:
-
-- **Observability Service**: Health monitoring and metrics
-- **Service Bus**: Event publishing and consumption
-- **Database**: PostgreSQL with RLS policies
-- **Redis**: Event streaming and caching
-
+# Invalid tenant ID (400 Bad Request)
+curl -X PUT "http://localhost:8201/provisioning/sites/site-002?tenant_id=invalid-id" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Test Site", "site_type": "retail"}'
+```
