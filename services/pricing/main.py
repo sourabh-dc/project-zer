@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text, UUID, String, Boolean, DateTime, func, JSON, BigInteger, Integer, Numeric, Float
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+from sqlalchemy.exc import SQLAlchemyError
 
 # Try to use uuid7 for time-sortable UUIDs, fallback to uuid4 if not available
 try:
@@ -57,6 +58,23 @@ from zeroque_common.middleware.usage_middleware import add_api_call_meter
 from zeroque_common.middleware.idempotency import add_idempotency_middleware
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
 
+# Custom Exceptions
+class PricingValidationError(Exception):
+    """Raised when pricing validation fails"""
+    pass
+
+class PricingNotFoundError(Exception):
+    """Raised when pricing resource is not found"""
+    pass
+
+class PricingDuplicateError(Exception):
+    """Raised when duplicate pricing resource is created"""
+    pass
+
+class PricingCalculationError(Exception):
+    """Raised when price calculation fails"""
+    pass
+
 # Service configuration
 SERVICE_NAME = "pricing"
 app = FastAPI(title="Enhanced ZeroQue Pricing Service", version="2.0.0")
@@ -87,6 +105,31 @@ add_idempotency_middleware(app, routes=[
     ("POST", "/pricing/v2/price-rules"),
     ("PUT", "/pricing/v2/price-rules"),
 ])
+
+# Custom exception handlers
+@app.exception_handler(PricingValidationError)
+async def pricing_validation_exception_handler(request, exc: PricingValidationError):
+    """Handle pricing validation errors"""
+    logger.warning(f"Pricing validation error: {exc}")
+    return HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(PricingNotFoundError)
+async def pricing_not_found_exception_handler(request, exc: PricingNotFoundError):
+    """Handle pricing not found errors"""
+    logger.warning(f"Pricing not found error: {exc}")
+    return HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(PricingDuplicateError)
+async def pricing_duplicate_exception_handler(request, exc: PricingDuplicateError):
+    """Handle pricing duplicate errors"""
+    logger.warning(f"Pricing duplicate error: {exc}")
+    return HTTPException(status_code=409, detail=str(exc))
+
+@app.exception_handler(PricingCalculationError)
+async def pricing_calculation_exception_handler(request, exc: PricingCalculationError):
+    """Handle pricing calculation errors"""
+    logger.error(f"Pricing calculation error: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
 
 # V2 SQLAlchemy Models for Pricing System
 class PricebookV2(Base):
@@ -509,12 +552,10 @@ class PriceResolver:
         """Apply price hooks for external price adjustments"""
         with SessionLocal() as db:
             hooks_query = text("""
-                SELECT hook_id, name, hook_type, hook_config, priority
+                SELECT id as hook_id, hook_type, config as hook_config
                 FROM price_hooks
                 WHERE active = true
-                AND (valid_from IS NULL OR valid_from <= :now)
-                AND (valid_until IS NULL OR valid_until > :now)
-                ORDER BY priority ASC
+                ORDER BY id ASC
             """)
             
             hooks = db.execute(hooks_query, {
@@ -673,13 +714,82 @@ class PriceResolver:
 # Initialize price resolver
 price_resolver = PriceResolver()
 
+# Database Transaction Helper
+def execute_with_rollback(db_session, operation_name: str = "database operation"):
+    """Context manager for database operations with proper rollback handling"""
+    class DatabaseTransaction:
+        def __init__(self, session, name):
+            self.session = session
+            self.name = name
+            self.committed = False
+            
+        def __enter__(self):
+            return self.session
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type is not None:
+                try:
+                    self.session.rollback()
+                    logger.error(f"Database transaction rolled back for {self.name}: {exc_val}")
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction for {self.name}: {rollback_error}")
+                return False  # Re-raise the original exception
+            else:
+                try:
+                    self.session.commit()
+                    self.committed = True
+                    logger.debug(f"Database transaction committed for {self.name}")
+                except Exception as commit_error:
+                    self.session.rollback()
+                    logger.error(f"Failed to commit transaction for {self.name}: {commit_error}")
+                    raise
+            return True
+    
+    return DatabaseTransaction(db_session, operation_name)
+
+# Validation Helpers
+def validate_uuid(uuid_string: str, field_name: str = "UUID"):
+    """Validate UUID format"""
+    try:
+        uuid.UUID(uuid_string)
+        return True
+    except ValueError:
+        raise PricingValidationError(f"Invalid {field_name} format: {uuid_string}")
+
+def validate_references_exist(db_session, references: Dict[str, str]):
+    """Validate that referenced entities exist"""
+    for entity_type, entity_id in references.items():
+        if entity_type == "tenant_id":
+            # Check if tenant exists in tenants_new table
+            result = db_session.execute(text("SELECT 1 FROM tenants_new WHERE tenant_id = :tenant_id"), {"tenant_id": entity_id}).fetchone()
+            if not result:
+                raise PricingValidationError(f"Tenant {entity_id} does not exist")
+        elif entity_type == "offer_id":
+            # Check if vendor offer exists
+            result = db_session.execute(text("SELECT 1 FROM vendor_offers WHERE offer_id = :offer_id"), {"offer_id": entity_id}).fetchone()
+            if not result:
+                raise PricingValidationError(f"Vendor offer {entity_id} does not exist")
+        elif entity_type == "store_id":
+            # Check if store exists
+            result = db_session.execute(text("SELECT 1 FROM stores WHERE store_id = :store_id"), {"store_id": entity_id}).fetchone()
+            if not result:
+                raise PricingValidationError(f"Store {entity_id} does not exist")
+
 # RLS Context Helper
 def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] = None):
     """Set Row Level Security context for database session"""
-    if tenant_id:
-        db.execute(text("SET LOCAL row_security.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-    if user_id:
-        db.execute(text("SET LOCAL row_security.user_id = :user_id"), {"user_id": user_id})
+    try:
+        if tenant_id:
+            db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+        if user_id:
+            db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
+        
+        # Enable RLS for the session
+        db.execute(text("SET row_security = on"))
+        
+    except Exception as e:
+        logger.warning(f"Failed to set RLS context: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to set security context")
 
 # Pydantic Models for API
 class PricebookV2Payload(BaseModel):
@@ -779,91 +889,97 @@ async def resolve_price(request: PriceResolutionRequest = Body(...)):
         logger.error(f"Price resolution failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/pricebooks/{pricebook_id}")
+@app.post("/pricing/v2/pricebooks/{pricebook_id}")
 async def upsert_pricebook(
     pricebook_id: str = Path(...), 
     payload: PricebookV2Payload = Body(...),
     tenant_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None)
 ):
-    """Create or update a pricebook (V2 architecture)"""
+    """Create or update a pricebook (V2 architecture) with proper transaction management."""
     start_time = datetime.now()
     metrics.counter("endpoint.pricebook_upsert.called").inc()
     
     try:
+        # Validate UUID format
+        validate_uuid(pricebook_id, "pricebook_id")
+        
         with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id=tenant_id, user_id=user_id)
-            # Validate currency exists
-            currency = db.execute(text("SELECT iso_code FROM currencies WHERE iso_code=:code"), 
-                               {"code": payload.currency}).first()
-            if not currency:
-                raise HTTPException(status_code=400, detail="Currency not found")
-            
-            # Check if pricebook exists
-            existing = db.query(PricebookV2).filter(PricebookV2.pricebook_id == pricebook_id).first()
-            
-            if existing:
-                # Update existing pricebook
-                existing.name = payload.name
-                existing.description = payload.description
-                existing.pricebook_type = payload.pricebook_type
-                existing.currency = payload.currency
-                existing.hierarchy_rank = payload.hierarchy_rank
-                existing.active = payload.active
-                existing.effective_from = payload.effective_from or datetime.now()
-                existing.effective_until = payload.effective_until
-                existing.updated_at = datetime.now()
-                db.commit()
+            with execute_with_rollback(db, "pricebook_upsert"):
+                # Set RLS context
+                set_rls_context(db, tenant_id=tenant_id, user_id=user_id)
                 
-                logger.info("pricebook_updated", extra={"pricebook_id": pricebook_id})
+                # Validate currency exists
+                currency = db.execute(text("SELECT iso_code FROM currencies WHERE iso_code=:code"), 
+                                   {"code": payload.currency}).first()
+                if not currency:
+                    raise PricingValidationError("Currency not found")
                 
-                # Publish event
-                await service_bus.publish_to_service(
-                    target_service="catalog",
-                    event_type=EventType.PRICE_CHANGED,
-                    data={"pricebook_id": pricebook_id, "action": "updated"}
-                )
+                # Check if pricebook exists
+                existing = db.query(PricebookV2).filter(PricebookV2.pricebook_id == pricebook_id).first()
                 
-                metrics.histogram("endpoint.pricebook_upsert.duration").observe((datetime.now() - start_time).total_seconds())
-                return {"pricebook_id": str(pricebook_id), "name": payload.name, "updated": True}
-            else:
-                # Create new pricebook
-                pricebook = PricebookV2(
-                    pricebook_id=pricebook_id,
-                    name=payload.name,
-                    description=payload.description,
-                    pricebook_type=payload.pricebook_type,
-                    currency=payload.currency,
-                    hierarchy_rank=payload.hierarchy_rank,
-                    active=payload.active,
-                    effective_from=payload.effective_from or datetime.now(),
-                    effective_until=payload.effective_until
-                )
-                db.add(pricebook)
-                db.commit()
+                if existing:
+                    # Update existing pricebook
+                    existing.name = payload.name
+                    existing.description = payload.description
+                    existing.pricebook_type = payload.pricebook_type
+                    existing.currency = payload.currency
+                    existing.hierarchy_rank = payload.hierarchy_rank
+                    existing.active = payload.active
+                    existing.effective_from = payload.effective_from or datetime.now()
+                    existing.effective_until = payload.effective_until
+                    existing.updated_at = datetime.now()
+                    
+                    logger.info("pricebook_updated", extra={"pricebook_id": pricebook_id})
+                    
+                    # Publish event
+                    await service_bus.publish_to_service(
+                        target_service="catalog",
+                        event_type=EventType.PRICE_CHANGED,
+                        data={"pricebook_id": pricebook_id, "action": "updated"}
+                    )
+                    
+                    metrics.histogram("endpoint.pricebook_upsert.duration").observe((datetime.now() - start_time).total_seconds())
+                    return {"pricebook_id": str(pricebook_id), "name": payload.name, "updated": True}
+                else:
+                    # Create new pricebook
+                    pricebook = PricebookV2(
+                        pricebook_id=pricebook_id,
+                        name=payload.name,
+                        description=payload.description,
+                        pricebook_type=payload.pricebook_type,
+                        currency=payload.currency,
+                        hierarchy_rank=payload.hierarchy_rank,
+                        active=payload.active,
+                        effective_from=payload.effective_from or datetime.now(),
+                        effective_until=payload.effective_until
+                    )
+                    db.add(pricebook)
+                    
+                    logger.info("pricebook_created", extra={"pricebook_id": pricebook_id})
+                    
+                    # Publish event
+                    await service_bus.publish_to_service(
+                        target_service="catalog",
+                        event_type=EventType.PRICE_CHANGED,
+                        data={"pricebook_id": pricebook_id, "action": "created"}
+                    )
+                    
+                    metrics.histogram("endpoint.pricebook_upsert.duration").observe((datetime.now() - start_time).total_seconds())
+                    return {"pricebook_id": str(pricebook_id), "name": payload.name, "created": True}
                 
-                logger.info("pricebook_created", extra={"pricebook_id": pricebook_id})
-                
-                # Publish event
-                await service_bus.publish_to_service(
-                    target_service="catalog",
-                    event_type=EventType.PRICE_CHANGED,
-                    data={"pricebook_id": pricebook_id, "action": "created"}
-                )
-                
-                metrics.histogram("endpoint.pricebook_upsert.duration").observe((datetime.now() - start_time).total_seconds())
-                return {"pricebook_id": str(pricebook_id), "name": payload.name, "created": True}
-                
-    except HTTPException:
-        metrics.counter("endpoint.pricebook_upsert.error").inc()
+    except (PricingValidationError, PricingNotFoundError, PricingDuplicateError):
+        # Re-raise custom pricing errors
         raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in pricebook upsert: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database operation failed: {str(e)}")
     except Exception as e:
         metrics.counter("endpoint.pricebook_upsert.error").inc()
         logger.error(f"Pricebook upsert failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/pricebook-assignments/{assignment_id}")
+@app.post("/pricing/v2/pricebook-assignments/{assignment_id}")
 async def upsert_pricebook_assignment(
     assignment_id: str = Path(...), 
     payload: PricebookAssignmentV2Payload = Body(...),
@@ -943,7 +1059,7 @@ async def upsert_pricebook_assignment(
         logger.error(f"Pricebook assignment upsert failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/pricebook-entries/{entry_id}")
+@app.post("/pricing/v2/pricebook-entries/{entry_id}")
 async def upsert_pricebook_entry(
     entry_id: str = Path(...), 
     payload: PricebookEntryV2Payload = Body(...),
@@ -1029,7 +1145,7 @@ async def upsert_pricebook_entry(
         logger.error(f"Pricebook entry upsert failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/price-rules/{rule_id}")
+@app.post("/pricing/v2/price-rules/{rule_id}")
 async def upsert_price_rule(
     rule_id: str = Path(...), 
     payload: PriceRuleV2Payload = Body(...),
@@ -1240,7 +1356,7 @@ async def get_price_rules(active: Optional[bool] = Query(None), limit: int = Que
         logger.error(f"Get price rules failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/price-hooks/{hook_id}")
+@app.post("/pricing/v2/price-hooks/{hook_id}")
 async def upsert_price_hook(
     hook_id: str = Path(...), 
     payload: PriceHookV2Payload = Body(...),
@@ -1337,7 +1453,7 @@ async def create_rule_condition(
         logger.error(f"Rule condition creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/pricing/v2/pricing-versions/{version_id}")
+@app.post("/pricing/v2/pricing-versions/{version_id}")
 async def upsert_pricing_version(
     version_id: str = Path(...), 
     payload: PricingVersionV2Payload = Body(...),
@@ -2331,22 +2447,3 @@ async def execute_pricebook_entry_saga(payload: PricebookEntryV2Payload = Body(.
         raise HTTPException(status_code=500, detail=str(e))
 
 # Legacy endpoints for backward compatibility
-@app.get("/pricing/legacy/store-products")
-async def get_legacy_store_products(store_id: str = Query(...), limit: int = Query(100, ge=1, le=1000)):
-    """Legacy endpoint for store products - DEPRECATED"""
-    metrics.counter("endpoint.legacy.called").inc()
-    
-    try:
-        with SessionLocal() as db:
-            # This would query legacy tables
-            return {
-                "message": "Legacy endpoint - use V2 endpoints", 
-                "store_id": store_id,
-                "deprecated": True,
-                "warning": "This endpoint is deprecated. Please migrate to /pricing/v2/resolve for price resolution.",
-                "migration_guide": "Use POST /pricing/v2/resolve with offer_id instead of sku"
-            }
-    except Exception as e:
-        metrics.counter("endpoint.legacy.error").inc()
-        logger.error(f"Legacy endpoint failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))

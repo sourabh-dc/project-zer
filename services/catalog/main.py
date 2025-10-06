@@ -650,9 +650,9 @@ class CatalogSaga:
         
         # Publish comprehensive event to search service
         search_data = {
-            "product_id": data.get('product_id'),
-            "variant_id": data.get('variant_id'),
-            "offer_id": data.get('offer_id'),
+                "product_id": data.get('product_id'),
+                "variant_id": data.get('variant_id'),
+                "offer_id": data.get('offer_id'),
             "name": data.get('name'),
             "description": data.get('description'),
             "brand": data.get('brand'),

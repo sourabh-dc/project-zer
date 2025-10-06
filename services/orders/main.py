@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.exc import SQLAlchemyError
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
@@ -50,6 +51,27 @@ from zeroque_common.events.bus import EventBus, EventType, Event
 from zeroque_common.events.celery_app import celery_app
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
 
+# Custom Exceptions
+class OrderValidationError(Exception):
+    """Raised when order validation fails"""
+    pass
+
+class OrderNotFoundError(Exception):
+    """Raised when order is not found"""
+    pass
+
+class OrderDuplicateError(Exception):
+    """Raised when duplicate order is created"""
+    pass
+
+class OrderProcessingError(Exception):
+    """Raised when order processing fails"""
+    pass
+
+class PaymentProcessingError(Exception):
+    """Raised when payment processing fails"""
+    pass
+
 # Service configuration
 SERVICE_NAME = "orders"
 app = FastAPI(title="Enhanced ZeroQue Orders Service", version="2.0.0")
@@ -71,6 +93,37 @@ insights = init_insights(SERVICE_NAME, "2.0.0")
 add_observability_middleware(app, SERVICE_NAME)
 add_api_call_meter(app)
 add_idempotency_middleware(app, routes=[("POST", "/orders"), ("POST", "/orders/v2")])
+
+# Custom exception handlers
+@app.exception_handler(OrderValidationError)
+async def order_validation_exception_handler(request, exc: OrderValidationError):
+    """Handle order validation errors"""
+    logger.warning(f"Order validation error: {exc}")
+    return HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(OrderNotFoundError)
+async def order_not_found_exception_handler(request, exc: OrderNotFoundError):
+    """Handle order not found errors"""
+    logger.warning(f"Order not found error: {exc}")
+    return HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(OrderDuplicateError)
+async def order_duplicate_exception_handler(request, exc: OrderDuplicateError):
+    """Handle order duplicate errors"""
+    logger.warning(f"Order duplicate error: {exc}")
+    return HTTPException(status_code=409, detail=str(exc))
+
+@app.exception_handler(OrderProcessingError)
+async def order_processing_exception_handler(request, exc: OrderProcessingError):
+    """Handle order processing errors"""
+    logger.error(f"Order processing error: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
+
+@app.exception_handler(PaymentProcessingError)
+async def payment_processing_exception_handler(request, exc: PaymentProcessingError):
+    """Handle payment processing errors"""
+    logger.error(f"Payment processing error: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
 
 # ---- config ----
 PAYMENTS_BASE = os.getenv("PAYMENTS_BASE", "http://localhost:8216")
@@ -158,13 +211,82 @@ class RefundV2(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
+# Database Transaction Helper
+def execute_with_rollback(db_session, operation_name: str = "database operation"):
+    """Context manager for database operations with proper rollback handling"""
+    class DatabaseTransaction:
+        def __init__(self, session, name):
+            self.session = session
+            self.name = name
+            self.committed = False
+            
+        def __enter__(self):
+            return self.session
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type is not None:
+                try:
+                    self.session.rollback()
+                    logger.error(f"Database transaction rolled back for {self.name}: {exc_val}")
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction for {self.name}: {rollback_error}")
+                return False  # Re-raise the original exception
+            else:
+                try:
+                    self.session.commit()
+                    self.committed = True
+                    logger.debug(f"Database transaction committed for {self.name}")
+                except Exception as commit_error:
+                    self.session.rollback()
+                    logger.error(f"Failed to commit transaction for {self.name}: {commit_error}")
+                    raise
+            return True
+    
+    return DatabaseTransaction(db_session, operation_name)
+
+# Validation Helpers
+def validate_uuid(uuid_string: str, field_name: str = "UUID"):
+    """Validate UUID format"""
+    try:
+        uuid.UUID(uuid_string)
+        return True
+    except ValueError:
+        raise OrderValidationError(f"Invalid {field_name} format: {uuid_string}")
+
+def validate_references_exist(db_session, references: Dict[str, str]):
+    """Validate that referenced entities exist"""
+    for entity_type, entity_id in references.items():
+        if entity_type == "tenant_id":
+            # Check if tenant exists in tenants_new table
+            result = db_session.execute(text("SELECT 1 FROM tenants_new WHERE tenant_id = :tenant_id"), {"tenant_id": entity_id}).fetchone()
+            if not result:
+                raise OrderValidationError(f"Tenant {entity_id} does not exist")
+        elif entity_type == "store_id":
+            # Check if store exists
+            result = db_session.execute(text("SELECT 1 FROM stores WHERE store_id = :store_id"), {"store_id": entity_id}).fetchone()
+            if not result:
+                raise OrderValidationError(f"Store {entity_id} does not exist")
+        elif entity_type == "customer_id":
+            # Check if user exists
+            result = db_session.execute(text("SELECT 1 FROM users WHERE user_id = :user_id"), {"user_id": entity_id}).fetchone()
+            if not result:
+                raise OrderValidationError(f"Customer {entity_id} does not exist")
+
 # ---- RLS Context Helper ----
 def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] = None):
     """Set Row Level Security context for database session"""
-    if tenant_id:
-        db.execute(text("SET LOCAL row_security.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-    if user_id:
-        db.execute(text("SET LOCAL row_security.user_id = :user_id"), {"user_id": user_id})
+    try:
+        if tenant_id:
+            db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+        if user_id:
+            db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
+        
+        # Enable RLS for the session
+        db.execute(text("SET row_security = on"))
+        
+    except Exception as e:
+        logger.warning(f"Failed to set RLS context: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to set security context")
 
 # ---- lifecycle ----
 @app.on_event("startup")
@@ -1344,8 +1466,9 @@ async def get_system_health():
     return await health_monitor.check_system_health()
 
 # ---- Legacy Endpoints (for backward compatibility) ----
-@app.post("/orders")
-def create_order(payload: NewOrder = Body(...)):
+# Legacy endpoints removed - use /orders/v2 for enhanced features
+# @app.post("/orders")
+# def create_order(payload: NewOrder = Body(...)):
     """
     Create an order (LEGACY ENDPOINT - DEPRECATED).
     Use /orders/v2 for new V2 architecture with enhanced features.
@@ -1632,8 +1755,8 @@ def create_order(payload: NewOrder = Body(...)):
             "message": "This is a legacy endpoint. Please use /orders/v2 for enhanced features."
         }
 
-@app.get("/orders")
-def list_orders(tenant_id: str = Query(...), limit: int = Query(50)):
+# @app.get("/orders")
+# def list_orders(tenant_id: str = Query(...), limit: int = Query(50)):
     """List orders (LEGACY ENDPOINT - DEPRECATED). Use /orders/v2 for enhanced features."""
     logger.warning("Legacy list orders endpoint used - consider migrating to /orders/v2")
     metrics.counter("endpoint.list_orders_legacy.called").inc()
@@ -1657,8 +1780,8 @@ def list_orders(tenant_id: str = Query(...), limit: int = Query(50)):
             "message": "This is a legacy endpoint. Please use /orders/v2 for enhanced features."
         }
 
-@app.get("/orders/{order_id}")
-def get_order(order_id: int):
+# @app.get("/orders/{order_id}")
+# def get_order(order_id: int):
     """Get order details (LEGACY ENDPOINT - DEPRECATED). Use /orders/v2/{order_id} for enhanced features."""
     logger.warning("Legacy get order endpoint used - consider migrating to /orders/v2/{order_id}")
     metrics.counter("endpoint.get_order_legacy.called").inc()
@@ -1683,8 +1806,8 @@ def get_order(order_id: int):
             "message": "This is a legacy endpoint. Please use /orders/v2/{order_id} for enhanced features."
         }
 
-@app.post("/orders/{order_id}/settle")
-def settle_order(order_id: int = Path(...)):
+# @app.post("/orders/{order_id}/settle")
+# def settle_order(order_id: int = Path(...)):
     """
     Finalize a Stripe order after payment succeeds (idempotent).
     """
