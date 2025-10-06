@@ -1,23 +1,30 @@
-from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, JSON, Boolean, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
+from typing import Optional
+from datetime import datetime
 from zeroque_common.db.session import Base
 
 class Tenant(Base):
     __tablename__ = "tenants"
     tenant_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
+    tenant_type: Mapped[str] = mapped_column("tenant_type", String(50), default="customer")
 
 class Site(Base):
     __tablename__ = "sites"
     site_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(100), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    site_type: Mapped[str] = mapped_column("site_type", String(50), default="unmanned")
+    geo: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 class Store(Base):
     __tablename__ = "stores"
     store_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     site_id: Mapped[str] = mapped_column(String(100), ForeignKey("sites.site_id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    store_type: Mapped[str] = mapped_column("store_type", String(50), default="cashierless")
+    geo: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 class Role(Base):
     __tablename__ = "roles"
@@ -30,6 +37,9 @@ class User(Base):
     user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True)
     display_name: Mapped[str] = mapped_column(String(200))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class Membership(Base):
     __tablename__ = "memberships"

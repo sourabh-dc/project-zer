@@ -17,6 +17,7 @@ import sys
 import asyncio
 import logging
 import uuid
+import time
 from fastapi import FastAPI, HTTPException, Body, Path, Query, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -64,9 +65,13 @@ def get_db() -> Session:
         yield db
     except Exception as e:
         db.rollback()
+        logger.error(f"Database session error: {e}")
         raise e
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception as e:
+            logger.error(f"Error closing database session: {e}")
 
 # Custom exception handlers
 @app.exception_handler(ValidationError)
@@ -103,6 +108,47 @@ circuit_breaker_config = CircuitBreakerConfig(
 
 # ---- observability ----
 logger = setup_logging(SERVICE_NAME, "2.0.0")
+
+# Enhanced observability and monitoring
+init_metrics(SERVICE_NAME)
+init_insights(SERVICE_NAME, "2.0.0")
+add_observability_middleware(app, SERVICE_NAME)
+
+# Custom metrics for provisioning service
+from zeroque_common.observability import get_metrics
+
+def record_provisioning_metric(operation: str, status: str, tenant_id: str = None):
+    """Record custom provisioning metrics"""
+    try:
+        metrics = get_metrics()
+        metrics.counter(
+            "provisioning_operations_total",
+            labels={"operation": operation, "status": status, "tenant_id": tenant_id or "unknown"}
+        ).inc()
+    except Exception as e:
+        logger.error(f"Error recording provisioning metric: {e}")
+
+def record_subscription_limit_check(tenant_id: str, operation: str, allowed: bool):
+    """Record subscription limit check metrics"""
+    try:
+        metrics = get_metrics()
+        metrics.counter(
+            "subscription_limit_checks_total",
+            labels={"tenant_id": tenant_id, "operation": operation, "allowed": str(allowed)}
+        ).inc()
+    except Exception as e:
+        logger.error(f"Error recording subscription limit metric: {e}")
+
+def record_database_operation(operation: str, table: str, status: str, duration_ms: float):
+    """Record database operation metrics"""
+    try:
+        metrics = get_metrics()
+        metrics.histogram(
+            "database_operations_duration_seconds",
+            labels={"operation": operation, "table": table, "status": status}
+        ).observe(duration_ms / 1000.0)
+    except Exception as e:
+        logger.error(f"Error recording database operation metric: {e}")
 metrics = init_metrics(SERVICE_NAME)
 insights = init_insights(SERVICE_NAME, "2.0.0")
 
@@ -127,11 +173,120 @@ add_idempotency_middleware(app, routes=[
 # Import existing models from zeroque_common and alias them for V2 use
 # Note: We'll use the _new tables directly
 
+# Subscription limits enforcement
+class SubscriptionLimits:
+    """Enforce subscription limits for tenant operations"""
+    
+    @staticmethod
+    async def check_tenant_limits(tenant_id: str, operation: str, db: Session) -> bool:
+        """Check if tenant can perform operation based on subscription limits"""
+        try:
+            # Get tenant's current usage
+            current_usage = await get_tenant_usage(tenant_id, db)
+            
+            # Get tenant's subscription limits
+            limits = await get_tenant_limits(tenant_id, db)
+            
+            # Check specific operation limits
+            if operation == "create_site":
+                return current_usage.get("sites", 0) < limits.get("max_sites", 5)
+            elif operation == "create_store":
+                return current_usage.get("stores", 0) < limits.get("max_stores", 20)
+            elif operation == "create_user":
+                return current_usage.get("users", 0) < limits.get("max_users", 100)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error checking subscription limits: {e}")
+            return False
+    
+    @staticmethod
+    async def enforce_limits(tenant_id: str, operation: str, db: Session):
+        """Enforce subscription limits, raise exception if exceeded"""
+        if not await SubscriptionLimits.check_tenant_limits(tenant_id, operation, db):
+            raise ValidationError(f"Subscription limit exceeded for operation: {operation}")
+
+async def get_tenant_usage(tenant_id: str, db: Session) -> Dict[str, int]:
+    """Get current usage for tenant"""
+    try:
+        # Count sites
+        sites_count = db.query(SiteV2).filter(SiteV2.tenant_id == tenant_id).count()
+        
+        # Count stores (through sites)
+        stores_count = db.query(StoreV2).join(SiteV2).filter(SiteV2.tenant_id == tenant_id).count()
+        
+        # Count users (this would need to be implemented based on your user management)
+        users_count = 0  # Placeholder
+        
+        return {
+            "sites": sites_count,
+            "stores": stores_count,
+            "users": users_count
+        }
+    except Exception as e:
+        logger.error(f"Error getting tenant usage: {e}")
+        return {"sites": 0, "stores": 0, "users": 0}
+
+async def get_tenant_limits(tenant_id: str, db: Session) -> Dict[str, int]:
+    """Get subscription limits for tenant"""
+    # This would integrate with subscription service
+    # For now, return default limits
+    return {
+        "max_sites": 5,
+        "max_stores": 20,
+        "max_users": 100
+    }
+
 # Event handlers
 async def handle_tenant_created(event: ServiceEvent):
     """Handle tenant creation events"""
     logger.info(f"Received tenant created event: {event.data}")
-    # Publish to other services for tenant setup
+    try:
+        # Automatically set up subscription for new tenant
+        await setup_tenant_subscription(event.data.get("tenant_id"))
+        
+        # Publish to other services for tenant setup
+        await publish_tenant_provisioned_event(event.data)
+    except Exception as e:
+        logger.error(f"Error handling tenant created event: {e}")
+
+async def setup_tenant_subscription(tenant_id: str):
+    """Automatically set up subscription for new tenant"""
+    try:
+        # Call subscription service to create default subscription
+        subscription_data = {
+            "tenant_id": tenant_id,
+            "plan": "basic",
+            "features": ["provisioning", "basic_analytics"],
+            "limits": {
+                "max_sites": 5,
+                "max_stores": 20,
+                "max_users": 100
+            }
+        }
+        
+        # This would integrate with the subscription service
+        logger.info(f"Setting up subscription for tenant {tenant_id}: {subscription_data}")
+        
+    except Exception as e:
+        logger.error(f"Error setting up subscription for tenant {tenant_id}: {e}")
+
+async def publish_tenant_provisioned_event(tenant_data: dict):
+    """Publish tenant provisioned event to other services"""
+    try:
+        event = ServiceEvent(
+            event_type="tenant.provisioned",
+            service_name="provisioning",
+            data=tenant_data,
+            correlation_id=f"tenant_provision_{int(time.time())}"
+        )
+        
+        # Publish to event bus
+        await event_bus.publish(event)
+        logger.info(f"Published tenant provisioned event: {tenant_data}")
+        
+    except Exception as e:
+        logger.error(f"Error publishing tenant provisioned event: {e}")
 
 async def handle_user_assigned(event: ServiceEvent):
     """Handle user role assignment events"""
@@ -460,9 +615,9 @@ async def create_tenant_v2(payload: TenantV2Payload = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/provisioning/tenants/{tenant_id}")
-async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload = Body(...)):
+async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create or update a Tenant (V2 architecture)."""
-    with SessionLocal() as db:
+    try:
         # Convert string tenant_id to UUID if needed
         try:
             tenant_uuid = uuid.UUID(tenant_id)
@@ -473,23 +628,31 @@ async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload 
         # Set RLS context
         set_rls_context(db, tenant_id=str(tenant_uuid))
         
-        t = db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none()
-        if t:
-            t.name = payload.name
-            t.type = payload.type
-            db.commit()
-            logger.info("tenant_updated", extra={"tenant_id": str(tenant_uuid)})
-            return {"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type, "updated": True}
+        # Check if tenant exists
+        tenant_repo = RepositoryFactory.get_tenant_repository()
+        existing = tenant_repo.get_by_id(db, str(tenant_uuid))
         
-        t = TenantV2(
-            tenant_id=tenant_uuid, 
-            name=payload.name, 
-            type=payload.type
-        )
-        db.add(t)
-        db.commit()
-        logger.info("tenant_created", extra={"tenant_id": str(tenant_uuid)})
-        return {"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type, "created": True}
+        if existing:
+            # Update existing tenant
+            tenant_repo.update(db, str(tenant_uuid),
+                             name=payload.name,
+                             type=payload.type)
+            logger.info("tenant_updated", extra={"tenant_id": str(tenant_uuid)})
+            record_provisioning_metric("update_tenant", "success", str(tenant_uuid))
+            return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "updated": True}
+        else:
+            # Create new tenant
+            tenant_repo.create_tenant(db, payload.name, payload.type, payload.scenario_id)
+            logger.info("tenant_created", extra={"tenant_id": str(tenant_uuid)})
+            record_provisioning_metric("create_tenant", "success", str(tenant_uuid))
+            return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "created": True}
+    except ValidationError as e:
+        record_provisioning_metric("create_tenant", "validation_error", tenant_id)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Tenant operation failed: {str(e)}")
+        record_provisioning_metric("create_tenant", "error", tenant_id)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/sites/{site_id}")
 async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body(...), tenant_id: str = Query(...)):
@@ -506,8 +669,16 @@ async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body
         except ValueError:
             tenant_uuid = uuid.uuid4()
         
+        # Enforce subscription limits
+        try:
+            await SubscriptionLimits.enforce_limits(tenant_id, "create_site", db)
+        except ValidationError as e:
+            record_provisioning_metric("create_site", "limit_exceeded", tenant_id)
+            raise HTTPException(status_code=400, detail=str(e))
+        
         # Validate tenant exists
         if not db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none():
+            record_provisioning_metric("create_site", "tenant_not_found", tenant_id)
             raise HTTPException(status_code=400, detail="Tenant not found")
         
         s = db.query(SiteV2).filter(SiteV2.site_id == site_uuid).one_or_none()
@@ -517,12 +688,14 @@ async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body
             s.geo = payload.geo
             db.commit()
             logger.info("site_updated", extra={"site_id": str(site_uuid)})
+            record_provisioning_metric("update_site", "success", tenant_id)
             return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "updated": True}
         
         s = SiteV2(site_id=site_uuid, tenant_id=tenant_uuid, name=payload.name, site_type=payload.site_type, geo=payload.geo)
         db.add(s)
         db.commit()
         logger.info("site_created", extra={"site_id": str(site_uuid)})
+        record_provisioning_metric("create_site", "success", tenant_id)
         return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "created": True}
 
 @app.put("/provisioning/stores/{store_id}")

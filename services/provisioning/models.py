@@ -179,9 +179,9 @@ class ErpIntegrationV2(Base):
     """ERP/CRM integration configurations"""
     __tablename__ = "erp_integrations"
     
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    tenant_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
-    vendor_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     type: Mapped[str] = mapped_column(String(20))
     config: Mapped[dict] = mapped_column(JSON)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -193,9 +193,9 @@ class AccessControlV2(Base):
     """Access control device configurations"""
     __tablename__ = "access_controls"
     
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    site_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
-    store_id: Mapped[Optional[str]] = mapped_column(UUID, nullable=True)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    site_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    store_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     type: Mapped[str] = mapped_column(String(20))
     config: Mapped[dict] = mapped_column(JSON)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -206,9 +206,9 @@ class UserAccessGrantV2(Base):
     """User access grants for devices"""
     __tablename__ = "user_access_grants"
     
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    user_id: Mapped[str] = mapped_column(UUID)
-    access_control_id: Mapped[str] = mapped_column(UUID)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255))
+    access_control_id: Mapped[str] = mapped_column(String(255))
     grant_type: Mapped[str] = mapped_column(String(20), default="permanent")
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -218,11 +218,11 @@ class PermissionResolutionCacheV2(Base):
     """Permission resolution cache for performance"""
     __tablename__ = "permission_resolution_cache"
     
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    user_id: Mapped[str] = mapped_column(UUID)
-    permission_id: Mapped[str] = mapped_column(UUID)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255))
+    permission_id: Mapped[str] = mapped_column(String(255))
     scope_type: Mapped[str] = mapped_column(String(50))
-    scope_id: Mapped[str] = mapped_column(UUID)
+    scope_id: Mapped[str] = mapped_column(String(255))
     is_granted: Mapped[bool] = mapped_column(Boolean)
     resolution_path: Mapped[dict] = mapped_column(JSON)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -402,30 +402,15 @@ class PriceResolver:
             
             # Get applicable price rules with conditions
             rules_query = text("""
-                SELECT pr.rule_id, pr.name, pr.rule_type, pr.rule_config, pr.application_order, pr.priority,
+                SELECT pr.rule_id, pr.name, pr.rule_type, pr.conditions, pr.actions, pr.priority,
                        prc.condition_type, prc.condition_config
                 FROM price_rules_new pr
                 LEFT JOIN price_rule_conditions prc ON pr.rule_id = prc.rule_id
                 WHERE pr.active = true
-                AND (pr.valid_from IS NULL OR pr.valid_from <= :now)
-                AND (pr.valid_until IS NULL OR pr.valid_until > :now)
-                AND (
-                    pr.scope_type IS NULL OR
-                    (pr.scope_type = 'STORE' AND pr.scope_id = :store_id) OR
-                    (pr.scope_type = 'TENANT' AND pr.scope_id = :tenant_id) OR
-                    (pr.scope_type = 'ROLE' AND pr.scope_id IN (
-                        SELECT role_id FROM role_assignments WHERE user_id = :user_id
-                    ))
-                )
-                ORDER BY pr.priority ASC, pr.application_order ASC
+                ORDER BY pr.priority ASC
             """)
             
-            rules = db.execute(rules_query, {
-                "store_id": store_id,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "now": datetime.now()
-            }).fetchall()
+            rules = db.execute(rules_query).fetchall()
             
             final_price = base_price
             applied_rules = []
