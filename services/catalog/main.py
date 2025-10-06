@@ -22,6 +22,7 @@ from fastapi import FastAPI, Body, Query, HTTPException, Path
 from pydantic import BaseModel, Field
 from sqlalchemy import text, UUID, String, Boolean, DateTime, func, JSON, BigInteger, Integer, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
@@ -296,9 +297,42 @@ class TaxRuleV2(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-# RLS Context Helper
+# Database Transaction Helper
+def execute_with_rollback(db_session, operation_name: str = "database operation"):
+    """Context manager for database operations with proper rollback handling"""
+    class DatabaseTransaction:
+        def __init__(self, session, name):
+            self.session = session
+            self.name = name
+            self.committed = False
+            
+        def __enter__(self):
+            return self.session
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type is not None:
+                try:
+                    self.session.rollback()
+                    logger.error(f"Database transaction rolled back for {self.name}: {exc_val}")
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction for {self.name}: {rollback_error}")
+                return False  # Re-raise the original exception
+            else:
+                try:
+                    self.session.commit()
+                    self.committed = True
+                    logger.debug(f"Database transaction committed for {self.name}")
+                except Exception as commit_error:
+                    self.session.rollback()
+                    logger.error(f"Failed to commit transaction for {self.name}: {commit_error}")
+                    raise
+            return True
+    
+    return DatabaseTransaction(db_session, operation_name)
+
+# RLS Context Helper - Standardized
 def set_rls_context(db_session, tenant_id: str = None, user_id: str = None, store_id: str = None, vendor_id: str = None):
-    """Set Row Level Security context for database session"""
+    """Set Row Level Security context for database session - standardized implementation"""
     try:
         if tenant_id:
             db_session.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
@@ -314,17 +348,22 @@ def set_rls_context(db_session, tenant_id: str = None, user_id: str = None, stor
         
     except Exception as e:
         logger.warning(f"Failed to set RLS context: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to set security context")
 
 # Validation helpers
 def validate_product_name_unique(db_session, name: str, exclude_product_id: str = None):
-    """Validate that product name is unique"""
-    query = db_session.query(ProductMasterV2).filter(ProductMasterV2.name == name)
-    if exclude_product_id:
-        query = query.filter(ProductMasterV2.product_id != exclude_product_id)
-    
-    existing = query.first()
-    if existing:
-        raise CatalogDuplicateError(f"Product with name '{name}' already exists")
+    """Validate that product name is unique using ORM"""
+    try:
+        query = db_session.query(ProductMasterV2).filter(ProductMasterV2.name == name)
+        if exclude_product_id:
+            query = query.filter(ProductMasterV2.product_id != exclude_product_id)
+        
+        existing = query.first()
+        if existing:
+            raise CatalogDuplicateError(f"Product with name '{name}' already exists")
+    except SQLAlchemyError as e:
+        logger.error(f"Database error validating product name uniqueness: {str(e)}")
+        raise HTTPException(status_code=500, detail="Database validation error")
 
 def validate_variant_sku_unique(db_session, sku: str, exclude_variant_id: str = None):
     """Validate that variant SKU is unique"""
@@ -1356,23 +1395,7 @@ class TaxRuleV2Payload(BaseModel):
     description: Optional[str] = None
 
 # Legacy payloads for backward compatibility
-class ProductUpsert(BaseModel):
-    sku: str = Field(..., min_length=1)
-    name: str = Field(..., min_length=1)
-    description: Optional[str] = None
-    active: bool = True
-
-class PriceUpsert(BaseModel):
-    sku: str = Field(..., min_length=1)
-    currency: str = Field("GBP", pattern=r"^[A-Z]{3}$")
-    unit_minor: float = Field(..., ge=0, description="price in pounds (e.g., 1.99)")
-    active: bool = True
-
-class RestockReq(BaseModel):
-    store_id: str = Field(..., min_length=1)
-    sku: str = Field(..., min_length=1)
-    delta: int = Field(..., description="positive for inbound, negative for outbound; non-zero")
-    reason: str = Field("restock", max_length=80)
+# Legacy payload models removed - using V2 models instead
 
 # ---------- V2 endpoints ----------
 @app.post("/catalog/v2/products", response_model=Dict[str, Any])
@@ -1815,7 +1838,7 @@ async def create_bulk_products(payload: BulkProductPayload = Body(...)):
 # Vendor Management Endpoints
 @app.post("/catalog/v2/vendors/{vendor_id}")
 async def upsert_vendor(vendor_id: str = Path(...), payload: VendorV2Payload = Body(...)):
-    """Create or update a Vendor (V2 architecture)."""
+    """Create or update a Vendor (V2 architecture) with proper transaction management."""
     try:
         # Validate UUID format
         uuid.UUID(vendor_id)
@@ -1824,45 +1847,54 @@ async def upsert_vendor(vendor_id: str = Path(...), payload: VendorV2Payload = B
         raise HTTPException(status_code=400, detail="Invalid UUID format")
     
     with SessionLocal() as db:
-        # Temporarily disable RLS context for testing
-        # set_rls_context(db, user_id=str(uuid.uuid4()), tenant_id=payload.tenant_id)
-        
-        # Note: Tenant validation would require calling provisioning service
-        # For now, we'll skip this validation as tenants are managed by provisioning service
-        
-        # Check if vendor name is unique within tenant
-        existing_vendor = db.query(VendorV2).filter(
-            VendorV2.tenant_id == payload.tenant_id,
-            VendorV2.name == payload.name,
-            VendorV2.vendor_id != vendor_id
-        ).first()
-        
-        if existing_vendor:
-            raise CatalogDuplicateError(f"Vendor with name '{payload.name}' already exists in tenant")
-        
-        vendor = db.query(VendorV2).filter(VendorV2.vendor_id == vendor_id).one_or_none()
-        if vendor:
-            vendor.name = payload.name
-            vendor.description = payload.description
-            vendor.rating = payload.rating
-            vendor.active = payload.active
-            vendor.updated_at = datetime.now()
-            db.commit()
-            logger.info("vendor_updated", extra={"vendor_id": vendor_id})
-            return {"vendor_id": vendor.vendor_id, "name": vendor.name, "updated": True}
-        
-        vendor = VendorV2(
-            vendor_id=vendor_id,
-            tenant_id=payload.tenant_id,
-            name=payload.name,
-            description=payload.description,
-            rating=payload.rating,
-            active=payload.active
-        )
-        db.add(vendor)
-        db.commit()
-        logger.info("vendor_created", extra={"vendor_id": vendor_id})
-        return {"vendor_id": vendor.vendor_id, "name": vendor.name, "created": True}
+        try:
+            # Check if vendor name is unique within tenant using ORM
+            existing_vendor = db.query(VendorV2).filter(
+                VendorV2.tenant_id == payload.tenant_id,
+                VendorV2.name == payload.name,
+                VendorV2.vendor_id != vendor_id
+            ).first()
+            
+            if existing_vendor:
+                raise CatalogDuplicateError(f"Vendor with name '{payload.name}' already exists in tenant")
+            
+            vendor = db.query(VendorV2).filter(VendorV2.vendor_id == vendor_id).one_or_none()
+            if vendor:
+                # Update existing vendor
+                vendor.name = payload.name
+                vendor.description = payload.description
+                vendor.rating = payload.rating
+                vendor.active = payload.active
+                vendor.updated_at = datetime.now()
+                db.commit()
+                logger.info("vendor_updated", extra={"vendor_id": vendor_id})
+                return {"vendor_id": vendor.vendor_id, "name": vendor.name, "updated": True}
+            else:
+                # Create new vendor
+                vendor = VendorV2(
+                    vendor_id=vendor_id,
+                    tenant_id=payload.tenant_id,
+                    name=payload.name,
+                    description=payload.description,
+                    rating=payload.rating,
+                    active=payload.active
+                )
+                db.add(vendor)
+                db.commit()
+                logger.info("vendor_created", extra={"vendor_id": vendor_id})
+                return {"vendor_id": vendor.vendor_id, "name": vendor.name, "created": True}
+                
+        except (CatalogDuplicateError, CatalogNotFoundError, CatalogValidationError):
+            # Re-raise custom catalog errors
+            raise
+        except SQLAlchemyError as e:
+            logger.error(f"Database error in vendor upsert: {str(e)}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Database operation failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error in vendor upsert: {str(e)}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.put("/catalog/v2/vendor-onboarding/{onboarding_id}")
 async def upsert_vendor_onboarding(onboarding_id: str = Path(...), payload: VendorOnboardingV2Payload = Body(...)):
@@ -2546,230 +2578,4 @@ async def upsert_product_normalization_cache(cache_id: str = Path(...), payload:
         logger.info("product_normalization_cache_created", extra={"cache_id": cache_id})
         return {"cache_id": cache.id, "cv_product_id": cache.cv_product_id, "created": True}
 
-# ---------- Legacy endpoints for backward compatibility ----------
-# DEPRECATION WARNING: These endpoints will be removed in v3.0.0
-# Please migrate to /catalog/v2/ endpoints
-
-@app.put("/catalog/products")
-async def upsert_product(payload: ProductUpsert = Body(...)):
-    """
-    DEPRECATED: This endpoint will be removed in v3.0.0
-    Please use POST /catalog/v2/products/{product_id} instead
-    
-    Create or update a product by SKU.
-    """
-    with SessionLocal() as db:
-        exists = db.execute(
-            text("SELECT sku FROM products WHERE sku=:s"),
-            {"s": payload.sku}
-        ).first()
-
-        if exists:
-            db.execute(text("""
-                UPDATE products
-                   SET name=:n, description=:d, active=:a, updated_at=NOW()
-                 WHERE sku=:s
-            """), {"n": payload.name, "d": payload.description, "a": payload.active, "s": payload.sku})
-            db.commit()
-            logger.info("product_updated sku=%s active=%s", payload.sku, payload.active)
-            
-            # Publish product updated event
-            try:
-                product_event = ServiceEvent(
-                    event_type=EventType.PRODUCT_UPDATED,
-                    service_name=SERVICE_NAME,
-                    data={
-                        "sku": payload.sku,
-                        "name": payload.name,
-                        "description": payload.description,
-                        "active": payload.active,
-                        "action": "updated"
-                    },
-                    metadata={"service": "catalog", "version": "2.0.0"}
-                )
-                
-                await service_bus.publish_to_service(
-                    target_service="search",
-                    event_type=EventType.PRODUCT_UPDATED,
-                    data=product_event.data
-                )
-                logger.info("product_event_published sku=%s event=updated", payload.sku)
-            except Exception as e:
-                logger.warning("Failed to publish product updated event: %s", str(e))
-            
-            return {"sku": payload.sku, "updated": True}
-        else:
-            db.execute(text("""
-                INSERT INTO products(sku, name, description, active)
-                VALUES(:s, :n, :d, :a)
-            """), {"s": payload.sku, "n": payload.name, "d": payload.description, "a": payload.active})
-            db.commit()
-            logger.info("product_created sku=%s", payload.sku)
-            
-            # Publish product created event
-            try:
-                product_event = ServiceEvent(
-                    event_type=EventType.PRODUCT_CREATED,
-                    service_name=SERVICE_NAME,
-                    data={
-                        "sku": payload.sku,
-                        "name": payload.name,
-                        "description": payload.description,
-                        "active": payload.active,
-                        "action": "created"
-                    },
-                    metadata={"service": "catalog", "version": "2.0.0"}
-                )
-                
-                await service_bus.publish_to_service(
-                    target_service="search",
-                    event_type=EventType.PRODUCT_CREATED,
-                    data=product_event.data
-                )
-                logger.info("product_event_published sku=%s event=created", payload.sku)
-            except Exception as e:
-                logger.warning("Failed to publish product created event: %s", str(e))
-            
-            return {"sku": payload.sku, "created": True}
-
-@app.get("/catalog/products")
-def list_products(active: Optional[bool] = Query(None), limit: int = Query(100, ge=1, le=1000)):
-    """
-    List products, optionally filtered by 'active'.
-    """
-    with SessionLocal() as db:
-        if active is None:
-            rows = db.execute(
-                text("SELECT sku,name,description,active FROM products ORDER BY sku LIMIT :l"),
-                {"l": limit}
-            ).all()
-        else:
-            rows = db.execute(
-                text("SELECT sku,name,description,active FROM products WHERE active=:a ORDER BY sku LIMIT :l"),
-                {"a": active, "l": limit}
-            ).all()
-        out = [{"sku": r[0], "name": r[1], "description": r[2], "active": bool(r[3])} for r in rows]
-        logger.info("products_listed count=%d active=%s", len(out), active)
-        return out
-
-# ---------- prices ----------
-@app.put("/catalog/prices")
-def upsert_price(payload: PriceUpsert = Body(...)):
-    """
-    Create or update a price row (sku + currency). One row can be marked active.
-    """
-    with SessionLocal() as db:
-        # verify product exists for better ergonomics
-        prod = db.execute(text("SELECT 1 FROM products WHERE sku=:s"), {"s": payload.sku}).first()
-        if not prod:
-            raise HTTPException(status_code=400, detail="SKU not found; create product first")
-
-        r = db.execute(text("""
-            SELECT id FROM prices WHERE sku=:s AND currency=:c
-        """), {"s": payload.sku, "c": payload.currency}).first()
-
-        if r:
-            db.execute(text("""
-                UPDATE prices
-                   SET unit_minor=:u, active=:a, updated_at=NOW()
-                 WHERE id=:id
-            """), {"u": payload.unit_minor, "a": payload.active, "id": int(r[0])})
-            db.commit()
-            logger.info("price_updated sku=%s currency=%s unit_minor=%d active=%s",
-                     payload.sku, payload.currency, payload.unit_minor, payload.active)
-            return {"sku": payload.sku, "currency": payload.currency, "updated": True}
-
-        db.execute(text("""
-            INSERT INTO prices(sku, currency, unit_minor, active)
-            VALUES(:s, :c, :u, :a)
-        """), {"s": payload.sku, "c": payload.currency, "u": payload.unit_minor, "a": payload.active})
-        db.commit()
-        logger.info("price_created sku=%s currency=%s unit_minor=%d active=%s",
-                 payload.sku, payload.currency, payload.unit_minor, payload.active)
-        return {"sku": payload.sku, "currency": payload.currency, "created": True}
-
-@app.get("/catalog/prices")
-def list_prices(sku: Optional[str] = Query(None), currency: str = Query("GBP", pattern=r"^[A-Z]{3}$")):
-    """
-    List prices. If 'sku' is passed, filter to that SKU + currency; else list all prices for a currency.
-    """
-    with SessionLocal() as db:
-        if sku:
-            rows = db.execute(text("""
-                SELECT id, sku, currency, unit_minor, active
-                  FROM prices
-                 WHERE sku=:s AND currency=:c
-            """), {"s": sku, "c": currency}).all()
-        else:
-            rows = db.execute(text("""
-                SELECT id, sku, currency, unit_minor, active
-                  FROM prices
-                 WHERE currency=:c
-            """), {"c": currency}).all()
-        out = [{"id": int(r[0]), "sku": r[1], "currency": r[2], "unit_minor": int(r[3]), "active": bool(r[4])} for r in rows]
-        logger.info("prices_listed count=%d sku=%s currency=%s", len(out), sku, currency)
-        return out
-
-# ---------- inventory ----------
-@app.post("/catalog/inventory/restock")
-def restock(payload: RestockReq = Body(...)):
-    """
-    Adjust on-hand stock for a store/SKU and append a movement record.
-    Positive delta = inbound; negative = outbound.
-    """
-    if payload.delta == 0:
-        raise HTTPException(status_code=400, detail="delta must be non-zero")
-
-    with SessionLocal() as db:
-        # Optional safety: ensure SKU exists
-        exists = db.execute(text("SELECT 1 FROM products WHERE sku=:s"), {"s": payload.sku}).first()
-        if not exists:
-            raise HTTPException(status_code=400, detail="SKU not found; create product first")
-
-        # Update existing row (NO updated_at here)
-        updated = db.execute(text("""
-            UPDATE inventory
-               SET qty = qty + :d
-             WHERE store_id=:st AND sku=:s
-        """), {"d": payload.delta, "st": payload.store_id, "s": payload.sku}).rowcount
-
-        # If no row, insert a new one. Don’t start negative.
-        if updated == 0:
-            initial_qty = max(payload.delta, 0)
-            db.execute(text("""
-                INSERT INTO inventory(store_id, sku, qty)
-                VALUES(:st, :s, :q)
-            """), {"st": payload.store_id, "s": payload.sku, "q": initial_qty})
-
-        # Always write a movement record
-        db.execute(text("""
-            INSERT INTO inventory_movements(store_id, sku, delta, reason)
-            VALUES(:st, :s, :d, :r)
-        """), {"st": payload.store_id, "s": payload.sku, "d": payload.delta, "r": payload.reason})
-
-        db.commit()
-
-        current = db.execute(text("""
-            SELECT qty FROM inventory WHERE store_id=:st AND sku=:s
-        """), {"st": payload.store_id, "s": payload.sku}).scalar() or 0
-
-        logger.info("inventory_adjusted store=%s sku=%s delta=%d qty=%d reason=%s",
-                 payload.store_id, payload.sku, payload.delta, int(current), payload.reason)
-
-        return {"store_id": payload.store_id, "sku": payload.sku, "delta": payload.delta, "qty": int(current)}
-@app.get("/catalog/inventory")
-def get_inventory(store_id: str = Query(...), limit: int = Query(500, ge=1, le=5000)):
-    """
-    Return current stock for a store.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT sku, qty
-              FROM inventory
-             WHERE store_id=:st
-             ORDER BY sku
-             LIMIT :l
-        """), {"st": store_id, "l": limit}).all()
-        out = [{"sku": r[0], "qty": int(r[1])} for r in rows]
-        logger.info("inventory_listed store=%s count=%d", store_id, len(out))
-        return out
+# Legacy endpoints removed - fully migrated to V2 architecture
