@@ -1,4 +1,5 @@
 import os
+import logging
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -7,6 +8,8 @@ _DEFAULT_DB = "postgresql+psycopg2://zeroque:zeroque@localhost:5000/zeroque_dev"
 
 _engine: Engine | None = None
 SessionLocal = sessionmaker(autocommit=False, autoflush=False)
+
+logger = logging.getLogger("database")
 
 class Base(DeclarativeBase):
     pass
@@ -44,3 +47,18 @@ def check_db() -> bool:
         return True
     except Exception:
         return False
+
+def get_db():
+    """Get database session with proper lifecycle management"""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Database session error: {e}")
+        raise e
+    finally:
+        try:
+            db.close()
+        except Exception as e:
+            logger.error(f"Error closing database session: {e}")

@@ -14,64 +14,58 @@ This service implements:
 
 import os
 import sys
-import asyncio
-import logging
 import uuid
 import time
-from fastapi import FastAPI, HTTPException, Body, Path, Query, BackgroundTasks, Depends
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime
-from sqlalchemy import text, String, Boolean, DateTime, func, JSON, Numeric, Integer, BigInteger, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship, Session
-from sqlalchemy.dialects.postgresql import UUID
+from fastapi import FastAPI, HTTPException, Body, Path, Query, Depends
+from typing import Dict, Any
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
 
 from zeroque_common.communication import (
-    ServiceBus, ServiceEvent, ServiceEventType,
-    CircuitBreaker, CircuitBreakerConfig,
+    ServiceEvent, ServiceEventType,
+    CircuitBreakerConfig,
     SagaOrchestrator, SagaStep,
-    ServiceRegistry, HealthMonitor,
-    EventStore,
     # Global instances
-    service_bus as global_service_bus,
+    service_bus,
     service_circuit_breaker,
     saga_orchestrator,
     service_registry,
     health_monitor,
     event_store
 )
-from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal, Base
+from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal, get_db
 from zeroque_common.middleware.usage_middleware import add_api_call_meter
 from zeroque_common.middleware.idempotency import add_idempotency_middleware
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
+from utils.helpers import set_rls_context
 
-# Import service layer and repositories
-from .services import ServiceFactory
+# Import service layer, repositories and schemas
 from .repositories import RepositoryFactory, ProvisioningError, ValidationError, NotFoundError, DuplicateError
 from .models import *
+from .schemas import *
 
 # Service configuration
 SERVICE_NAME = "provisioning"
 app = FastAPI(title="Enhanced ZeroQue Provisioning Service", version="2.0.0")
 
 # Dependency injection for database sessions
-def get_db() -> Session:
-    """Get database session with proper lifecycle management"""
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Database session error: {e}")
-        raise e
-    finally:
-        try:
-            db.close()
-        except Exception as e:
-            logger.error(f"Error closing database session: {e}")
+# def get_db():
+#     """Get database session with proper lifecycle management"""
+#     db = SessionLocal()
+#     try:
+#         yield db
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"Database session error: {e}")
+#         raise e
+#     finally:
+#         try:
+#             db.close()
+#         except Exception as e:
+#             logger.error(f"Error closing database session: {e}")
 
 # Custom exception handlers
 @app.exception_handler(ValidationError)
@@ -99,7 +93,6 @@ async def provisioning_exception_handler(request, exc: ProvisioningError):
     return HTTPException(status_code=500, detail="Internal provisioning error")
 
 # Initialize enhanced communication
-service_bus = global_service_bus
 circuit_breaker_config = CircuitBreakerConfig(
     failure_threshold=3,
     timeout=30,
@@ -281,8 +274,8 @@ async def publish_tenant_provisioned_event(tenant_data: dict):
             correlation_id=f"tenant_provision_{int(time.time())}"
         )
         
-        # Publish to event bus
-        await event_bus.publish(event)
+        # Publish to service bus
+        await service_bus.publish(event)
         logger.info(f"Published tenant provisioned event: {tenant_data}")
         
     except Exception as e:
@@ -396,11 +389,11 @@ class ProvisioningSaga:
         )
         
         return {"permissions_setup": True}
-    
+
     async def notify_services(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Notify other services about tenant creation"""
         logger.info(f"Notifying services about tenant: {data}")
-        
+
         # Notify inventory service
         await service_bus.publish_to_service(
             target_service="inventory",
@@ -411,9 +404,9 @@ class ProvisioningSaga:
             },
             correlation_id=data.get("saga_id", "")
         )
-        
+
         return {"services_notified": True}
-    
+
     # Compensation methods
     async def compensate_tenant(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Compensate tenant validation"""
@@ -439,17 +432,6 @@ class ProvisioningSaga:
 
 # Initialize saga
 provisioning_saga = ProvisioningSaga()
-
-# RLS Context Helper
-def set_rls_context(db_session, tenant_id: str = None, user_id: str = None):
-    """Set Row Level Security context for database session"""
-    try:
-        if tenant_id:
-            db_session.execute(text("SET LOCAL row_security.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-        if user_id:
-            db_session.execute(text("SET LOCAL row_security.user_id = :user_id"), {"user_id": user_id})
-    except Exception as e:
-        logger.warning(f"Failed to set RLS context: {str(e)}")
 
 # Service startup
 @app.on_event("startup")
@@ -477,96 +459,6 @@ async def health():
 @app.get("/readiness")
 def readiness():
     return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
-
-# ---------------- V2 Payload Models ----------------
-class TenantV2Payload(BaseModel):
-    name: str = Field(..., description="Human-friendly tenant name")
-    type: str = Field(default="customer", description="Tenant type: customer, marketplace, vendor_org, partner, end_user, retailer, distributor")
-    scenario_id: Optional[str] = Field(None, description="Scenario ID for tenant")
-
-class SiteV2Payload(BaseModel):
-    name: str = Field(..., description="Site name")
-    site_type: str = Field(default="retail", description="Site type: onsite, retail, distributor")
-    geo: Optional[dict] = Field(None, description="Geographic information")
-
-class StoreV2Payload(BaseModel):
-    name: str = Field(..., description="Store name")
-    store_type: str = Field(default="cashierless", description="Store type: cashierless, vending, kiosk, traditional, custom")
-    geo: Optional[dict] = Field(None, description="Geographic information")
-    timezone: Optional[str] = Field(None, description="Store timezone")
-
-class UserV2Payload(BaseModel):
-    email: str = Field(..., description="User email")
-    display_name: str = Field(..., description="User display name")
-    active: bool = Field(default=True, description="User active status")
-
-class RoleV2Payload(BaseModel):
-    code: str = Field(..., description="Role code")
-    description: str = Field(default="", description="Role description")
-
-class PermissionV2Payload(BaseModel):
-    code: str = Field(..., description="Permission code")
-    name: str = Field(..., description="Permission name")
-    description: Optional[str] = Field(None, description="Permission description")
-    category: Optional[str] = Field(None, description="Permission category")
-
-class RoleAssignmentV2Payload(BaseModel):
-    user_id: str = Field(..., description="User ID")
-    role_id: str = Field(..., description="Role ID")
-    scope_type: str = Field(default="GLOBAL", description="Scope type: GLOBAL, TENANT, SITE, STORE")
-    scope_id: Optional[str] = Field(None, description="Scope ID")
-
-class VendorV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    name: str = Field(..., description="Vendor name")
-    description: Optional[str] = Field(None, description="Vendor description")
-    rating: Optional[float] = Field(None, description="Vendor rating (0-5)")
-
-class TenantSiteV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    site_id: str = Field(..., description="Site ID")
-    role_type: str = Field(default="manager", description="Role type")
-    rights_expire_at: Optional[datetime] = Field(None, description="Rights expiration")
-
-class SiteStoreV2Payload(BaseModel):
-    site_id: str = Field(..., description="Site ID")
-    store_id: str = Field(..., description="Store ID")
-
-class StoreVendorV2Payload(BaseModel):
-    store_id: str = Field(..., description="Store ID")
-    vendor_id: str = Field(..., description="Vendor ID")
-
-class TenantLinkV2Payload(BaseModel):
-    parent_tenant_id: str = Field(..., description="Parent tenant ID")
-    child_tenant_id: str = Field(..., description="Child tenant ID")
-    relationship: str = Field(default="distributor", description="Relationship type")
-
-class ErpIntegrationPayload(BaseModel):
-    tenant_id: Optional[str] = Field(None, description="Tenant ID")
-    vendor_id: Optional[str] = Field(None, description="Vendor ID")
-    type: str = Field(..., description="Integration type: ERP or CRM")
-    config: dict = Field(..., description="Integration configuration")
-
-class AccessControlPayload(BaseModel):
-    site_id: Optional[str] = Field(None, description="Site ID")
-    store_id: Optional[str] = Field(None, description="Store ID")
-    type: str = Field(..., description="Access control type: gate, RFID, lock, card_reader")
-    config: dict = Field(..., description="Access control configuration")
-
-class UserAccessGrantPayload(BaseModel):
-    user_id: str = Field(..., description="User ID")
-    access_control_id: str = Field(..., description="Access control ID")
-    grant_type: str = Field(default="permanent", description="Grant type: permanent or temporary")
-    valid_until: Optional[datetime] = Field(None, description="Grant expiration")
-
-class ScenarioPayload(BaseModel):
-    code: str = Field(..., description="Scenario code")
-    name: str = Field(..., description="Scenario name")
-    config: Optional[dict] = Field(None, description="Scenario configuration")
-
-class ZeroqueRailPayload(BaseModel):
-    type: str = Field(..., description="Rail type: payments, cv, marketplace")
-    config: dict = Field(..., description="Rail configuration")
 
 # ---------------- V2 Enhanced Endpoints ----------------
 @app.post("/provisioning/tenants", response_model=Dict[str, Any])

@@ -10,6 +10,13 @@ zeroque_common/auth/dev_jwt.py
 zeroque_common/auth/jwt.py
 zeroque_common/billing/__init__.py
 zeroque_common/billing/helpers.py
+zeroque_common/communication/__init__.py
+zeroque_common/communication/circuit_breaker.py
+zeroque_common/communication/event_store.py
+zeroque_common/communication/health_monitor.py
+zeroque_common/communication/saga_orchestrator.py
+zeroque_common/communication/service_bus.py
+zeroque_common/communication/service_discovery.py
 zeroque_common/db/__init__.py
 zeroque_common/db/session.py
 zeroque_common/events/__init__.py
@@ -35,6 +42,7 @@ zeroque_common/models/budgets.py
 zeroque_common/models/commerce.py
 zeroque_common/models/entitlements.py
 zeroque_common/models/ledger.py
+zeroque_common/models/notification_deliveries.py
 zeroque_common/models/notifications.py
 zeroque_common/models/pricing.py
 zeroque_common/models/products.py
