@@ -1,29 +1,56 @@
-# services/entitlements/main.py
-from fastapi import FastAPI, Body, Query, HTTPException, Path, Request
+# services/entitlements/main.py - Production Ready Version
+# Entitlements Service V2 - Pure Access Control & Usage Tracking
+from fastapi import FastAPI, Body, Query, HTTPException, Path, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from sqlalchemy import text, Column, String, Boolean, DateTime, Integer, BigInteger, JSON, ForeignKey, func
+from sqlalchemy import text, Column, String, Boolean, DateTime, Integer, BigInteger, JSON, func, Date
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-import logging, os, json, uuid
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
+import logging, os, json, uuid, httpx, redis
 from datetime import datetime, timedelta
-# Import common modules (fallback to basic implementations)
+import asyncio
+from contextlib import asynccontextmanager
+import time
+import prometheus_client
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+log = logging.getLogger(__name__)
+
+# Production Metrics
+ENTITLEMENT_CHECKS = Counter('entitlement_checks_total', 'Total entitlement checks', ['tenant_id', 'feature_code', 'result'])
+ENTITLEMENT_CHECK_DURATION = Histogram('entitlement_check_duration_seconds', 'Time spent checking entitlements')
+USAGE_RECORDINGS = Counter('usage_recordings_total', 'Total usage recordings', ['tenant_id', 'feature_code'])
+ACTIVE_CONNECTIONS = Gauge('active_connections', 'Active database connections')
+CACHE_HITS = Counter('cache_hits_total', 'Cache hits', ['cache_type'])
+CACHE_MISSES = Counter('cache_misses_total', 'Cache misses', ['cache_type'])
+
+# Redis Cache Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_client = None
+
+# Try to import common modules (fallback to basic implementations)
 try:
     from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal
-    from zeroque_common.observability import add_observability_middleware, add_api_call_meter, add_idempotency_middleware
+    from zeroque_common.observability import add_observability_middleware, add_api_call_meter
     from zeroque_common.health import HealthMonitor
-    from zeroque_common.circuit_breaker import CircuitBreakerManager
     from zeroque_common.events import EventStreamManager
     from zeroque_common.metrics import metrics
+    COMMON_MODULES_AVAILABLE = True
 except ImportError:
     # Fallback implementations
     from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    import os
     
     def get_engine():
-        return create_engine(os.getenv("DATABASE_URL", "postgresql://zeroque:password@localhost:5432/zeroque_dev"))
+        return create_engine(os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5000/zeroque_dev"))
     
     def init_db():
         pass
@@ -45,18 +72,12 @@ except ImportError:
     def add_api_call_meter(app):
         pass
     
-    def add_idempotency_middleware(app, routes=None):
-        pass
-    
     class HealthMonitor:
         def __init__(self, service_name):
             self.service_name = service_name
         
         async def check_system_health(self):
             return {"status": "ok", "service": self.service_name}
-    
-    class CircuitBreakerManager:
-        pass
     
     class EventStreamManager:
         def emit_event(self, service_name, event_type, data):
@@ -70,932 +91,559 @@ except ImportError:
         @staticmethod
         def histogram(name):
             return type('Histogram', (), {'observe': lambda x: None})()
-import redis
-import hashlib
-from celery import Celery
+    
+    COMMON_MODULES_AVAILABLE = False
 
-SERVICE_NAME = "entitlements"
-app = FastAPI(title="ZeroQue Entitlements Service V2", version="2.0.0")
-
-# ---------- logging ----------
-log = logging.getLogger(SERVICE_NAME)
-if not log.handlers:
-    h = logging.StreamHandler()
-    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
-    log.addHandler(h)
-log.setLevel(os.getenv("LOG_LEVEL", "INFO"))
-
-# Redis connection
-redis_url = os.getenv("REDIS_URL", "redis://localhost:4000/0")
-redis_client = redis.from_url(redis_url, decode_responses=True)
-
-# Celery configuration
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=os.getenv("REDIS_URL", "redis://localhost:4000/0"),
-    backend=os.getenv("REDIS_URL", "redis://localhost:4000/0")
-)
-
-# Observability
-add_observability_middleware(app, SERVICE_NAME)
-add_api_call_meter(app)
-add_idempotency_middleware(app, routes=[
-    ("POST", "/entitlements/v2/subscriptions"),
-    ("PUT", "/entitlements/v2/subscriptions"),
-    ("POST", "/entitlements/v2/usage/record"),
-])
-
-# Health monitoring
-health_monitor = HealthMonitor(SERVICE_NAME)
-circuit_breaker_manager = CircuitBreakerManager()
-event_stream_manager = EventStreamManager()
-
+# Fallback model definitions for usage tracking
 Base = declarative_base()
 
-# V2 SQLAlchemy Models for Entitlements System
-class SubscriptionV2(Base):
-    __tablename__ = "subscriptions"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    plan_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    provider: Mapped[str] = mapped_column(String(20), nullable=False)  # stripe, trade_account
-    status: Mapped[str] = mapped_column(String(50), nullable=False)
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-
-class SubscriptionPlanV2(Base):
-    __tablename__ = "plans"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=False)
-
-class SubscriptionFeatureV2(Base):
-    __tablename__ = "features"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=False)
-    category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class SubscriptionPlanFeatureV2(Base):
-    __tablename__ = "plan_features"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    plan_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    feature_code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    limits: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class SubscriptionUsageV2(Base):
+class SubscriptionUsage(Base):
     __tablename__ = "subscription_usage"
-    
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    site_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    feature_code: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    usage_type: Mapped[str] = mapped_column(String, nullable=False)
-    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(100), index=True)
+    feature_code = Column(String(50), index=True)
+    usage_type = Column(String(50), index=True)
+    usage_count = Column(Integer, default=0)
+    period_start = Column(DateTime(timezone=True))
+    period_end = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True))
 
-class EntitlementV2(Base):
-    __tablename__ = "entitlements"
-    
-    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
-    site_id: Mapped[str] = mapped_column(String, primary_key=True)
-    feature: Mapped[str] = mapped_column(String, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-class FeatureFlagV2(Base):
-    __tablename__ = "feature_flags"
-    
-    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
-    key: Mapped[str] = mapped_column(String, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    variant: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class UsageMeterV2(Base):
-    __tablename__ = "usage_meters"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
-    description: Mapped[str] = mapped_column(String(255), nullable=False)
-
-class UsageEventV2(Base):
-    __tablename__ = "usage_events"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    site_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
-    store_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
-    meter_code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    subject_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    value: Mapped[int] = mapped_column(Integer, nullable=False)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-class UsageAggregateDailyV2(Base):
-    __tablename__ = "usage_aggregates_daily"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    day: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    site_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
-    store_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
-    meter_code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    value: Mapped[int] = mapped_column(Integer, nullable=False)
-
-# Celery Tasks
-@celery_app.task(bind=True)
-def process_subscription_activation(self, tenant_id: str, plan_code: str, external_id: str):
-    """Process subscription activation asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Update subscription status
-            db.execute(text("""
-                UPDATE subscriptions 
-                SET status = 'active', updated_at = NOW()
-                WHERE tenant_id = :tenant_id AND external_id = :external_id
-            """), {"tenant_id": tenant_id, "external_id": external_id})
-            db.commit()
-            
-            # Emit event
-            event_stream_manager.emit_event(
-                service_name=SERVICE_NAME,
-                event_type="subscription.activated",
-                data={
-                    "tenant_id": tenant_id,
-                    "plan_code": plan_code,
-                    "external_id": external_id
-                }
-            )
-            
-            log.info("subscription_activated", extra={"tenant_id": tenant_id, "plan_code": plan_code})
-            return {"status": "success", "tenant_id": tenant_id}
-            
-    except Exception as e:
-        log.error(f"subscription_activation_failed: {str(e)}")
-        raise self.retry(exc=e, countdown=60, max_retries=3)
-
-@celery_app.task(bind=True)
-def process_usage_aggregation(self, tenant_id: str, feature_code: str, period_start: datetime):
-    """Process usage aggregation for billing"""
-    try:
-        with SessionLocal() as db:
-            # Aggregate usage from subscription_usage
-            result = db.execute(text("""
-                SELECT COALESCE(SUM(usage_count), 0) as total_usage
-                FROM subscription_usage
-                WHERE tenant_id = :tenant_id 
-                AND feature_code = :feature_code
-                AND period_start = :period_start
-            """), {
-                "tenant_id": tenant_id,
-                "feature_code": feature_code,
-                "period_start": period_start
-            }).scalar()
-            
-            # Update aggregated usage
-            db.execute(text("""
-                INSERT INTO usage_aggregates_daily (tenant_id, meter_code, usage_count, period_date)
-                VALUES (:tenant_id, :meter_code, :usage_count, :period_date)
-                ON CONFLICT (tenant_id, meter_code, period_date)
-                DO UPDATE SET usage_count = :usage_count, updated_at = NOW()
-            """), {
-                "tenant_id": tenant_id,
-                "meter_code": feature_code,
-                "usage_count": result,
-                "period_date": period_start.date()
-            })
-            db.commit()
-            
-            log.info("usage_aggregated", extra={"tenant_id": tenant_id, "feature_code": feature_code})
-            return {"status": "success", "usage_count": result}
-            
-    except Exception as e:
-        log.error(f"usage_aggregation_failed: {str(e)}")
-        raise self.retry(exc=e, countdown=60, max_retries=3)
-
-@app.on_event("startup")
-def on_startup():
-    get_engine()
+# Lifespan management
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    log.info("Starting Entitlements Service V2")
     init_db()
-    log.info("service_started")
+    
+    # Create tables if they don't exist
+    try:
+        engine = get_engine()
+        Base.metadata.create_all(bind=engine)
+        log.info("Database tables created/verified")
+    except Exception as e:
+        log.error(f"Failed to create database tables: {str(e)}")
+    
+    # Initialize Redis connection
+    global redis_client
+    try:
+        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client.ping()  # Test connection
+        log.info("Redis connection established")
+    except Exception as e:
+        log.warning(f"Redis connection failed: {str(e)}")
+        redis_client = None
+    
+    yield
+    
+    # Shutdown
+    log.info("Shutting down Entitlements Service V2")
+    if redis_client:
+        redis_client.close()
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0", "enhanced": True}
+# Initialize FastAPI app with production middleware
+app = FastAPI(
+    title="ZeroQue Entitlements Service",
+    description="Feature Access Control & Usage Tracking Service",
+    version="2.0.0",
+    lifespan=lifespan
+)
 
-@app.get("/readiness")
-def readiness():
-    return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
+# Production Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# V2 API Endpoints
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # Configure appropriately for production
+)
 
-# Pydantic Models for API
-class SubscriptionV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    plan_code: str = Field(..., description="Subscription plan code")
-    provider: str = Field(..., description="Payment provider: stripe, trade_account")
-    external_id: str = Field(..., description="External subscription ID")
-    current_period_start: Optional[datetime] = Field(None, description="Current period start")
-    current_period_end: Optional[datetime] = Field(None, description="Current period end")
-    trial_end: Optional[datetime] = Field(None, description="Trial end date")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+# Add observability middleware
+add_observability_middleware(app, "entitlements")
+add_api_call_meter(app)
+
+# Custom Exceptions
+class EntitlementValidationError(Exception):
+    """Raised when entitlement validation fails"""
+    pass
+
+class EntitlementNotFoundError(Exception):
+    """Raised when entitlement resource is not found"""
+    pass
+
+class UsageTrackingError(Exception):
+    """Raised when usage tracking fails"""
+    pass
+
+# Exception Handlers
+@app.exception_handler(EntitlementValidationError)
+async def entitlement_validation_handler(request: Request, exc: EntitlementValidationError):
+    raise HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(EntitlementNotFoundError)
+async def entitlement_not_found_handler(request: Request, exc: EntitlementNotFoundError):
+    raise HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(UsageTrackingError)
+async def usage_tracking_handler(request: Request, exc: UsageTrackingError):
+    raise HTTPException(status_code=500, detail=str(exc))
+
+# Validation Helpers
+def validate_uuid(uuid_string: str, field_name: str) -> str:
+    """Validate UUID format"""
+    try:
+        uuid.UUID(uuid_string)
+        return uuid_string
+    except ValueError:
+        raise EntitlementValidationError(f"Invalid {field_name} format: {uuid_string}")
+
+def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] = None):
+    """Set Row Level Security context for database session"""
+    try:
+        if tenant_id:
+            db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+        if user_id:
+            db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
+        
+        # Enable RLS for the session
+        db.execute(text("SET row_security = on"))
+            
+    except Exception as e:
+        log.warning(f"Failed to set RLS context: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to set security context")
+
+# Cache Management
+async def get_cache(key: str) -> Optional[Dict[str, Any]]:
+    """Get value from Redis cache"""
+    global redis_client
+    try:
+        if not redis_client:
+            redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        
+        value = redis_client.get(key)
+        if value:
+            CACHE_HITS.labels(cache_type='entitlements').inc()
+            return json.loads(value)
+        else:
+            CACHE_MISSES.labels(cache_type='entitlements').inc()
+            return None
+    except Exception as e:
+        log.warning(f"Cache get error: {str(e)}")
+        return None
+
+async def set_cache(key: str, value: Dict[str, Any], ttl: int = 300) -> bool:
+    """Set value in Redis cache with TTL"""
+    global redis_client
+    try:
+        if not redis_client:
+            redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        
+        redis_client.setex(key, ttl, json.dumps(value))
+        return True
+    except Exception as e:
+        log.warning(f"Cache set error: {str(e)}")
+        return False
+
+# Subscription Service Integration with Caching
+async def get_tenant_subscription(tenant_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get tenant subscription from subscriptions service with caching.
+    """
+    cache_key = f"subscription:{tenant_id}"
+    
+    # Try cache first
+    cached = await get_cache(cache_key)
+    if cached:
+        return cached
+    
+    # Fallback to API call
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"http://localhost:8212/subscriptions/v2/subscriptions/{tenant_id}",
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Cache for 5 minutes
+                await set_cache(cache_key, data, 300)
+                return data
+            elif response.status_code == 404:
+                return None
+            else:
+                log.error(f"Failed to get subscription from subscriptions service: {response.status_code}")
+                return None
+    except Exception as e:
+        log.error(f"Error calling subscriptions service: {str(e)}")
+        return None
+
+async def get_plan_features(plan_code: str) -> List[Dict[str, Any]]:
+    """
+    Get plan features from subscriptions service with caching.
+    """
+    cache_key = f"plan_features:{plan_code}"
+    
+    # Try cache first
+    cached = await get_cache(cache_key)
+    if cached:
+        return cached.get("features", [])
+    
+    # Fallback to API call
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"http://localhost:8212/subscriptions/v2/plans/{plan_code}/features",
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Cache for 1 hour (plan features don't change often)
+                await set_cache(cache_key, data, 3600)
+                return data.get("features", [])
+            else:
+                log.error(f"Failed to get plan features from subscriptions service: {response.status_code}")
+                return []
+    except Exception as e:
+        log.error(f"Error calling subscriptions service for plan features: {str(e)}")
+        return []
+
+# Pydantic Models
 class CheckEntitlementV2Request(BaseModel):
-    tenant_id: str = Field(..., min_length=1)
-    feature_code: str = Field(..., min_length=1)
-    usage_type: Optional[str] = None  # e.g., "api_calls", "storage_gb"
+    tenant_id: str = Field(..., description="Tenant ID")
+    feature_code: str = Field(..., description="Feature code to check")
 
 class RecordUsageV2Request(BaseModel):
-    tenant_id: str = Field(..., min_length=1)
-    feature_code: str = Field(..., min_length=1)
-    usage_type: str = Field(..., min_length=1)
-    usage_count: int = Field(..., ge=0)
-
-class SubscriptionPlanV2Payload(BaseModel):
-    code: str = Field(..., description="Plan code")
-    name: str = Field(..., description="Plan name")
-    description: Optional[str] = Field(None, description="Plan description")
-    price_yearly_minor: int = Field(..., ge=0, description="Yearly price in minor units")
-    currency: str = Field("GBP", description="Currency code")
-
-class SubscriptionFeatureV2Payload(BaseModel):
-    code: str = Field(..., description="Feature code")
-    name: str = Field(..., description="Feature name")
-    description: Optional[str] = Field(None, description="Feature description")
-    category: Optional[str] = Field(None, description="Feature category")
-
-class SubscriptionPlanFeatureV2Payload(BaseModel):
-    plan_code: str = Field(..., description="Plan code")
+    tenant_id: str = Field(..., description="Tenant ID")
     feature_code: str = Field(..., description="Feature code")
-    enabled: bool = Field(True, description="Feature enabled")
-    limits: Optional[dict] = Field(None, description="Feature limits")
+    usage_type: str = Field(..., description="Type of usage (e.g., api_calls, orders)")
+    count: int = Field(..., description="Usage count")
 
-class FeatureFlagV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    key: str = Field(..., description="Feature flag key")
-    enabled: bool = Field(False, description="Feature flag enabled")
-    variant: Optional[str] = Field(None, description="Feature flag variant")
+# Health Endpoints
+@app.get("/health")
+async def health_check():
+    """Basic health check"""
+    return {"status": "ok", "service": "entitlements", "version": "2.0.0", "enhanced": True}
 
-class UsageEventV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    site_id: Optional[str] = Field(None, description="Site ID")
-    store_id: Optional[str] = Field(None, description="Store ID")
-    meter_code: str = Field(..., description="Usage meter code")
-    subject_id: Optional[str] = Field(None, description="Subject ID")
-    value: int = Field(..., ge=0, description="Usage value")
+@app.get("/readiness")
+async def readiness_check():
+    """Readiness check with dependencies"""
+    health_monitor = HealthMonitor("entitlements")
+    system_health = await health_monitor.check_system_health()
+    
+    db_healthy = check_db()
+    
+    return {
+        "service": "entitlements",
+        "db": db_healthy,
+        "system": system_health
+    }
 
-class EntitlementV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
-    site_id: str = Field(..., description="Site ID")
-    feature: str = Field(..., description="Feature name")
-    enabled: bool = Field(True, description="Feature enabled")
-
-# ---------- V2 Entitlements ----------
-def _get_cache_key_v2(tenant_id: str, feature_code: str) -> str:
-    """Generate cache key for tenant-level entitlements"""
-    key_data = f"{tenant_id}:{feature_code}"
-    return f"entitlement_v2:{hashlib.md5(key_data.encode()).hexdigest()}"
-
-def _get_usage_cache_key_v2(tenant_id: str, feature_code: str, usage_type: str, period: str) -> str:
-    """Generate cache key for usage tracking"""
-    key_data = f"{tenant_id}:{feature_code}:{usage_type}:{period}"
-    return f"usage_v2:{hashlib.md5(key_data.encode()).hexdigest()}"
-
+# Core Entitlement Endpoints
 @app.get("/entitlements/v2/check")
-def check_entitlement_v2(
-    tenant_id: str = Query(...),
-    feature_code: str = Query(...),
-    usage_type: Optional[str] = Query(None)
+async def check_entitlement_v2(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    feature_code: str = Query(..., description="Feature code to check")
 ):
     """
-    Check if a tenant has entitlement to a feature, with optional usage limit checking.
+    Check if tenant has access to a specific feature.
     """
-    cache_key = _get_cache_key_v2(tenant_id, feature_code)
+    start_time = time.time()
     
-    # Try Redis cache first
     try:
-        cached = redis_client.get(cache_key)
-        if cached:
-            entitlement_data = json.loads(cached)
-            log.info("entitlement_cache_hit tenant=%s feature=%s", tenant_id, feature_code)
-            
-            # Check usage limits if requested
-            if usage_type and entitlement_data.get("limits"):
-                limits = entitlement_data["limits"]
-                if usage_type in limits:
-                    period = datetime.utcnow().strftime("%Y-%m")
-                    usage_key = _get_usage_cache_key_v2(tenant_id, feature_code, usage_type, period)
-                    current_usage = int(redis_client.get(usage_key) or 0)
-                    limit_value = limits[usage_type]
-                    
-                    if current_usage >= limit_value:
-                        return {
-                            "entitled": False,
-                            "reason": f"Usage limit exceeded: {current_usage}/{limit_value}",
-                            "feature_code": feature_code,
-                            "current_usage": current_usage,
-                            "limit": limit_value,
-                            "cached": True
-                        }
-            
+        # Validate inputs
+        validate_uuid(tenant_id, "tenant_id")
+        
+        # Get subscription from subscriptions service
+        subscription = await get_tenant_subscription(tenant_id)
+        
+        if not subscription:
+            ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='no_subscription').inc()
             return {
-                "entitled": entitlement_data["enabled"],
+                "tenant_id": tenant_id,
                 "feature_code": feature_code,
-                "limits": entitlement_data.get("limits"),
-                "cached": True
-            }
-    except Exception as e:
-        log.warning("entitlement_cache_error: %s", str(e))
-    
-    # Cache miss - query database
-    with SessionLocal() as db:
-        row = db.execute(text("""
-            SELECT pf.enabled, pf.limits, s.status, s.plan_code
-              FROM subscriptions s
-              JOIN plan_features pf ON s.plan_code = pf.plan_code
-              JOIN features f ON pf.feature_code = f.code
-             WHERE s.tenant_id = :tid 
-               AND pf.feature_code = :feature AND f.active = TRUE
-               AND s.status IN ('active', 'trialing')
-        """), {"tid": tenant_id, "feature": feature_code}).first()
-        
-        if not row:
-            # No active subscription or feature not found
-            entitlement_data = {"enabled": False, "limits": None}
-        else:
-            enabled, limits, status, plan_code = row
-            entitlement_data = {
-                "enabled": bool(enabled),
-                "limits": limits,
-                "status": status,
-                "plan_code": plan_code
+                "entitled": False,
+                "enabled": False,
+                "reason": "No active subscription found"
             }
         
-        # Cache the result for 5 minutes
-        try:
-            redis_client.setex(cache_key, 300, json.dumps(entitlement_data))
-        except Exception as e:
-            log.warning("entitlement_cache_set_error: %s", str(e))
+        # Check if subscription is active
+        if subscription.get("status") not in ["active", "trialing"]:
+            ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='inactive_subscription').inc()
+            return {
+                "tenant_id": tenant_id,
+                "feature_code": feature_code,
+                "entitled": False,
+                "enabled": False,
+                "reason": f"Subscription status: {subscription.get('status')}"
+            }
         
-        # Check usage limits if requested
-        if usage_type and entitlement_data.get("limits"):
-            limits = entitlement_data["limits"]
-            if usage_type in limits:
-                period = datetime.utcnow().strftime("%Y-%m")
-                usage_key = _get_usage_cache_key_v2(tenant_id, feature_code, usage_type, period)
-                current_usage = int(redis_client.get(usage_key) or 0)
-                limit_value = limits[usage_type]
+        # Get plan features from subscriptions service
+        plan_code = subscription.get("plan_code")
+        features = await get_plan_features(plan_code)
+        
+        # Check if feature is included in plan
+        feature_found = None
+        for feature in features:
+            if feature.get("feature_code") == feature_code:
+                feature_found = feature
+                break
+        
+        if not feature_found:
+            ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='feature_not_included').inc()
+            return {
+                "tenant_id": tenant_id,
+                "feature_code": feature_code,
+                "entitled": False,
+                "enabled": False,
+                "reason": f"Feature not included in plan: {plan_code}"
+            }
+        
+        # Check usage limits if applicable
+        limits = feature_found.get("limits", {})
+        if limits:
+            # Check current usage for this month
+            db = SessionLocal()
+            try:
+                set_rls_context(db, tenant_id)
                 
-                if current_usage >= limit_value:
-                    return {
-                        "entitled": False,
-                        "reason": f"Usage limit exceeded: {current_usage}/{limit_value}",
-                        "feature_code": feature_code,
-                        "current_usage": current_usage,
-                        "limit": limit_value,
-                        "cached": False
-                    }
+                # Get current month start and end
+                now = datetime.now()
+                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                
+                usage = db.query(SubscriptionUsage).filter(
+                    SubscriptionUsage.tenant_id == tenant_id,
+                    SubscriptionUsage.feature_code == feature_code,
+                    SubscriptionUsage.period_start >= month_start,
+                    SubscriptionUsage.period_start < month_end
+                ).first()
+                
+                if usage and limits.get("rate_limit"):
+                    if usage.usage_count >= limits["rate_limit"]:
+                        ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='limit_exceeded').inc()
+                        return {
+                            "tenant_id": tenant_id,
+                            "feature_code": feature_code,
+                            "entitled": True,
+                            "enabled": False,
+                            "reason": f"Usage limit exceeded: {usage.usage_count}/{limits['rate_limit']}",
+                            "usage": usage.usage_count,
+                            "limit": limits["rate_limit"]
+                        }
+            finally:
+                db.close()
         
-        log.info("entitlement_checked tenant=%s feature=%s enabled=%s", 
-                tenant_id, feature_code, entitlement_data["enabled"])
+        # Success case
+        ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='enabled').inc()
+        log.info("entitlement_checked", extra={
+            "tenant": tenant_id,
+            "feature": feature_code,
+            "enabled": True,
+            "plan_code": plan_code
+        })
         
         return {
-            "entitled": entitlement_data["enabled"],
+            "tenant_id": tenant_id,
             "feature_code": feature_code,
-            "limits": entitlement_data.get("limits"),
-            "status": entitlement_data.get("status"),
-            "plan_code": entitlement_data.get("plan_code"),
-            "cached": False
+            "entitled": True,
+            "enabled": True,
+            "plan_code": plan_code,
+            "limits": limits
         }
+        
+    except (EntitlementValidationError, EntitlementNotFoundError) as e:
+        ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='validation_error').inc()
+        raise e
+    except SQLAlchemyError as e:
+        ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='database_error').inc()
+        log.error(f"Database error in check_entitlement: {str(e)}")
+        raise UsageTrackingError(f"Database error: {str(e)}")
+    except Exception as e:
+        ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='internal_error').inc()
+        log.error(f"Unexpected error in check_entitlement: {str(e)}")
+        raise UsageTrackingError(f"Internal error: {str(e)}")
+    finally:
+        # Record timing metric
+        ENTITLEMENT_CHECK_DURATION.observe(time.time() - start_time)
 
 @app.post("/entitlements/v2/usage/record")
-def record_usage_v2(payload: RecordUsageV2Request = Body(...)):
+async def record_usage_v2(payload: RecordUsageV2Request = Body(...)):
     """
-    Record usage for a feature (for limit tracking).
+    Record usage for a tenant feature.
     """
-    with SessionLocal() as db:
-        # Record usage in database (using site_id as tenant_id for tenant-level tracking)
-        period_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        period_end = (period_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    try:
+        # Validate inputs
+        validate_uuid(payload.tenant_id, "tenant_id")
         
-        db.execute(text("""
-            INSERT INTO subscription_usage(tenant_id, site_id, feature_code, usage_type, usage_count, period_start, period_end)
-            VALUES(:tid, :tid, :feature, :type, :count, :start, :end)
-            ON CONFLICT (tenant_id, site_id, feature_code, usage_type, period_start)
-            DO UPDATE SET usage_count = subscription_usage.usage_count + :count,
-                        updated_at = NOW()
-        """), {
-            "tid": payload.tenant_id,
-            "feature": payload.feature_code,
-            "type": payload.usage_type,
-            "count": payload.usage_count,
-            "start": period_start,
-            "end": period_end
-        })
-        db.commit()
-        
-        # Update Redis cache
-        period = datetime.utcnow().strftime("%Y-%m")
-        usage_key = _get_usage_cache_key_v2(payload.tenant_id, payload.feature_code, payload.usage_type, period)
-        
+        db = SessionLocal()
         try:
-            current_usage = redis_client.incrby(usage_key, payload.usage_count)
-            # Set expiration to end of month
-            end_of_month = datetime.utcnow().replace(day=1, month=datetime.utcnow().month + 1) - timedelta(days=1)
-            redis_client.expireat(usage_key, end_of_month)
+            set_rls_context(db, payload.tenant_id)
+            
+            # Get current month start and end
+            now = datetime.now()
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            
+            # Get or create usage record
+            usage = db.query(SubscriptionUsage).filter(
+                SubscriptionUsage.tenant_id == payload.tenant_id,
+                SubscriptionUsage.feature_code == payload.feature_code,
+                SubscriptionUsage.usage_type == payload.usage_type,
+                SubscriptionUsage.period_start >= month_start,
+                SubscriptionUsage.period_start < month_end
+            ).first()
+            
+            if usage:
+                usage.usage_count += payload.count
+                usage.updated_at = now
+            else:
+                usage = SubscriptionUsage(
+                    tenant_id=payload.tenant_id,
+                    feature_code=payload.feature_code,
+                    usage_type=payload.usage_type,
+                    usage_count=payload.count,
+                    period_start=month_start,
+                    period_end=month_end
+                )
+                db.add(usage)
+            
+            db.commit()
+            
+            log.info("usage_recorded", extra={
+                "tenant": payload.tenant_id,
+                "feature": payload.feature_code,
+                "type": payload.usage_type,
+                "count": payload.count,
+                "total": usage.usage_count
+            })
+            
+            return {
+                "tenant_id": payload.tenant_id,
+                "feature_code": payload.feature_code,
+                "usage_type": payload.usage_type,
+                "count": payload.count,
+                "total": usage.usage_count,
+                "period": now.strftime("%Y-%m")
+            }
         except Exception as e:
-            log.warning("usage_cache_update_error: %s", str(e))
-            current_usage = payload.usage_count
-        
-        # Trigger async aggregation
-        process_usage_aggregation.delay(payload.tenant_id, payload.feature_code, period_start)
-        
-        log.info("usage_recorded tenant=%s feature=%s type=%s count=%d total=%d", 
-                payload.tenant_id, payload.feature_code, payload.usage_type, payload.usage_count, current_usage)
-        
-        return {
-            "recorded": True,
-            "current_usage": current_usage,
-            "period": period,
-            "feature_code": payload.feature_code,
-            "usage_type": payload.usage_type
-        }
+            db.rollback()
+            raise
+        finally:
+            db.close()
+            
+    except (EntitlementValidationError, EntitlementNotFoundError) as e:
+        raise e
+    except SQLAlchemyError as e:
+        log.error(f"Database error in record_usage: {str(e)}")
+        raise UsageTrackingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in record_usage: {str(e)}")
+        raise UsageTrackingError(f"Internal error: {str(e)}")
 
 @app.get("/entitlements/v2/usage/{tenant_id}")
-def get_usage_summary_v2(tenant_id: str = Path(...)):
+async def get_usage_summary_v2(tenant_id: str = Path(...)):
     """
     Get usage summary for a tenant.
     """
-    period = datetime.utcnow().strftime("%Y-%m")
-    
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT feature_code, usage_type, usage_count
-              FROM subscription_usage
-             WHERE tenant_id = :tid 
-               AND period_start <= :start AND period_end >= :end
-        """), {
-            "tid": tenant_id, 
-            "start": datetime.utcnow().replace(day=1), 
-            "end": datetime.utcnow()
-        }).all()
+    try:
+        # Validate inputs
+        validate_uuid(tenant_id, "tenant_id")
         
-        usage_summary = {}
-        for row in rows:
-            feature_code, usage_type, usage_count = row
-            if feature_code not in usage_summary:
-                usage_summary[feature_code] = {}
-            usage_summary[feature_code][usage_type] = int(usage_count)
+        db = SessionLocal()
+        try:
+            set_rls_context(db, tenant_id)
+            
+            # Get current month usage
+            now = datetime.now()
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            period = now.strftime("%Y-%m")
+            
+            usage_records = db.query(SubscriptionUsage).filter(
+                SubscriptionUsage.tenant_id == tenant_id,
+                SubscriptionUsage.period_start >= month_start,
+                SubscriptionUsage.period_start < month_end
+            ).all()
+            
+            usage_summary = {}
+            for record in usage_records:
+                key = f"{record.feature_code}:{record.usage_type}"
+                usage_summary[key] = {
+                    "feature_code": record.feature_code,
+                    "usage_type": record.usage_type,
+                    "count": record.usage_count,
+                    "period": period
+                }
+        finally:
+            db.close()
+            
+        log.info("usage_summary_retrieved", extra={
+            "tenant": tenant_id,
+            "period": period
+        })
         
-        log.info("usage_summary_retrieved tenant=%s period=%s", tenant_id, period)
         return {
             "tenant_id": tenant_id,
             "period": period,
             "usage": usage_summary
         }
 
-# Subscription Management
-@app.post("/entitlements/v2/subscriptions")
-def create_subscription_v2(payload: SubscriptionV2Payload = Body(...)):
-    """
-    Create a new tenant subscription.
-    """
-    with SessionLocal() as db:
-        # Check if tenant already has an active subscription
-        existing = db.execute(text("""
-            SELECT id FROM subscriptions 
-            WHERE tenant_id = :tid AND status IN ('active', 'trialing')
-        """), {"tid": payload.tenant_id}).first()
-        
-        if existing:
-            raise HTTPException(status_code=400, detail="Tenant already has an active subscription")
-        
-        # Create subscription
-        result = db.execute(text("""
-            INSERT INTO subscriptions(tenant_id, plan_code, provider, external_id, status)
-            VALUES(:tid, :plan, :provider, :external, 'active')
-            RETURNING id
-        """), {
-            "tid": payload.tenant_id,
-            "plan": payload.plan_code,
-            "provider": payload.provider,
-            "external": payload.external_id
-        })
-        
-        subscription_id = result.scalar()
-        db.commit()
-        
-        # Trigger async activation
-        process_subscription_activation.delay(payload.tenant_id, payload.plan_code, payload.external_id)
-        
-        log.info("subscription_created", extra={"tenant_id": payload.tenant_id, "plan_code": payload.plan_code})
-        return {
-            "subscription_id": subscription_id,
-            "tenant_id": payload.tenant_id,
-            "plan_code": payload.plan_code,
-            "status": "created"
-        }
+    except (EntitlementValidationError, EntitlementNotFoundError) as e:
+        raise e
+    except SQLAlchemyError as e:
+        log.error(f"Database error in get_usage: {str(e)}")
+        raise UsageTrackingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in get_usage: {str(e)}")
+        raise UsageTrackingError(f"Internal error: {str(e)}")
 
-@app.get("/entitlements/v2/subscriptions/{tenant_id}")
-def get_subscription_v2(tenant_id: str = Path(...)):
-    """
-    Get tenant subscription details.
-    """
-    with SessionLocal() as db:
-        row = db.execute(text("""
-            SELECT s.id, s.plan_code, s.provider, s.status, s.external_id,
-                   p.name as plan_name, p.description as plan_description
-              FROM subscriptions s
-              JOIN plans p ON s.plan_code = p.code
-             WHERE s.tenant_id = :tid
-             ORDER BY s.id DESC
-             LIMIT 1
-        """), {"tid": tenant_id}).first()
-        
-        if not row:
-            raise HTTPException(status_code=404, detail="No subscription found for tenant")
-        
-        return {
-            "subscription_id": row.id,
-            "tenant_id": tenant_id,
-            "plan_code": row.plan_code,
-            "plan_name": row.plan_name,
-            "plan_description": row.plan_description,
-            "provider": row.provider,
-            "status": row.status,
-            "external_id": row.external_id
-        }
+# Metrics endpoint
+@app.get("/metrics")
+async def metrics_endpoint():
+    """Prometheus metrics endpoint"""
+    return generate_latest()
 
-@app.get("/entitlements/v2/plans")
-def list_subscription_plans_v2():
-    """
-    List available subscription plans.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT code, name, description
-              FROM plans
-             ORDER BY name ASC
-        """)).all()
-        
-        plans = []
-        for row in rows:
-            plans.append({
-                "code": row.code,
-                "name": row.name,
-                "description": row.description
-            })
-        
-        return {"plans": plans}
-
-@app.get("/entitlements/v2/features")
-def list_features_v2():
-    """
-    List available features.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT code, name, description, category, active
-              FROM features
-             WHERE active = TRUE
-             ORDER BY category, name
-        """)).all()
-        
-        features = []
-        for row in rows:
-            features.append({
-                "code": row.code,
-                "name": row.name,
-                "description": row.description,
-                "category": row.category,
-                "active": row.active
-            })
-        
-        return {"features": features}
-
-@app.get("/entitlements/v2/plans/{plan_code}/features")
-def get_plan_features_v2(plan_code: str = Path(...)):
-    """
-    Get features for a specific plan.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT pf.feature_code, f.name, f.description, f.category,
-                   pf.enabled, pf.limits
-              FROM plan_features pf
-              JOIN features f ON pf.feature_code = f.code
-             WHERE pf.plan_code = :plan
-             ORDER BY f.category, f.name
-        """), {"plan": plan_code}).all()
-        
-        features = []
-        for row in rows:
-            features.append({
-                "feature_code": row.feature_code,
-                "name": row.name,
-                "description": row.description,
-                "category": row.category,
-                "enabled": row.enabled,
-                "limits": row.limits
-            })
-        
-        return {"plan_code": plan_code, "features": features}
-
+# Cache management endpoints
 @app.post("/entitlements/v2/cache/clear")
-def clear_entitlement_cache_v2(
-    tenant_id: str = Query(...),
-    feature_code: Optional[str] = Query(None)
+async def clear_cache_v2(
+    tenant_id: Optional[str] = Query(None, description="Tenant ID to clear cache for"),
+    cache_type: Optional[str] = Query(None, description="Cache type to clear")
 ):
     """
-    Clear entitlement cache for a tenant (useful after subscription changes).
+    Clear cache entries.
     """
     try:
-        if feature_code:
-            # Clear specific feature cache
-            cache_key = _get_cache_key_v2(tenant_id, feature_code)
-            redis_client.delete(cache_key)
-            log.info("entitlement_cache_cleared tenant=%s feature=%s", tenant_id, feature_code)
-        else:
-            # Clear all entitlement caches for the tenant
-            pattern = f"entitlement_v2:*"
+        global redis_client
+        if not redis_client:
+            raise HTTPException(status_code=503, detail="Cache not available")
+        
+        if tenant_id:
+            # Clear specific tenant cache
+            pattern = f"subscription:{tenant_id}"
             keys = redis_client.keys(pattern)
-            deleted_count = 0
-            for key in keys:
-                # Check if this key belongs to the tenant
-                cached_data = redis_client.get(key)
-                if cached_data:
-                    try:
-                        data = json.loads(cached_data)
-                        if data.get("tenant_id") == tenant_id:
-                            redis_client.delete(key)
-                            deleted_count += 1
-                    except:
-                        pass
-            log.info("entitlement_cache_cleared_bulk tenant=%s count=%d", tenant_id, deleted_count)
-        
-        return {"cleared": True, "tenant_id": tenant_id, "feature_code": feature_code}
-        
-    except Exception as e:
-        log.error("entitlement_cache_clear_error: %s", str(e))
-        raise HTTPException(status_code=500, detail="Failed to clear cache")
-
-# Health check endpoint
-# Feature Flags Management
-@app.get("/entitlements/v2/feature-flags/{tenant_id}")
-def get_feature_flags_v2(tenant_id: str = Path(...)):
-    """
-    Get all feature flags for a tenant.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT key, enabled, variant, updated_at
-              FROM feature_flags
-             WHERE tenant_id = :tid
-             ORDER BY key
-        """), {"tid": tenant_id}).all()
-        
-        flags = {}
-        for row in rows:
-            flags[row.key] = {
-                "enabled": row.enabled,
-                "variant": row.variant,
-                "updated_at": row.updated_at
-            }
-        
-        return {"tenant_id": tenant_id, "feature_flags": flags}
-
-@app.post("/entitlements/v2/feature-flags")
-def create_feature_flag_v2(payload: FeatureFlagV2Payload = Body(...)):
-    """
-    Create or update a feature flag for a tenant.
-    """
-    with SessionLocal() as db:
-        db.execute(text("""
-            INSERT INTO feature_flags(tenant_id, key, enabled, variant)
-            VALUES(:tid, :key, :enabled, :variant)
-            ON CONFLICT (tenant_id, key)
-            DO UPDATE SET enabled = :enabled, variant = :variant, updated_at = NOW()
-        """), {
-            "tid": payload.tenant_id,
-            "key": payload.key,
-            "enabled": payload.enabled,
-            "variant": payload.variant
-        })
-        db.commit()
-        
-        log.info("feature_flag_updated", extra={"tenant_id": payload.tenant_id, "key": payload.key})
-        return {
-            "tenant_id": payload.tenant_id,
-            "key": payload.key,
-            "enabled": payload.enabled,
-            "variant": payload.variant,
-            "status": "updated"
-        }
-
-# Usage Events Management
-@app.post("/entitlements/v2/usage/events")
-def record_usage_event_v2(payload: UsageEventV2Payload = Body(...)):
-    """
-    Record a usage event for tracking and billing.
-    """
-    with SessionLocal() as db:
-        result = db.execute(text("""
-            INSERT INTO usage_events(tenant_id, site_id, store_id, meter_code, subject_id, value)
-            VALUES(:tid, :sid, :stid, :meter, :subject, :value)
-            RETURNING id
-        """), {
-            "tid": payload.tenant_id,
-            "sid": payload.site_id,
-            "stid": payload.store_id,
-            "meter": payload.meter_code,
-            "subject": payload.subject_id,
-            "value": payload.value
-        })
-        
-        event_id = result.scalar()
-        db.commit()
-        
-        # Trigger async aggregation
-        process_usage_aggregation.delay(payload.tenant_id, payload.meter_code, datetime.utcnow().replace(day=1))
-        
-        log.info("usage_event_recorded", extra={
-            "event_id": event_id,
-            "tenant_id": payload.tenant_id,
-            "meter_code": payload.meter_code,
-            "value": payload.value
-        })
-        
-        return {
-            "event_id": event_id,
-            "tenant_id": payload.tenant_id,
-            "meter_code": payload.meter_code,
-            "value": payload.value,
-            "status": "recorded"
-        }
-
-@app.get("/entitlements/v2/usage/events/{tenant_id}")
-def get_usage_events_v2(
-    tenant_id: str = Path(...),
-    meter_code: Optional[str] = Query(None),
-    limit: int = Query(100, le=1000)
-):
-    """
-    Get usage events for a tenant.
-    """
-    with SessionLocal() as db:
-        query = """
-            SELECT id, site_id, store_id, meter_code, subject_id, value, occurred_at
-              FROM usage_events
-             WHERE tenant_id = :tid
-        """
-        params = {"tid": tenant_id}
-        
-        if meter_code:
-            query += " AND meter_code = :meter"
-            params["meter"] = meter_code
-        
-        query += " ORDER BY occurred_at DESC LIMIT :limit"
-        params["limit"] = limit
-        
-        rows = db.execute(text(query), params).all()
-        
-        events = []
-        for row in rows:
-            events.append({
-                "id": row.id,
-                "site_id": row.site_id,
-                "store_id": row.store_id,
-                "meter_code": row.meter_code,
-                "subject_id": row.subject_id,
-                "value": row.value,
-                "occurred_at": row.occurred_at
-            })
-        
-        return {"tenant_id": tenant_id, "events": events}
-
-# Usage Meters Management
-@app.get("/entitlements/v2/usage/meters")
-def list_usage_meters_v2():
-    """
-    List all available usage meters.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT code, description
-              FROM usage_meters
-             ORDER BY code
-        """)).all()
-        
-        meters = []
-        for row in rows:
-            meters.append({
-                "code": row.code,
-                "description": row.description
-            })
-        
-        return {"meters": meters}
-
-# Direct Entitlements Management
-@app.get("/entitlements/v2/direct/{tenant_id}")
-def get_direct_entitlements_v2(tenant_id: str = Path(...)):
-    """
-    Get direct entitlements for a tenant.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT site_id, feature, enabled
-              FROM entitlements
-             WHERE tenant_id = :tid
-             ORDER BY site_id, feature
-        """), {"tid": tenant_id}).all()
-        
-        entitlements = {}
-        for row in rows:
-            if row.site_id not in entitlements:
-                entitlements[row.site_id] = {}
-            entitlements[row.site_id][row.feature] = row.enabled
-        
-        return {"tenant_id": tenant_id, "entitlements": entitlements}
-
-@app.post("/entitlements/v2/direct")
-def create_direct_entitlement_v2(payload: EntitlementV2Payload = Body(...)):
-    """
-    Create or update a direct entitlement.
-    """
-    with SessionLocal() as db:
-        db.execute(text("""
-            INSERT INTO entitlements(tenant_id, site_id, feature, enabled)
-            VALUES(:tid, :sid, :feature, :enabled)
-            ON CONFLICT (tenant_id, site_id, feature)
-            DO UPDATE SET enabled = :enabled
-        """), {
-            "tid": payload.tenant_id,
-            "sid": payload.site_id,
-            "feature": payload.feature,
-            "enabled": payload.enabled
-        })
-        db.commit()
-        
-        log.info("direct_entitlement_updated", extra={
-            "tenant_id": payload.tenant_id,
-            "site_id": payload.site_id,
-            "feature": payload.feature
-        })
-        return {
-            "tenant_id": payload.tenant_id,
-            "site_id": payload.site_id,
-            "feature": payload.feature,
-            "enabled": payload.enabled,
-            "status": "updated"
-        }
-
-# Usage Aggregates
-@app.get("/entitlements/v2/usage/aggregates/{tenant_id}")
-def get_usage_aggregates_v2(
-    tenant_id: str = Path(...),
-    days: int = Query(30, le=365)
-):
-    """
-    Get daily usage aggregates for a tenant.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT day, site_id, store_id, meter_code, value
-              FROM usage_aggregates_daily
-             WHERE tenant_id = :tid
-               AND day >= :start_date
-             ORDER BY day DESC, meter_code
-        """), {
-            "tid": tenant_id,
-            "start_date": datetime.utcnow().date() - timedelta(days=days)
-        }).all()
-        
-        aggregates = {}
-        for row in rows:
-            day_str = row.day.strftime("%Y-%m-%d")
-            if day_str not in aggregates:
-                aggregates[day_str] = {}
+            if keys:
+                redis_client.delete(*keys)
             
-            key = f"{row.site_id or 'global'}:{row.store_id or 'global'}:{row.meter_code}"
-            aggregates[day_str][key] = row.value
-        
-        return {"tenant_id": tenant_id, "aggregates": aggregates}
+            log.info("cache_cleared", extra={"tenant_id": tenant_id, "keys_cleared": len(keys)})
+            return {"cleared": True, "tenant_id": tenant_id, "keys_cleared": len(keys)}
+        else:
+            # Clear all cache
+            redis_client.flushdb()
+            log.info("cache_cleared_all")
+            return {"cleared": True, "message": "All cache cleared"}
+            
+    except Exception as e:
+        log.error(f"Cache clear error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Cache clear failed: {str(e)}")
 
-@app.get("/health/detailed")
-async def detailed_health():
-    """Get detailed health information"""
-    return await health_monitor.check_system_health()
-
+# Main execution
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8211)

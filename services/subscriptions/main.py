@@ -3,22 +3,205 @@ from fastapi import FastAPI, Body, Query, HTTPException, Path, Request, Header
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
-import logging, os, json, time
+from sqlalchemy.exc import SQLAlchemyError
+import logging, os, json, time, uuid
 from datetime import datetime, timedelta
-from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal
 import stripe as stripe_sdk
 from fastapi.responses import PlainTextResponse
 
-SERVICE_NAME = "subscriptions"
-app = FastAPI(title="ZeroQue Site Subscriptions Service", version="0.1.0")
+# Try to import common models, fallback to local definitions
+try:
+    from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal
+    from zeroque_common.models.subscriptions import (
+        SubscriptionPlan, Feature, PlanFeature, TenantSubscription, SiteBillingAccount
+    )
+    COMMON_MODELS_AVAILABLE = True
+except ImportError:
+    # Fallback local models for development
+    from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, ForeignKey, DateTime, func, Text, JSON
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.orm import sessionmaker
+    
+    Base = declarative_base()
+    
+    class SubscriptionPlan(Base):
+        __tablename__ = "subscription_plans"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        code = Column(String(50), unique=True, index=True)
+        name = Column(String(100))
+        description = Column(Text, nullable=True)
+        price_yearly_minor = Column(BigInteger)
+        currency = Column(String(3), default="GBP")
+        active = Column(Boolean, default=True)
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+        updated_at = Column(DateTime(timezone=True), nullable=True)
+    
+    class Feature(Base):
+        __tablename__ = "features"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        code = Column(String(50), unique=True, index=True)
+        name = Column(String(100))
+        description = Column(Text, nullable=True)
+        category = Column(String(50))
+        active = Column(Boolean, default=True)
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    class PlanFeature(Base):
+        __tablename__ = "plan_features"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        plan_code = Column(String(50), ForeignKey("subscription_plans.code"))
+        feature_code = Column(String(50), ForeignKey("features.code"))
+        enabled = Column(Boolean, default=True)
+        limits = Column(JSON)
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    class TenantSubscription(Base):
+        __tablename__ = "tenant_subscriptions"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        tenant_id = Column(String(100), unique=True, index=True)
+        plan_code = Column(String(50), ForeignKey("subscription_plans.code"))
+        payment_method = Column(String(20))
+        status = Column(String(50), default="active")
+        external_id = Column(String(100), index=True)
+        current_period_start = Column(DateTime(timezone=True))
+        current_period_end = Column(DateTime(timezone=True))
+        trial_end = Column(DateTime(timezone=True))
+        canceled_at = Column(DateTime(timezone=True))
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+        updated_at = Column(DateTime(timezone=True))
+    
+    class SiteBillingAccount(Base):
+        __tablename__ = "site_billing_accounts"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        tenant_id = Column(String(100), index=True)
+        site_id = Column(String(100), index=True)
+        payment_method = Column(String(20))
+        external_id = Column(String(100), index=True)
+        active = Column(Boolean, default=True)
+        account_metadata = Column(JSON)
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+        updated_at = Column(DateTime(timezone=True))
+    
+    def get_engine():
+        return create_engine(os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5000/zeroque_dev"))
+    
+    def init_db():
+        engine = get_engine()
+        Base.metadata.create_all(bind=engine)
+    
+    def check_db():
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return True
+        except Exception:
+            return False
+    
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
+    COMMON_MODELS_AVAILABLE = False
 
-# ---------- logging ----------
+SERVICE_NAME = "subscriptions"
+app = FastAPI(title="ZeroQue Tenant Subscriptions Service", version="2.0.0")
+
+# Logging setup
 log = logging.getLogger(SERVICE_NAME)
 if not log.handlers:
-    h = logging.StreamHandler()
-    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
-    log.addHandler(h)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
+    log.addHandler(handler)
 log.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
+# Custom Exceptions
+class SubscriptionValidationError(Exception):
+    """Raised when subscription validation fails"""
+    pass
+
+class SubscriptionNotFoundError(Exception):
+    """Raised when subscription resource is not found"""
+    pass
+
+class SubscriptionDuplicateError(Exception):
+    """Raised when duplicate subscription resource is created"""
+    pass
+
+class BillingAccountError(Exception):
+    """Raised when billing account operations fail"""
+    pass
+
+class PaymentProcessingError(Exception):
+    """Raised when payment processing fails"""
+    pass
+
+# Exception Handlers
+@app.exception_handler(SubscriptionValidationError)
+async def subscription_validation_exception_handler(request: Request, exc: SubscriptionValidationError):
+    raise HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(SubscriptionNotFoundError)
+async def subscription_not_found_exception_handler(request: Request, exc: SubscriptionNotFoundError):
+    raise HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(SubscriptionDuplicateError)
+async def subscription_duplicate_exception_handler(request: Request, exc: SubscriptionDuplicateError):
+    raise HTTPException(status_code=409, detail=str(exc))
+
+@app.exception_handler(BillingAccountError)
+async def billing_account_exception_handler(request: Request, exc: BillingAccountError):
+    raise HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(PaymentProcessingError)
+async def payment_processing_exception_handler(request: Request, exc: PaymentProcessingError):
+    raise HTTPException(status_code=500, detail=str(exc))
+
+# Validation Helpers
+def validate_uuid(uuid_string: str, field_name: str) -> str:
+    """Validate UUID format"""
+    try:
+        uuid.UUID(uuid_string)
+        return uuid_string
+    except ValueError:
+        raise SubscriptionValidationError(f"Invalid {field_name} format: {uuid_string}")
+
+def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] = None):
+    """Set Row Level Security context for database session"""
+    try:
+        if tenant_id:
+            db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+        if user_id:
+            db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
+        
+        # Enable RLS for the session
+        db.execute(text("SET row_security = on"))
+        
+    except Exception as e:
+        log.warning(f"Failed to set RLS context: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to set security context")
+
+# Pydantic Models
+class TenantSubscriptionV2Payload(BaseModel):
+    tenant_id: str = Field(..., description="Tenant ID")
+    plan_code: str = Field(..., description="Subscription plan code")
+    payment_method: str = Field(..., description="Payment method: stripe, trade")
+    external_id: Optional[str] = Field(None, description="External subscription ID")
+    current_period_start: Optional[datetime] = Field(None, description="Current period start")
+    current_period_end: Optional[datetime] = Field(None, description="Current period end")
+    trial_end: Optional[datetime] = Field(None, description="Trial end date")
+
+class CreateBillingAccountV2Payload(BaseModel):
+    tenant_id: str = Field(..., description="Tenant ID")
+    payment_method: str = Field(..., description="Payment method: stripe, trade")
+    external_id: str = Field(..., description="External billing account ID")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+# Health Endpoints
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0", "enhanced": True}
+
+@app.get("/readiness")
+def readiness():
+    return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
 
 @app.on_event("startup")
 def on_startup():
@@ -26,353 +209,194 @@ def on_startup():
     init_db()
     log.info("service_started")
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": SERVICE_NAME}
-
-@app.get("/readiness")
-def readiness():
-    return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
-
-# ---------- payloads ----------
-class SubscribeSitePayload(BaseModel):
-    plan_code: str = Field(..., pattern="^(core|pro|enterprise)$")
-    payment_method: str = Field(..., pattern="^(stripe|trade)$")
-
-class CreateBillingAccountPayload(BaseModel):
-    payment_method: str = Field(..., pattern="^(stripe|trade)$")
-    external_id: str = Field(..., min_length=1)
-    metadata: Optional[Dict[str, Any]] = None
-
-class TradeAccountPayload(BaseModel):
-    ar_customer_code: str = Field(..., min_length=1)
-    terms: str = Field("NET30", max_length=20)
-
-# ---------- subscription plans ----------
-@app.get("/subscriptions/plans")
-def list_plans(active: Optional[bool] = Query(None)):
+# Subscription Plans Management
+@app.get("/subscriptions/v2/plans")
+def list_plans_v2(active: Optional[bool] = Query(None)):
     """
     List available subscription plans with pricing.
     """
-    with SessionLocal() as db:
-        where_clause = "WHERE active = :a" if active is not None else "WHERE 1=1"
-        params = {"a": active} if active is not None else {}
-        
-        rows = db.execute(text(f"""
-            SELECT code, name, description, price_yearly_minor, currency, active
-              FROM subscription_plans
-              {where_clause}
-             ORDER BY price_yearly_minor
-        """), params).all()
-        
-        out = [{
-            "code": r[0], "name": r[1], "description": r[2],
-            "price_yearly_minor": int(r[3]), "currency": r[4], "active": bool(r[5])
-        } for r in rows]
-        log.info("plans_listed count=%d active=%s", len(out), active)
-        return out
+    try:
+        with SessionLocal() as db:
+            query = db.query(SubscriptionPlan)
+            
+            if active is not None:
+                query = query.filter(SubscriptionPlan.active == active)
+            
+            plans = query.order_by(SubscriptionPlan.price_yearly_minor).all()
+            
+            result = [{
+                "code": plan.code,
+                "name": plan.name,
+                "description": plan.description,
+                "price_yearly_minor": plan.price_yearly_minor,
+                "currency": plan.currency,
+                "active": plan.active
+            } for plan in plans]
+            
+            log.info("plans_listed count=%d active=%s", len(result), active)
+            return {"plans": result}
+            
+    except SQLAlchemyError as e:
+        log.error(f"Database error in list_plans: {str(e)}")
+        raise PaymentProcessingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in list_plans: {str(e)}")
+        raise PaymentProcessingError(f"Internal error: {str(e)}")
 
-@app.get("/subscriptions/plans/{plan_code}/features")
-def list_plan_features(plan_code: str = Path(...)):
+@app.get("/subscriptions/v2/plans/{plan_code}/features")
+def list_plan_features_v2(plan_code: str = Path(...)):
     """
     List features included in a specific plan.
     """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT f.code, f.name, f.description, f.category, pf.enabled, pf.limits
-              FROM plan_features pf
-              JOIN features f ON pf.feature_code = f.code
-             WHERE pf.plan_code = :plan AND f.active = TRUE
-             ORDER BY f.category, f.name
-        """), {"plan": plan_code}).all()
-        
-        out = [{
-            "code": r[0], "name": r[1], "description": r[2], "category": r[3],
-            "enabled": bool(r[4]), "limits": r[5]
-        } for r in rows]
-        log.info("plan_features_listed plan=%s count=%d", plan_code, len(out))
-        return out
+    try:
+        with SessionLocal() as db:
+            # Join PlanFeature with Feature to get feature details
+            features = db.query(PlanFeature, Feature).join(
+                Feature, PlanFeature.feature_code == Feature.code
+            ).filter(
+                PlanFeature.plan_code == plan_code,
+                Feature.active == True
+            ).order_by(Feature.category, Feature.name).all()
+            
+            result = [{
+                "feature_code": plan_feature.feature_code,
+                "name": feature.name,
+                "description": feature.description,
+                "category": feature.category,
+                "enabled": plan_feature.enabled,
+                "limits": plan_feature.limits
+            } for plan_feature, feature in features]
+            
+            log.info("plan_features_listed plan=%s count=%d", plan_code, len(result))
+            return {"plan_code": plan_code, "features": result}
+            
+    except SQLAlchemyError as e:
+        log.error(f"Database error in list_plan_features: {str(e)}")
+        raise PaymentProcessingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in list_plan_features: {str(e)}")
+        raise PaymentProcessingError(f"Internal error: {str(e)}")
 
-# ---------- site billing accounts ----------
-@app.post("/subscriptions/sites/{tenant_id}/{site_id}/billing-accounts")
-def create_billing_account(
-    tenant_id: str = Path(...), 
-    site_id: str = Path(...), 
-    payload: CreateBillingAccountPayload = Body(...)
-):
+# Tenant Subscriptions Management
+@app.post("/subscriptions/v2/subscriptions")
+def create_subscription_v2(payload: TenantSubscriptionV2Payload = Body(...)):
     """
-    Create a billing account for a site (Stripe customer or Trade account).
+    Create a new tenant subscription.
     """
-    with SessionLocal() as db:
-        # Check if billing account already exists
-        exists = db.execute(text("""
-            SELECT id FROM site_billing_accounts
-             WHERE tenant_id=:tid AND site_id=:sid AND payment_method=:pm
-        """), {"tid": tenant_id, "sid": site_id, "pm": payload.payment_method}).first()
+    try:
+        # Validate inputs
+        validate_uuid(payload.tenant_id, "tenant_id")
         
-        if exists:
-            raise HTTPException(status_code=400, detail="Billing account already exists for this site and payment method")
-        
-        db.execute(text("""
-            INSERT INTO site_billing_accounts(tenant_id, site_id, payment_method, external_id, metadata)
-            VALUES(:tid, :sid, :pm, :ext, :meta)
-        """), {
-            "tid": tenant_id, "sid": site_id, "pm": payload.payment_method,
-            "ext": payload.external_id, "meta": json.dumps(payload.metadata or {})
-        })
-        db.commit()
-        log.info("billing_account_created tenant=%s site=%s method=%s", tenant_id, site_id, payload.payment_method)
-        return {"created": True, "tenant_id": tenant_id, "site_id": site_id, "payment_method": payload.payment_method}
+        with SessionLocal() as db:
+            set_rls_context(db, payload.tenant_id)
+            
+            # Check if tenant already has an active subscription
+            existing = db.query(TenantSubscription).filter(
+                TenantSubscription.tenant_id == payload.tenant_id,
+                TenantSubscription.status.in_(['active', 'trialing'])
+            ).first()
+            
+            if existing:
+                raise SubscriptionDuplicateError(f"Tenant already has an active subscription")
+            
+            # Create subscription
+            subscription = TenantSubscription(
+                tenant_id=payload.tenant_id,
+                plan_code=payload.plan_code,
+                payment_method=payload.payment_method,
+                status='active',
+                external_id=payload.external_id or f"sub_{payload.tenant_id}_{int(time.time())}",
+                current_period_start=payload.current_period_start,
+                current_period_end=payload.current_period_end,
+                trial_end=payload.trial_end
+            )
+            db.add(subscription)
+            db.commit()
+            
+            log.info("subscription_created tenant=%s plan=%s external_id=%s", 
+                    payload.tenant_id, payload.plan_code, subscription.external_id)
+            
+            return {
+                "subscription_id": subscription.id,
+                "tenant_id": payload.tenant_id,
+                "plan_code": payload.plan_code,
+                "external_id": subscription.external_id,
+                "status": "created"
+            }
+            
+    except (SubscriptionValidationError, SubscriptionNotFoundError, SubscriptionDuplicateError) as e:
+        raise e
+    except SQLAlchemyError as e:
+        log.error(f"Database error in create_subscription: {str(e)}")
+        raise PaymentProcessingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in create_subscription: {str(e)}")
+        raise PaymentProcessingError(f"Internal error: {str(e)}")
 
-@app.get("/subscriptions/sites/{tenant_id}/{site_id}/billing-accounts")
-def list_billing_accounts(tenant_id: str = Path(...), site_id: str = Path(...)):
+@app.get("/subscriptions/v2/subscriptions/{tenant_id}")
+def get_subscription_v2(tenant_id: str = Path(...)):
     """
-    List billing accounts for a site.
+    Get tenant subscription details.
     """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT payment_method, external_id, active, metadata, created_at
-              FROM site_billing_accounts
-             WHERE tenant_id=:tid AND site_id=:sid
-             ORDER BY created_at
-        """), {"tid": tenant_id, "sid": site_id}).all()
+    try:
+        # Validate inputs
+        validate_uuid(tenant_id, "tenant_id")
         
-        out = [{
-            "payment_method": r[0], "external_id": r[1], "active": bool(r[2]),
-            "metadata": r[3], "created_at": r[4]
-        } for r in rows]
-        log.info("billing_accounts_listed tenant=%s site=%s count=%d", tenant_id, site_id, len(out))
-        return out
+        with SessionLocal() as db:
+            set_rls_context(db, tenant_id)
+            
+            # Get subscription
+            subscription = db.query(TenantSubscription).filter(
+                TenantSubscription.tenant_id == tenant_id
+            ).first()
+            
+            if not subscription:
+                raise SubscriptionNotFoundError(f"No subscription found for tenant {tenant_id}")
+            
+            # Get plan details separately
+            plan = db.query(SubscriptionPlan).filter(
+                SubscriptionPlan.code == subscription.plan_code
+            ).first()
+            
+            return {
+                "subscription_id": subscription.id,
+                "tenant_id": tenant_id,
+                "plan_code": subscription.plan_code,
+                "plan_name": plan.name if plan else None,
+                "plan_description": plan.description if plan else None,
+                "payment_method": subscription.payment_method,
+                "status": subscription.status,
+                "external_id": subscription.external_id,
+                "current_period_start": subscription.current_period_start,
+                "current_period_end": subscription.current_period_end,
+                "trial_end": subscription.trial_end,
+                "created_at": subscription.created_at
+            }
+            
+    except (SubscriptionValidationError, SubscriptionNotFoundError) as e:
+        raise e
+    except SQLAlchemyError as e:
+        log.error(f"Database error in get_subscription: {str(e)}")
+        raise PaymentProcessingError(f"Database error: {str(e)}")
+    except Exception as e:
+        log.error(f"Unexpected error in get_subscription: {str(e)}")
+        raise PaymentProcessingError(f"Internal error: {str(e)}")
 
-# ---------- site subscriptions ----------
+# Legacy endpoints for backward compatibility (deprecated)
 @app.post("/subscriptions/sites/{tenant_id}/{site_id}/subscribe")
-def subscribe_site(
+def subscribe_site_legacy(
     tenant_id: str = Path(...), 
     site_id: str = Path(...), 
-    payload: SubscribeSitePayload = Body(...)
+    payload: dict = Body(...)
 ):
     """
-    Create a subscription for a site.
+    Legacy endpoint for site subscriptions (deprecated - use tenant-level endpoints).
     """
-    with SessionLocal() as db:
-        # Check if site already has an active subscription
-        existing = db.execute(text("""
-            SELECT id FROM site_subscriptions
-             WHERE tenant_id=:tid AND site_id=:sid AND status IN ('active', 'trialing')
-        """), {"tid": tenant_id, "sid": site_id}).first()
-        
-        if existing:
-            raise HTTPException(status_code=400, detail="Site already has an active subscription")
-        
-        # Verify billing account exists
-        billing_account = db.execute(text("""
-            SELECT external_id FROM site_billing_accounts
-             WHERE tenant_id=:tid AND site_id=:sid AND payment_method=:pm AND active=TRUE
-        """), {"tid": tenant_id, "sid": site_id, "pm": payload.payment_method}).first()
-        
-        if not billing_account:
-            raise HTTPException(status_code=400, detail=f"No active billing account found for payment method: {payload.payment_method}")
-        
-        # Handle different payment methods
-        if payload.payment_method == "trade":
-            external_id = f"trade-sub-{tenant_id}-{site_id}-{int(time.time())}"
-            status = "active"
-            current_period_start = datetime.utcnow()
-            current_period_end = current_period_start + timedelta(days=365)  # 1 year
-            
-            db.execute(text("""
-                INSERT INTO site_subscriptions(tenant_id, site_id, plan_code, payment_method, status, 
-                                             external_id, current_period_start, current_period_end)
-                VALUES(:tid, :sid, :plan, :pm, :st, :ext, :start, :end)
-            """), {
-                "tid": tenant_id, "sid": site_id, "plan": payload.plan_code, "pm": payload.payment_method,
-                "st": status, "ext": external_id, "start": current_period_start, "end": current_period_end
-            })
-            db.commit()
-            log.info("subscription_created_trade tenant=%s site=%s plan=%s sub=%s", 
-                    tenant_id, site_id, payload.plan_code, external_id)
-            
-        else:  # stripe
-            api_key = os.getenv("STRIPE_API_KEY", "").strip()
-            if not api_key:
-                # Stubbed subscription for dev
-                external_id = f"stub_sub_{tenant_id}_{site_id}_{int(time.time())}"
-                status = "active"
-                current_period_start = datetime.utcnow()
-                current_period_end = current_period_start + timedelta(days=365)
-                
-                db.execute(text("""
-                    INSERT INTO site_subscriptions(tenant_id, site_id, plan_code, payment_method, status, 
-                                                 external_id, current_period_start, current_period_end)
-                    VALUES(:tid, :sid, :plan, :pm, :st, :ext, :start, :end)
-                """), {
-                    "tid": tenant_id, "sid": site_id, "plan": payload.plan_code, "pm": payload.payment_method,
-                    "st": status, "ext": external_id, "start": current_period_start, "end": current_period_end
-                })
-                db.commit()
-                log.warning("subscription_stubbed_stripe tenant=%s site=%s plan=%s sub=%s", 
-                           tenant_id, site_id, payload.plan_code, external_id)
-            else:
-                # Real Stripe subscription
-                stripe_sdk.api_key = api_key
-                
-                # Get plan pricing
-                plan = db.execute(text("""
-                    SELECT price_yearly_minor FROM subscription_plans WHERE code=:plan
-                """), {"plan": payload.plan_code}).first()
-                
-                if not plan:
-                    raise HTTPException(status_code=400, detail="Invalid plan code")
-                
-                # Create Stripe subscription
-                created = stripe_sdk.Subscription.create(
-                    customer=billing_account[0],
-                    items=[{"price_data": {
-                        "currency": "gbp",
-                        "product_data": {"name": f"{payload.plan_code.title()} Plan"},
-                        "unit_amount": plan[0],  # price in minor units
-                        "recurring": {"interval": "year"}
-                    }}],
-                    payment_behavior="default_incomplete"
-                )
-                
-                db.execute(text("""
-                    INSERT INTO site_subscriptions(tenant_id, site_id, plan_code, payment_method, status, 
-                                                 external_id, current_period_start, current_period_end)
-                    VALUES(:tid, :sid, :plan, :pm, :st, :ext, :start, :end)
-                """), {
-                    "tid": tenant_id, "sid": site_id, "plan": payload.plan_code, "pm": payload.payment_method,
-                    "st": created["status"], "ext": created["id"], 
-                    "start": datetime.fromtimestamp(created["current_period_start"]),
-                    "end": datetime.fromtimestamp(created["current_period_end"])
-                })
-                db.commit()
-                log.info("subscription_created_stripe tenant=%s site=%s plan=%s sub=%s status=%s",
-                        tenant_id, site_id, payload.plan_code, created["id"], created["status"])
-                external_id = created["id"]
-                status = created["status"]
-        
-        return {
-            "subscription_id": external_id, 
-            "status": status, 
-            "provider": payload.payment_method, 
-            "plan": payload.plan_code,
-            "tenant_id": tenant_id,
-            "site_id": site_id
-        }
+    raise HTTPException(
+        status_code=410, 
+        detail="Site-level subscriptions are deprecated. Please use tenant-level subscription endpoints."
+    )
 
-@app.get("/subscriptions/sites/{tenant_id}/{site_id}")
-def get_site_subscription(tenant_id: str = Path(...), site_id: str = Path(...)):
-    """
-    Get current subscription for a site.
-    """
-    with SessionLocal() as db:
-        row = db.execute(text("""
-            SELECT plan_code, payment_method, status, external_id, current_period_start, 
-                   current_period_end, trial_end, canceled_at, created_at
-              FROM site_subscriptions
-             WHERE tenant_id=:tid AND site_id=:sid
-             ORDER BY created_at DESC
-             LIMIT 1
-        """), {"tid": tenant_id, "sid": site_id}).first()
-        
-        if not row:
-            raise HTTPException(status_code=404, detail="No subscription found for this site")
-        
-        return {
-            "tenant_id": tenant_id, "site_id": site_id, "plan_code": row[0],
-            "payment_method": row[1], "status": row[2], "external_id": row[3],
-            "current_period_start": row[4], "current_period_end": row[5],
-            "trial_end": row[6], "canceled_at": row[7], "created_at": row[8]
-        }
-
-@app.get("/subscriptions/sites/{tenant_id}")
-def list_tenant_subscriptions(tenant_id: str = Path(...)):
-    """
-    List all subscriptions for a tenant.
-    """
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT site_id, plan_code, payment_method, status, external_id, 
-                   current_period_start, current_period_end, created_at
-              FROM site_subscriptions
-             WHERE tenant_id=:tid
-             ORDER BY created_at DESC
-        """), {"tid": tenant_id}).all()
-        
-        out = [{
-            "tenant_id": tenant_id, "site_id": r[0], "plan_code": r[1],
-            "payment_method": r[2], "status": r[3], "external_id": r[4],
-            "current_period_start": r[5], "current_period_end": r[6], "created_at": r[7]
-        } for r in rows]
-        log.info("tenant_subscriptions_listed tenant=%s count=%d", tenant_id, len(out))
-        return out
-
-# ---------- Stripe webhook ----------
-@app.post("/webhooks/stripe")
-async def stripe_webhook(request: Request, stripe_signature: str = Header(None, alias="Stripe-Signature")):
-    """
-    Handle Stripe webhooks for subscription lifecycle events.
-    """
-    body = await request.body()
-    
-    # Verify signature if configured
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-    if webhook_secret:
-        try:
-            event = stripe_sdk.Webhook.construct_event(body, stripe_signature, webhook_secret)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid payload")
-        except stripe_sdk.error.SignatureVerificationError:
-            raise HTTPException(status_code=400, detail="Invalid signature")
-    else:
-        # Dev mode - parse without verification
-        event = json.loads(body)
-    
-    event_id = event.get("id")
-    event_type = event.get("type")
-    
-    if not event_id or not event_type:
-        raise HTTPException(status_code=400, detail="Missing event id or type")
-    
-    with SessionLocal() as db:
-        # Insert once; if duplicate -> already processed
-        try:
-            db.execute(text("""
-                INSERT INTO stripe_events(event_id, event_type) VALUES(:id, :t)
-            """), {"id": event_id, "t": event_type})
-            db.commit()
-        except Exception:
-            # Duplicate; safe to ACK
-            return {"ok": True, "duplicate": True}
-        
-        # Handle subscription events
-        if event_type in ("customer.subscription.created", "customer.subscription.updated", 
-                         "customer.subscription.deleted"):
-            obj = event.get("data", {}).get("object", {}) or {}
-            external_id = obj.get("id")
-            status = obj.get("status")
-            
-            if external_id and status:
-                # Update site subscription
-                updated = db.execute(text("""
-                    UPDATE site_subscriptions 
-                       SET status=:st, 
-                           current_period_start=:start,
-                           current_period_end=:end,
-                           updated_at=NOW()
-                     WHERE external_id=:ext
-                """), {
-                    "st": status, 
-                    "ext": external_id,
-                    "start": datetime.fromtimestamp(obj.get("current_period_start", 0)) if obj.get("current_period_start") else None,
-                    "end": datetime.fromtimestamp(obj.get("current_period_end", 0)) if obj.get("current_period_end") else None
-                }).rowcount
-                
-                if updated:
-                    db.commit()
-                    log.info("stripe_webhook_subscription_updated sub=%s status=%s", external_id, status)
-                else:
-                    log.warning("stripe_webhook_subscription_not_found sub=%s", external_id)
-        
-        return {"ok": True, "event_id": event_id, "event_type": event_type}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8212)
