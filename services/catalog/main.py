@@ -2574,7 +2574,7 @@ async def upsert_product_normalization_cache(cache_id: str = Path(...), payload:
             normalization_data=payload.normalization_data
         )
         db.add(cache)
-        db.commit()
+            db.commit()
         logger.info("product_normalization_cache_created", extra={"cache_id": cache_id})
         return {"cache_id": cache.id, "cv_product_id": cache.cv_product_id, "created": True}
 

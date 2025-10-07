@@ -225,11 +225,12 @@ services:
     container_name: zeroque_billing
     restart: unless-stopped
     ports:
-      - "8206:8206"
+      - "8083:8083"
     environment:
       - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8206
+      - PORT=8083
+      - ENVIRONMENT=production
     command:
       [
         "uvicorn",
@@ -237,7 +238,7 @@ services:
         "--host",
         "0.0.0.0",
         "--port",
-        "8206",
+        "8083",
       ]
     depends_on:
       postgres:
@@ -245,7 +246,113 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8206/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  approvals:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: approvals
+    container_name: zeroque_approvals
+    restart: unless-stopped
+    ports:
+      - "8213:8213"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8213
+      - ENVIRONMENT=production
+    command:
+      [
+        "uvicorn",
+        "services.approvals.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8213",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8213/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  entitlements:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: entitlements
+    container_name: zeroque_entitlements
+    restart: unless-stopped
+    ports:
+      - "8215:8215"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8215
+      - ENVIRONMENT=production
+    command:
+      [
+        "uvicorn",
+        "services.entitlements.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8215",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8215/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  subscriptions:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: subscriptions
+    container_name: zeroque_subscriptions
+    restart: unless-stopped
+    ports:
+      - "8216:8216"
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8216
+      - ENVIRONMENT=production
+    command:
+      [
+        "uvicorn",
+        "services.subscriptions.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8216",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8216/health"]
       interval: 30s
       timeout: 10s
       retries: 3

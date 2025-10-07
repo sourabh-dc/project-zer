@@ -1,6 +1,6 @@
 """remove_unique_tenant_id_constraint_from_vendors
 
-Revision ID: 78fdeb5c8664
+Revision ID: 0030_remove_unique_tenant_id_constraint_from_vendors
 Revises: 461ea035e400
 Create Date: 2025-10-06 09:44:30.263882+00:00
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '78fdeb5c8664'
-down_revision = '461ea035e400'
+revision = '0030_remove_unique_tenant_id_constraint_from_vendors'
+down_revision = '0022_add_scenario_id_to_tenants_new'
 branch_labels = None
 depends_on = None
 

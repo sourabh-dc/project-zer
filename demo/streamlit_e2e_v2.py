@@ -800,9 +800,9 @@ with tabs[4]:
     with catalog_tabs[0]:
         st.subheader("🏢 Vendor Management")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
+    col1, col2 = st.columns(2)
+    
+    with col1:
             st.markdown("**Create/Update Vendor**")
             vendor_id = st.text_input("Vendor ID", value=st.session_state.get("vendor_id", ""), key="catalog_vendor_id_input")
             if not vendor_id:
@@ -829,8 +829,8 @@ with tabs[4]:
                     status, response = api_call("POST", f"{CATALOG_BASE}/catalog/v2/vendors/{vendor_id}", payload)
                     show_response(status, response, "Vendor Creation")
                     show_curl("Create Vendor", "POST", f"{CATALOG_BASE}/catalog/v2/vendors/{vendor_id}", payload)
-        
-        with col2:
+    
+    with col2:
             st.markdown("**List Vendors**")
             if st.button("📋 List All Vendors"):
                 params = {"tenant_id": st.session_state.get("tenant_id", ""), "limit": 50}

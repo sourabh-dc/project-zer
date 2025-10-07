@@ -38,6 +38,111 @@ PRICING ──────────── SETTLEMENTS ──── LEDGER
 - **Enhanced RBAC**: Granular permissions with role-based access control
 - **Audit & Compliance**: Complete audit trails and data retention policies
 
+
+
+EXECUTIVE SUMMARY
+
+ZeroQue is a scalable, modular backend platform for unmanned store in retail operations, supporting unmanned stores with computer vision integration. It has been enhanced to a graph-based multi-tenant marketplace, enabling vendors to supply products across shared sites/stores, with flexible budgets, approvals, ledgers, and monetization.
+
+The architecture supports three primary customer scenarios: large end-user sites (e.g., manufacturing/hospitals with employee budgets), retailers (e.g., supermarkets with guest/loyalty access), and distributors (e.g., RS/Rubix with control tower views). Cross-cutting capabilities include strict multi-tenancy, ledger accounting, flexible identity, catalog management, reporting/analytics, and access controls. It ensures modularity for providers (e.g., AiFi CV, Stripe/Adyen payments) and future ZeroQue-owned rails.
+
+Key strengths: Event-driven microservices (~19 services + Marketplace), PostgreSQL schema (~127 tables including legacy/transition for smooth migration), RLS for isolation, and extensibility for new scenarios. This design minimizes downtime during transition and positions ZeroQue for production scalability.
+
+Business Value: Enables 24/7 secure access, tight spend controls, and revenue streams (SaaS tiers, usage-based, add-ons). Risks mitigated via phased migration; total alignment with requirements.
+
+
+
+PROJECT OVERVIEW
+What the Project Is
+ZeroQue is a microservices-based platform for managing unmanned retail stores, integrating computer vision (CV) for cashierless shopping. It processes user entry, product tracking, order summaries from CV providers (e.g., AiFi), and handles billing, inventory, ledgers, and reporting. The system supports multiple tenants, vendors, and shoppers, with modular extensions for payments and CV.
+Purpose
+- Core Goal: Provide a unified, adaptable platform for diverse retail scenarios, independent of specific CV/payment providers.
+
+- Business Objectives:
+- Enable end-users to manage onsite stores with budgets/approvals.
+- Support retailers with flexible access/payments/analytics.
+- Empower distributors with cross-client views and integrations.
+- Ensure scalability, compliance, and monetization (subscriptions, usage-based).
+- Technical Objectives: maintain modularity for future (e.g., ZeroQue Payments/CV); ensure data isolation
+and auditability.
+The architecture is designed for extensibility—toggle features per scenario, add modules without core changes.
+REQUIREMENTS BREAKDOWN
+Requirements are categorized into scenarios, cross-cutting capabilities, modularity, and monetization. The design ensures the same core supports all, with configuration for specifics.
+Customer Scenarios
+1. Large End-User Sites (e.g., Manufacturing, Hospitals, Labs)
+   - Onsite stores stocked from chosen suppliers (vendors).
+   - 24/7 employee access with guardrails (budgets/approvals linked to cost centres/departments).
+   - Multi-level RBAC (admins for overall, managers for approvals/reports, end-users for shopping).
+   - Reporting/restocking tools for usage trends, spends, and inventory needs.
+2. Retailers (e.g., Screwfix, Supermarkets, DIY Chains)
+   - Unmanned stores for trade/consumer customers.
+   - Flexible payments (app/debit/credit/trade accounts).
+   - Identity: Loyalty/app logins, guest checkouts.
+   - Analytics: Footfall, best-selling SKUs, sales trends.
+3. Value-Add Distributors (e.g., RS, Rubix)
+   - Install stores at client sites; deepen relationships.
+   - Control tower view across clients (aggregate data without breaching isolation).
+   - Clients see own usage/budgets.
+   - Global catalog/pricing/invoicing; seamless ERP/CRM integration.
+- Extension for Future Scenarios: Configurable to add more (e.g., custom via toggles).
+
+Cross-Cutting Capabilities across all the 3 scenarios
+- Multi-Tenancy: Strict separation ("walled gardens") for organizations; shared sites/stores across tenants/vendors.
+- Ledger-Based Accounting: Track all financials (allocations/spends/adjustments/refunds) with double-entry.
+- Flexible Identity: Support employees/contractors (registered with budgets), loyalty customers, guests.
+- Product Catalog Management: Tenants/vendors upload/edit/manage products from any supplier.
+- Reporting & Analytics: Analyze consumption/cost/trends/performance at store/group/tenant levels.
+- Access Controls: Compatible with physical hardware (gates/RFID/locks/card readers).
+
+Modularity & Independence
+- CV Models: Process post-requests from AiFi (or others); independent—swap providers without changes. Future: Slot ZeroQue models.
+- Payments: Integrate Stripe/Adyen/trade; tenant as merchant-of-record. Future: Add ZeroQue gateway.
+- Extensibility: Switch features on/off per module/seat; annual/enterprise fees; adaptable for offline/edge, premium SLAs.
+
+Monetization
+- Basic: SaaS subscriptions (monthly per store/site; tiers: Core/Pro/Enterprise based on cameras/users/SKUs/retention).
+- Add-Ons/One-Time: Analytics/control plane/SSO/offline/SLAs; onboarding/hardware commissioning/integrations.
+- Advanced: Usage-based (transactions/notifications/storage); rev-share on SKUs; ZeroQue rails (payments/CV licensing/marketplace add-ons).
+
+
+
+
+Key Differentiators for Each Scenario:
+Large End-User Sites:
+•	Budget controls and approval workflows
+•	Department/cost centre charging
+•	Internal usage reporting
+•	ERP integration for finance
+
+
+Retailers:
+•	Multiple payment methods (card, trade, loyalty)
+•	Guest checkout capability
+•	Sales analytics and footfall tracking
+•	CRM integration
+
+Distributors:
+•	Multi-client consolidated view
+•	Control tower dashboard
+•	Cross-site inventory management
+•	Partner performance tracking
+•	Centralized ERP/CRM sync
+
+
+**Key Characteristics**
+- Multi-Tenant Marketplace: Vendors supply across tenants/stores/sites.
+- Flexible Relationships: M:N for shared resources.
+- Vendor-Centric: Offers/pricing per vendor.
+- Pricing: Multi-level with caching/versioning.
+- Settlements: Automated with disputes.
+- RBAC: Scoped with hierarchies/caching.
+- Audit: Full trails/retention.
+- Modularity: Pluggable via configs/rails.
+
+
+
+
+
 ## Database Schema
 
 ### Extensions & Types

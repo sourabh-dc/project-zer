@@ -1,448 +1,1385 @@
-from fastapi import FastAPI, HTTPException, Path, Body, Request, Query
-from pydantic import BaseModel, Field
-import os, time, logging
-import stripe as stripe_sdk
-from sqlalchemy import text
-from fastapi.responses import PlainTextResponse
-from zeroque_common.db.session import get_engine, init_db, SessionLocal, check_db
-from zeroque_common.models.billing import (
-    Plan, Feature, PlanFeature, StripeCustomer, TradeAccount, Subscription,
-    PaymentPreference, TradeInvoice, StripeCharge
-)
-from .reports import router as reports_router
-from fastapi import Header
+# Billing Service V2 - Consolidated Production Ready
+# All billing functionality in a single file for simplicity
+
+import os
+import uuid
+import logging
 import json
-log = logging.getLogger("billing")
-logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
-SERVICE_NAME = "billing"
-app = FastAPI(title="ZeroQue Billing Service", version="0.5.0")  # bumped
+import time
+from datetime import datetime, timezone, date, timedelta
+from contextlib import asynccontextmanager, contextmanager
+from typing import Dict, Any, Optional, List, Callable
 
-# ---------- logging ----------
-log = logging.getLogger(SERVICE_NAME)
-if not log.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
-    log.addHandler(_h)
-log.setLevel(logging.INFO)
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response
+from sqlalchemy import create_engine, func, text, Column, String, Boolean, DateTime, Integer, BigInteger, Text, UUID, ForeignKey, Date
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.dialects.postgresql import JSONB
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+from pydantic import BaseModel, Field, field_validator
+import structlog
 
-# ---------- routers ----------
-app.include_router(reports_router, prefix="/billing", tags=["reports"])
+# =============================================================================
+# MODELS (SQLAlchemy)
+# =============================================================================
 
-# ---------- payloads ----------
-class SubscribePayload(BaseModel):
-    plan: str = Field(..., pattern="^(core|pro|enterprise)$")
-    payment_method: str = Field(..., pattern="^(stripe|trade)$")
+Base = declarative_base()
 
-class TradePayload(BaseModel):
-    ar_customer_code: str
-    terms: str = "NET30"
+class VendorSettlement(Base):
+    """Vendor Settlement: Main settlement record for vendor payouts"""
+    __tablename__ = "vendor_settlements"
+    
+    settlement_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    settlement_period_start = Column(Date, nullable=False)
+    settlement_period_end = Column(Date, nullable=False)
+    total_sales_minor = Column(BigInteger, nullable=False, default=0)
+    total_commission_minor = Column(BigInteger, nullable=False, default=0)
+    total_adjustments_minor = Column(BigInteger, nullable=False, default=0)
+    net_settlement_minor = Column(BigInteger, nullable=False, default=0)
+    currency = Column(String(3), nullable=False)
+    settlement_status = Column(String(20), nullable=False, default='pending')
+    settlement_date = Column(DateTime(timezone=True), nullable=True)
+    payment_reference = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    items = relationship("VendorSettlementItem", back_populates="settlement")
+    adjustments = relationship("VendorSettlementAdjustment", back_populates="settlement")
+    disputes = relationship("VendorDispute", back_populates="settlement")
 
-class PaymentPrefPayload(BaseModel):
-    method: str  # 'trade' | 'stripe'
+class VendorSettlementItem(Base):
+    """Vendor Settlement Item: Individual items within a settlement"""
+    __tablename__ = "vendor_settlement_items"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id = Column(UUID(as_uuid=True), nullable=False)
+    settlement_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
+    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    payout_amount_minor = Column(BigInteger, nullable=False)
+    commission_amount_minor = Column(BigInteger, nullable=False)
+    fee_amount_minor = Column(BigInteger, nullable=False, default=0)
+    net_amount_minor = Column(BigInteger, nullable=False)
+    settlement_status = Column(String(20), nullable=False, default='pending')
+    paid_out_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    settlement = relationship("VendorSettlement", back_populates="items")
+    adjustments = relationship("VendorSettlementAdjustment", back_populates="settlement_item")
+    disputes = relationship("VendorDispute", back_populates="settlement_item")
 
-class PostInvoiceLine(BaseModel):
-    sku: str
-    qty: int
-    unit_price_minor: int
-    currency: str | None = None
-    tax_minor: int = 0          # NEW
-    tax_code: str | None = None # NEW
+class VendorSettlementAdjustment(Base):
+    """Vendor Settlement Adjustment: Adjustments to settlement amounts"""
+    __tablename__ = "vendor_settlement_adjustments"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    settlement_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
+    settlement_item_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    adjustment_amount_minor = Column(BigInteger, nullable=False)
+    adjustment_reason = Column(String(255), nullable=False)
+    adjustment_type = Column(String(20), nullable=False)
+    currency = Column(String(3), nullable=False)
+    adjustment_status = Column(String(20), nullable=False, default='pending')
+    adjustment_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    settlement = relationship("VendorSettlement", back_populates="adjustments")
+    settlement_item = relationship("VendorSettlementItem", back_populates="adjustments")
 
-class PostInvoice(BaseModel):
+class VendorDispute(Base):
+    """Vendor Dispute: Disputes related to settlements or items"""
+    __tablename__ = "vendor_disputes"
+    
+    dispute_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    settlement_item_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=False)
+    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    dispute_type = Column(String(50), nullable=False)
+    dispute_reason = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default='open')
+    resolution = Column(String(20), nullable=True)
+    resolution_notes = Column(Text, nullable=True)
+    sla_deadline = Column(DateTime(timezone=True), nullable=False)
+    resolved_by = Column(String(255), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    
+    # Relationships
+    settlement_item = relationship("VendorSettlementItem", back_populates="disputes")
+
+class VendorSettlementBatch(Base):
+    """Vendor Settlement Batch: Batch processing for settlements"""
+    __tablename__ = "vendor_settlement_batches"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    batch_number = Column(String(50), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    total_amount_minor = Column(BigInteger, nullable=False, default=0)
+    currency = Column(String(3), nullable=False)
+    status = Column(String(20), nullable=False, default='pending')
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class TradeInvoice(Base):
+    """Trade Invoice: Tenant invoices for billing"""
+    __tablename__ = "trade_invoices"
+    
+    id = Column(String(120), primary_key=True)
+    tenant_id = Column(String(100), nullable=False)
+    invoice_number = Column(String(50), nullable=True)
+    status = Column(String(20), nullable=False, default='draft')
+    amount_minor = Column(BigInteger, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    tax_total_minor = Column(BigInteger, nullable=False, default=0)
+    subtotal_minor = Column(BigInteger, nullable=False, default=0)
+    due_date = Column(Date, nullable=True)
+    posted_at = Column(DateTime(timezone=True), nullable=True)
+    ar_customer_code = Column(String(100), nullable=True)
+    terms = Column(String(20), nullable=False, default='NET30')
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    lines = relationship("TradeInvoiceLine", back_populates="invoice")
+
+class TradeInvoiceLine(Base):
+    """Trade Invoice Line: Line items for invoices"""
+    __tablename__ = "trade_invoice_lines"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    invoice_id = Column(String(120), ForeignKey('trade_invoices.id'), nullable=False)
+    line_number = Column(Integer, nullable=False)
+    description = Column(String(255), nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+    unit_price_minor = Column(BigInteger, nullable=False)
+    line_total_minor = Column(BigInteger, nullable=False)
+    tax_minor = Column(BigInteger, nullable=False, default=0)
+    tax_code = Column(String(20), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    invoice = relationship("TradeInvoice", back_populates="lines")
+
+class BillingOutboxEvent(Base):
+    """Billing Outbox Event: For reliable event publishing"""
+    __tablename__ = "billing_outbox_events"
+    
+    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
+    event_type = Column(String(100), nullable=False)
+    event_data = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default='pending')
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+
+# =============================================================================
+# PAYLOADS (Pydantic)
+# =============================================================================
+
+class BaseBillingRequest(BaseModel):
+    """Base request model with common fields"""
+    tenant_id: str = Field(..., description="Tenant ID for multi-tenancy")
+    
+    @field_validator('tenant_id')
+    @classmethod
+    def validate_tenant_id(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('tenant_id must be a valid UUID')
+
+class InvoiceLineRequest(BaseModel):
+    """Request model for invoice line items"""
+    line_number: int = Field(..., description="Line number", ge=1)
+    description: str = Field(..., description="Line item description", max_length=255)
+    quantity: int = Field(..., description="Quantity", gt=0)
+    unit_price_minor: int = Field(..., description="Unit price in minor units", ge=0)
+    tax_minor: int = Field(0, description="Tax amount in minor units", ge=0)
+    tax_code: Optional[str] = Field(None, description="Tax code", max_length=20)
+    
+    @property
+    def line_total_minor(self) -> int:
+        return (self.quantity * self.unit_price_minor) + self.tax_minor
+
+class CreateInvoiceRequest(BaseBillingRequest):
+    """Request model for creating invoices"""
+    invoice_number: Optional[str] = Field(None, description="Invoice number", max_length=50)
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    due_date: Optional[date] = Field(None, description="Due date")
+    lines: List[InvoiceLineRequest] = Field(..., description="Invoice line items", min_items=1)
+    ar_customer_code: Optional[str] = Field(None, description="AR customer code", max_length=100)
+    terms: str = Field("NET30", description="Payment terms", max_length=20)
+    
+    @field_validator('lines')
+    @classmethod
+    def validate_lines(cls, v):
+        if not v:
+            raise ValueError('At least one line item is required')
+        
+        # Check for duplicate line numbers
+        line_numbers = [line.line_number for line in v]
+        if len(line_numbers) != len(set(line_numbers)):
+            raise ValueError('Line numbers must be unique')
+        
+        return v
+    
+    @property
+    def subtotal_minor(self) -> int:
+        return sum(line.quantity * line.unit_price_minor for line in self.lines)
+    
+    @property
+    def tax_total_minor(self) -> int:
+        return sum(line.tax_minor for line in self.lines)
+    
+    @property
+    def total_minor(self) -> int:
+        return self.subtotal_minor + self.tax_total_minor
+
+class InvoiceResponse(BaseModel):
+    """Response model for invoices"""
+    id: str
     tenant_id: str
-    site_id: str | None = None
-    order_id: str | None = None
+    invoice_number: Optional[str]
+    status: str
     amount_minor: int
-    currency: str = "GBP"
-    lines: list[PostInvoiceLine] = []
-    invoice_code: str | None = None  # NEW
+    currency: str
+    tax_total_minor: int
+    subtotal_minor: int
+    due_date: Optional[date]
+    posted_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    lines: List[Dict[str, Any]] = []
 
-# ---------- lifecycle ----------
-@app.on_event("startup")
-def on_startup():
-    get_engine(); init_db()
-    log.info("service_started")
+class SettlementItemRequest(BaseModel):
+    """Request model for settlement items"""
+    order_id: Optional[str] = Field(None, description="Order ID")
+    sub_order_id: Optional[str] = Field(None, description="Sub-order ID")
+    payout_amount_minor: int = Field(..., description="Payout amount in minor units", ge=0)
+    commission_amount_minor: int = Field(..., description="Commission amount in minor units", ge=0)
+    fee_amount_minor: int = Field(0, description="Fee amount in minor units", ge=0)
+    notes: Optional[str] = Field(None, description="Item notes")
+    
+    @property
+    def net_amount_minor(self) -> int:
+        return self.payout_amount_minor - self.commission_amount_minor - self.fee_amount_minor
+
+class CreateSettlementRequest(BaseBillingRequest):
+    """Request model for creating vendor settlements"""
+    vendor_id: str = Field(..., description="Vendor ID")
+    settlement_period_start: date = Field(..., description="Settlement period start date")
+    settlement_period_end: date = Field(..., description="Settlement period end date")
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    items: List[SettlementItemRequest] = Field(..., description="Settlement items", min_items=1)
+    notes: Optional[str] = Field(None, description="Settlement notes")
+    
+    @field_validator('vendor_id')
+    @classmethod
+    def validate_vendor_id(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('vendor_id must be a valid UUID')
+
+class SettlementResponse(BaseModel):
+    """Response model for settlements"""
+    settlement_id: str
+    vendor_id: str
+    tenant_id: str
+    settlement_period_start: date
+    settlement_period_end: date
+    total_sales_minor: int
+    total_commission_minor: int
+    net_settlement_minor: int
+    currency: str
+    settlement_status: str
+    settlement_date: Optional[datetime]
+    created_at: datetime
+
+# =============================================================================
+# SAGAS
+# =============================================================================
+
+class BillingSaga:
+    """Base saga class for billing operations with compensation logic"""
+    
+    def __init__(self, db_session):
+        self.db_session = db_session
+        self.compensation_steps: List[Callable] = []
+        self.executed_steps: List[str] = []
+    
+    async def execute_step(self, step_name: str, action: Callable, compensation: Optional[Callable] = None):
+        """Execute a saga step with compensation tracking"""
+        try:
+            logging.info(f"Executing saga step: {step_name}")
+            result = await action()
+            self.executed_steps.append(step_name)
+            
+            if compensation:
+                self.compensation_steps.insert(0, compensation)  # LIFO for compensation
+            
+            logging.info(f"Saga step completed: {step_name}")
+            return result
+            
+        except Exception as e:
+            logging.error(f"Saga step failed: {step_name} - {str(e)}")
+            await self.compensate()
+            raise Exception(f"Step {step_name} failed: {str(e)}")
+    
+    async def compensate(self):
+        """Execute compensation steps in reverse order"""
+        logging.warning(f"Starting compensation for {len(self.compensation_steps)} steps")
+        
+        for i, compensation_step in enumerate(self.compensation_steps):
+            try:
+                logging.info(f"Executing compensation step {i+1}/{len(self.compensation_steps)}")
+                await compensation_step()
+            except Exception as e:
+                logging.error(f"Compensation step {i+1} failed: {str(e)}")
+                # Continue with other compensation steps
+        
+        logging.warning("Compensation completed")
+
+class InvoiceCreationSaga(BillingSaga):
+    """Saga for creating invoices with validation and ledger integration"""
+    
+    def __init__(self, db_session, request: CreateInvoiceRequest):
+        super().__init__(db_session)
+        self.request = request
+        self.invoice_id: Optional[str] = None
+        self.line_ids: List[int] = []
+    
+    async def execute(self) -> str:
+        """Execute the complete invoice creation saga"""
+        
+        # Step 1: Create invoice record
+        invoice_id = await self.execute_step(
+            "create_invoice",
+            lambda: self._create_invoice_record(),
+            lambda: self._delete_invoice_record()
+        )
+        
+        # Step 2: Create invoice lines
+        await self.execute_step(
+            "create_invoice_lines",
+            lambda: self._create_invoice_lines(invoice_id),
+            lambda: self._delete_invoice_lines()
+        )
+        
+        # Step 3: Post invoice (change status to posted)
+        await self.execute_step(
+            "post_invoice",
+            lambda: self._post_invoice(invoice_id),
+            lambda: self._unpost_invoice(invoice_id)
+        )
+        
+        # Step 4: Publish event
+        await self.execute_step(
+            "publish_event",
+            lambda: self._publish_invoice_created_event(invoice_id),
+            None  # No compensation needed for event publishing
+        )
+        
+        return invoice_id
+    
+    def _create_invoice_record(self) -> str:
+        """Create the main invoice record"""
+        invoice_id = f"INV-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        
+        invoice = TradeInvoice(
+            id=invoice_id,
+            tenant_id=self.request.tenant_id,
+            invoice_number=self.request.invoice_number or f"INV-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            status='draft',
+            amount_minor=self.request.total_minor,
+            currency=self.request.currency,
+            tax_total_minor=self.request.tax_total_minor,
+            subtotal_minor=self.request.subtotal_minor,
+            due_date=self.request.due_date,
+            ar_customer_code=self.request.ar_customer_code,
+            terms=self.request.terms
+        )
+        
+        self.db_session.add(invoice)
+        self.db_session.commit()
+        
+        self.invoice_id = invoice_id
+        return invoice_id
+    
+    def _create_invoice_lines(self, invoice_id: str):
+        """Create invoice line items"""
+        for line in self.request.lines:
+            invoice_line = TradeInvoiceLine(
+                invoice_id=invoice_id,
+                line_number=line.line_number,
+                description=line.description,
+                quantity=line.quantity,
+                unit_price_minor=line.unit_price_minor,
+                line_total_minor=line.line_total_minor,
+                tax_minor=line.tax_minor,
+                tax_code=line.tax_code
+            )
+            
+            self.db_session.add(invoice_line)
+            self.db_session.flush()  # Get the ID
+            self.line_ids.append(invoice_line.id)
+        
+        self.db_session.commit()
+    
+    def _post_invoice(self, invoice_id: str):
+        """Post the invoice (change status to posted)"""
+        invoice = self.db_session.query(TradeInvoice).filter(TradeInvoice.id == invoice_id).first()
+        if invoice:
+            invoice.status = 'posted'
+            invoice.posted_at = datetime.now(timezone.utc)
+            self.db_session.commit()
+    
+    def _publish_invoice_created_event(self, invoice_id: str):
+        """Publish invoice created event"""
+        event_data = {
+            "invoice_id": invoice_id,
+            "tenant_id": self.request.tenant_id,
+            "amount_minor": self.request.total_minor,
+            "currency": self.request.currency,
+            "status": "posted",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        outbox_event = BillingOutboxEvent(
+            aggregate_id=uuid.uuid4(),
+            event_type="INVOICE_CREATED",
+            event_data=json.dumps(event_data),
+            status="pending"
+        )
+        
+        self.db_session.add(outbox_event)
+        self.db_session.commit()
+    
+    def _delete_invoice_record(self):
+        """Compensation: Delete invoice record"""
+        if self.invoice_id:
+            self.db_session.query(TradeInvoice).filter(TradeInvoice.id == self.invoice_id).delete()
+            self.db_session.commit()
+    
+    def _delete_invoice_lines(self):
+        """Compensation: Delete invoice lines"""
+        if self.line_ids:
+            self.db_session.query(TradeInvoiceLine).filter(TradeInvoiceLine.id.in_(self.line_ids)).delete()
+            self.db_session.commit()
+    
+    def _unpost_invoice(self, invoice_id: str):
+        """Compensation: Unpost invoice"""
+        invoice = self.db_session.query(TradeInvoice).filter(TradeInvoice.id == invoice_id).first()
+        if invoice:
+            invoice.status = 'draft'
+            invoice.posted_at = None
+            self.db_session.commit()
+
+class SettlementCreationSaga(BillingSaga):
+    """Saga for creating vendor settlements"""
+    
+    def __init__(self, db_session, request: CreateSettlementRequest):
+        super().__init__(db_session)
+        self.request = request
+        self.settlement_id: Optional[str] = None
+        self.batch_id: Optional[str] = None
+    
+    async def execute(self) -> str:
+        """Execute the complete settlement creation saga"""
+        
+        # Step 1: Create settlement batch
+        batch_id = await self.execute_step(
+            "create_batch",
+            lambda: self._create_settlement_batch(),
+            lambda: self._delete_settlement_batch()
+        )
+        
+        # Step 2: Create settlement
+        settlement_id = await self.execute_step(
+            "create_settlement",
+            lambda: self._create_settlement(batch_id),
+            lambda: self._delete_settlement()
+        )
+        
+        # Step 3: Create settlement items
+        await self.execute_step(
+            "create_items",
+            lambda: self._create_settlement_items(settlement_id, batch_id),
+            lambda: self._delete_settlement_items()
+        )
+        
+        # Step 4: Process settlement
+        await self.execute_step(
+            "process_settlement",
+            lambda: self._process_settlement(settlement_id),
+            lambda: self._unprocess_settlement(settlement_id)
+        )
+        
+        return settlement_id
+    
+    def _create_settlement_batch(self) -> str:
+        """Create settlement batch"""
+        batch_id = str(uuid.uuid4())
+        
+        batch = VendorSettlementBatch(
+            id=batch_id,
+            tenant_id=self.request.tenant_id,
+            batch_number=f"BATCH-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            period_start=self.request.settlement_period_start,
+            period_end=self.request.settlement_period_end,
+            currency=self.request.currency,
+            status='pending'
+        )
+        
+        self.db_session.add(batch)
+        self.db_session.commit()
+        
+        self.batch_id = batch_id
+        return batch_id
+    
+    def _create_settlement(self, batch_id: str) -> str:
+        """Create settlement record"""
+        settlement_id = str(uuid.uuid4())
+        
+        total_sales = sum(item.payout_amount_minor for item in self.request.items)
+        total_commission = sum(item.commission_amount_minor for item in self.request.items)
+        net_settlement = sum(item.net_amount_minor for item in self.request.items)
+        
+        settlement = VendorSettlement(
+            settlement_id=settlement_id,
+            vendor_id=self.request.vendor_id,
+            tenant_id=self.request.tenant_id,
+            settlement_period_start=self.request.settlement_period_start,
+            settlement_period_end=self.request.settlement_period_end,
+            total_sales_minor=total_sales,
+            total_commission_minor=total_commission,
+            net_settlement_minor=net_settlement,
+            currency=self.request.currency,
+            settlement_status='pending'
+        )
+        
+        self.db_session.add(settlement)
+        self.db_session.commit()
+        
+        self.settlement_id = settlement_id
+        return settlement_id
+    
+    def _create_settlement_items(self, settlement_id: str, batch_id: str):
+        """Create settlement items"""
+        for item in self.request.items:
+            settlement_item = VendorSettlementItem(
+                batch_id=batch_id,
+                settlement_id=settlement_id,
+                vendor_id=self.request.vendor_id,
+                tenant_id=self.request.tenant_id,
+                payout_amount_minor=item.payout_amount_minor,
+                commission_amount_minor=item.commission_amount_minor,
+                fee_amount_minor=item.fee_amount_minor,
+                net_amount_minor=item.net_amount_minor,
+                settlement_status='pending'
+            )
+            
+            self.db_session.add(settlement_item)
+        
+        self.db_session.commit()
+    
+    def _process_settlement(self, settlement_id: str):
+        """Process settlement (change status to processed)"""
+        settlement = self.db_session.query(VendorSettlement).filter(VendorSettlement.settlement_id == settlement_id).first()
+        if settlement:
+            settlement.settlement_status = 'processed'
+            settlement.settlement_date = datetime.now(timezone.utc)
+            self.db_session.commit()
+    
+    def _delete_settlement_batch(self):
+        """Compensation: Delete settlement batch"""
+        if self.batch_id:
+            self.db_session.query(VendorSettlementBatch).filter(VendorSettlementBatch.id == self.batch_id).delete()
+            self.db_session.commit()
+    
+    def _delete_settlement(self):
+        """Compensation: Delete settlement"""
+        if self.settlement_id:
+            self.db_session.query(VendorSettlement).filter(VendorSettlement.settlement_id == self.settlement_id).delete()
+            self.db_session.commit()
+    
+    def _delete_settlement_items(self):
+        """Compensation: Delete settlement items"""
+        if self.settlement_id:
+            self.db_session.query(VendorSettlementItem).filter(VendorSettlementItem.settlement_id == self.settlement_id).delete()
+            self.db_session.commit()
+    
+    def _unprocess_settlement(self, settlement_id: str):
+        """Compensation: Unprocess settlement"""
+        settlement = self.db_session.query(VendorSettlement).filter(VendorSettlement.settlement_id == settlement_id).first()
+        if settlement:
+            settlement.settlement_status = 'pending'
+            settlement.settlement_date = None
+            self.db_session.commit()
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5000/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+SERVICE_NAME = "billing-service-v2"
+SERVICE_VERSION = "2.0.0"
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+log = structlog.get_logger()
+
+# Database setup
+engine = create_engine(DATABASE_URL, echo=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Prometheus metrics
+try:
+    billing_requests = Counter('billing_requests_total', 'Total billing requests', ['method', 'endpoint', 'status'])
+    billing_requests_duration = Histogram('billing_requests_duration_seconds', 'Billing request duration')
+    billing_requests_in_flight = Gauge('billing_requests_in_flight', 'Billing requests currently being processed')
+    billing_saga_duration = Histogram('billing_saga_duration_seconds', 'Billing saga execution duration', ['saga_type'])
+    billing_saga_failures = Counter('billing_saga_failures_total', 'Total billing saga failures', ['saga_type', 'step'])
+except ValueError:
+    # Metrics already registered
+    pass
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+def validate_uuid(uuid_string: str) -> str:
+    """Validate and return UUID string"""
+    try:
+        uuid.UUID(uuid_string)
+        return uuid_string
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+async def get_db():
+    """Database dependency"""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+def set_rls_context(db, tenant_id: str, user_id: Optional[str] = None):
+    """Set Row Level Security context"""
+    db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+    if user_id:
+        db.execute(text("SET app.current_user_id = :user_id"), {"user_id": user_id})
+
+# =============================================================================
+# EXCEPTIONS
+# =============================================================================
+
+class BillingValidationError(Exception):
+    """Billing validation error"""
+    pass
+
+class BillingNotFoundError(Exception):
+    """Billing resource not found error"""
+    pass
+
+class BillingDuplicateError(Exception):
+    """Billing duplicate resource error"""
+    pass
+
+class SettlementProcessingError(Exception):
+    """Settlement processing error"""
+    pass
+
+# =============================================================================
+# FASTAPI APP
+# =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan management"""
+    log.info("Starting Billing Service V2", version=SERVICE_VERSION, environment=ENVIRONMENT)
+    
+    # Initialize database tables
+    Base.metadata.create_all(bind=engine)
+    
+    yield
+    
+    log.info("Shutting down Billing Service V2")
+
+app = FastAPI(
+    title="Billing Service V2",
+    description="Production-ready billing service with invoice creation and vendor settlements",
+    version=SERVICE_VERSION,
+    lifespan=lifespan
+)
+
+# Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
+# Exception handlers
+@app.exception_handler(BillingValidationError)
+async def billing_validation_exception_handler(request: Request, exc: BillingValidationError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": f"Validation error: {str(exc)}"}
+    )
+
+@app.exception_handler(BillingNotFoundError)
+async def billing_not_found_exception_handler(request: Request, exc: BillingNotFoundError):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": f"Resource not found: {str(exc)}"}
+    )
+
+@app.exception_handler(BillingDuplicateError)
+async def billing_duplicate_exception_handler(request: Request, exc: BillingDuplicateError):
+    return JSONResponse(
+        status_code=409,
+        content={"detail": f"Resource already exists: {str(exc)}"}
+    )
+
+@app.exception_handler(SettlementProcessingError)
+async def settlement_processing_exception_handler(request: Request, exc: SettlementProcessingError):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Settlement processing error: {str(exc)}"}
+    )
+
+# =============================================================================
+# ENDPOINTS
+# =============================================================================
 
 @app.get("/health")
-def health(): return {"status": "ok", "service": SERVICE_NAME}
-
-@app.get("/readiness")
-def readiness():
-    return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
-
-# ---------- endpoints ----------
-@app.post("/billing/tenants/{tenant_id}/trade-account")
-def create_trade_account(tenant_id: str = Path(...), payload: TradePayload = Body(...)):
-    """
-    Create or activate a trade account for a tenant.
-    """
-    with SessionLocal() as db:
-        existing = db.query(TradeAccount).filter(TradeAccount.tenant_id == tenant_id).one_or_none()
-        if existing:
-            existing.ar_customer_code = payload.ar_customer_code
-            existing.terms = payload.terms
-            existing.active = True
-            db.commit()
-            log.info("trade_account_updated tenant=%s", tenant_id)
-            return {
-                "tenant_id": tenant_id, "active": existing.active,
-                "ar_customer_code": existing.ar_customer_code, "terms": existing.terms
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Check database connectivity
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
+        return {
+            "status": "healthy",
+            "service": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "environment": ENVIRONMENT,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": {
+                "database": {"status": "healthy"}
             }
-        tr = TradeAccount(
-            tenant_id=tenant_id, ar_customer_code=payload.ar_customer_code,
-            terms=payload.terms, active=True
-        )
-        db.add(tr); db.commit()
-        log.info("trade_account_created tenant=%s", tenant_id)
-        return {"tenant_id": tenant_id, "active": tr.active,
-                "ar_customer_code": tr.ar_customer_code, "terms": tr.terms}
-
-@app.post("/billing/tenants/{tenant_id}/subscribe")
-def subscribe(tenant_id: str = Path(...), payload: SubscribePayload = Body(...)):
-    """
-    Create a subscription for the tenant on the chosen payment rail.
-    - trade  → local subscription (active)
-    - stripe → real Stripe subscription if STRIPE_API_KEY set, else stubbed active subscription for dev
-    """
-    with SessionLocal() as db:
-        if payload.payment_method == "trade":
-            tr = db.query(TradeAccount).filter(
-                TradeAccount.tenant_id == tenant_id, TradeAccount.active == True
-            ).one_or_none()
-            if not tr:
-                raise HTTPException(status_code=400, detail="Trade account not active for tenant.")
-            external_id = f"trade-sub-{tenant_id}-{int(time.time())}"
-            sub = Subscription(
-                tenant_id=tenant_id, plan_code=payload.plan, provider="trade",
-                status="active", external_id=external_id
-            )
-            db.add(sub); db.commit()
-            log.info("subscription_created_trade tenant=%s plan=%s sub=%s", tenant_id, payload.plan, external_id)
-            return {"subscription_id": sub.external_id, "status": sub.status, "provider": "trade", "plan": sub.plan_code}
-
-        # Stripe path
-        api_key = os.getenv("STRIPE_API_KEY", "").strip()
-        if not api_key:
-            # Stubbed subscription for dev without Stripe
-            cust = db.query(StripeCustomer).filter(StripeCustomer.tenant_id == tenant_id).one_or_none()
-            if not cust:
-                cust = StripeCustomer(tenant_id=tenant_id, stripe_customer_id=f"stub_cus_{tenant_id}")
-                db.add(cust); db.commit()
-            external_id = f"stub_sub_{tenant_id}_{int(time.time())}"
-            sub = Subscription(
-                tenant_id=tenant_id, plan_code=payload.plan, provider="stripe",
-                status="active", external_id=external_id
-            )
-            db.add(sub); db.commit()
-            log.warning("subscription_stubbed_stripe tenant=%s plan=%s sub=%s", tenant_id, payload.plan, external_id)
-            return {"subscription_id": sub.external_id, "status": sub.status, "provider": "stripe", "plan": sub.plan_code}
-
-        # Real Stripe
-        stripe_sdk.api_key = api_key
-        cust = db.query(StripeCustomer).filter(StripeCustomer.tenant_id == tenant_id).one_or_none()
-        if not cust:
-            sc = stripe_sdk.Customer.create(metadata={"tenant_id": tenant_id})
-            cust = StripeCustomer(tenant_id=tenant_id, stripe_customer_id=sc["id"])
-            db.add(cust); db.commit()
-            log.info("stripe_customer_created tenant=%s stripe_customer_id=%s", tenant_id, sc["id"])
-
-        price_map = {
-            "core": os.getenv("STRIPE_PRICE_CORE", "price_core_dev"),
-            "pro": os.getenv("STRIPE_PRICE_PRO", "price_pro_dev"),
-            "enterprise": os.getenv("STRIPE_PRICE_ENTERPRISE", "price_enterprise_dev"),
         }
-        price_id = price_map[payload.plan]
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "service": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "environment": ENVIRONMENT,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e)
+        }
 
-        created = stripe_sdk.Subscription.create(
-            customer=cust.stripe_customer_id,
-            items=[{"price": price_id}],
-            payment_behavior="default_incomplete"
-        )
-        sub = Subscription(
-            tenant_id=tenant_id, plan_code=payload.plan, provider="stripe",
-            status=created["status"], external_id=created["id"]
-        )
-        db.add(sub); db.commit()
-        log.info("subscription_created_stripe tenant=%s plan=%s sub=%s status=%s",
-                 tenant_id, payload.plan, created["id"], created["status"])
-        return {"subscription_id": sub.external_id, "status": sub.status, "provider": "stripe", "plan": sub.plan_code}
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
-@app.post("/webhooks/stripe")
-async def stripe_webhook(request: Request, stripe_signature: str = Header(None, alias="Stripe-Signature")):
-    # Verify signature if configured
-    payload = await request.body()
-    event = None
-
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
-    if webhook_secret:
-        try:
-            event = stripe_sdk.Webhook.construct_event(
-                payload=payload,
-                sig_header=stripe_signature,
-                secret=webhook_secret,
-            )
-        except Exception as e:
-            log.warning(f"stripe_webhook_invalid_signature err={e}")
-            raise HTTPException(status_code=400, detail="invalid signature")
-    else:
-        # Dev convenience if no secret set
-        try:
-            event = json.loads(payload.decode("utf-8"))
-        except Exception:
-            raise HTTPException(status_code=400, detail="invalid payload")
-
-    # Idempotency by event id
-    event_id = event.get("id")
-    event_type = event.get("type")
-    if not event_id:
-        raise HTTPException(status_code=400, detail="missing event id")
-
-    with SessionLocal() as db:
-        # Insert once; if duplicate -> already processed
-        try:
-            db.execute(text("""
-                INSERT INTO stripe_events(event_id, event_type) VALUES(:id, :t)
-            """), {"id": event_id, "t": event_type})
-            db.commit()
-        except Exception:
-            # Duplicate; safe to ACK
-            return {"ok": True, "duplicate": True}
-
-        # --- Handle a couple of event types we care about ---
-        if event_type in ("customer.subscription.created", "customer.subscription.updated"):
-            obj = event.get("data", {}).get("object", {}) or {}
-            external_id = obj.get("id")
-            status = obj.get("status")
-            if external_id and status:
-                sub_upd = db.execute(text("""
-                    UPDATE subscriptions SET status=:st WHERE external_id=:ext
-                """), {"st": status, "ext": external_id}).rowcount
-                db.commit()
-                log.info(f"stripe_webhook_subscription_updated sub={external_id} status={status}")
-
-        if event_type in ("payment_intent.succeeded",):
-            obj = event.get("data", {}).get("object", {}) or {}
-            pi_id = obj.get("id")
-            amount_minor = int(obj.get("amount_received") or obj.get("amount") or 0)
-            currency = (obj.get("currency") or "gbp").upper()
-            metadata = obj.get("metadata") or {}
-            tenant_id = metadata.get("tenant_id")
-            site_id = metadata.get("site_id")
-            order_id = metadata.get("order_id")
-            receipt_url = None
-            # Try drill into charges for receipt_url if available
-            ch = (obj.get("charges") or {}).get("data") or []
-            if ch and isinstance(ch, list):
-                receipt_url = ch[0].get("receipt_url")
-
-            if not tenant_id:
-                log.warning(f"stripe_webhook_pi_succeeded missing tenant_id for pi={pi_id}")
-            else:
-                # persist charge row (upsert by PI if you want)
-                db.execute(text("""
-                    INSERT INTO stripe_charges(tenant_id, site_id, order_id, amount_minor, currency, status, receipt_url)
-                    VALUES(:t, :s, :o, :amt, :cur, 'succeeded', :r)
-                """), {"t": tenant_id, "s": site_id, "o": order_id, "amt": amount_minor, "cur": currency, "r": receipt_url})
-                db.commit()
-                log.info(f"stripe_charge_recorded tenant={tenant_id} order={order_id} amt={amount_minor} {currency} receipt={bool(receipt_url)}")
-
-    return {"ok": True}
-
-@app.put("/billing/payment-preference/{tenant_id}")
-def set_payment_preference(tenant_id: str, payload: PaymentPrefPayload = Body(...)):
-    """
-    Upsert the default payment method for a tenant ('trade'|'stripe').
-    """
-    if payload.method not in ("trade", "stripe"):
-        raise HTTPException(status_code=400, detail="invalid method")
-    with SessionLocal() as db:
-        exists = db.execute(
-            text("SELECT tenant_id FROM payment_preferences WHERE tenant_id=:t"),
-            {"t": tenant_id}
-        ).first()
-        if exists:
-            db.execute(
-                text("UPDATE payment_preferences SET method=:m WHERE tenant_id=:t"),
-                {"m": payload.method, "t": tenant_id}
-            )
-            db.commit()
-            log.info("payment_pref_updated tenant=%s method=%s", tenant_id, payload.method)
-        else:
-            db.execute(
-                text("INSERT INTO payment_preferences(tenant_id, method) VALUES(:t,:m)"),
-                {"t": tenant_id, "m": payload.method}
-            )
-            db.commit()
-            log.info("payment_pref_created tenant=%s method=%s", tenant_id, payload.method)
-        return {"tenant_id": tenant_id, "method": payload.method}
-
-@app.get("/billing/trade-invoices")
-def list_invoices(tenant_id: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-          SELECT id, order_id, amount_minor, currency, status, memo
-          FROM trade_invoices WHERE tenant_id=:t ORDER BY id DESC
-        """), {"t": tenant_id}).all()
-        return [{
-            "id": int(r[0]), "order_id": r[1], "amount_minor": int(r[2]),
-            "currency": r[3], "status": r[4], "memo": r[5]
-        } for r in rows]
-
-
-
-@app.post("/billing/trade-invoices/{invoice_id}/post")
-def post_invoice(invoice_id: str = Path(...), payload: PostInvoice = Body(...)):
-    with SessionLocal() as db:
-        # upsert draft (now supports invoice_code)
-        db.execute(text("""
-            INSERT INTO trade_invoices(id, tenant_id, site_id, order_id, amount_minor, currency, status, memo, invoice_code)
-            VALUES(:id,:t,:s,:o,:amt,:cur,'draft','',:icode)
-            ON CONFLICT (id) DO UPDATE SET
-                tenant_id = EXCLUDED.tenant_id,
-                site_id = EXCLUDED.site_id,
-                order_id = EXCLUDED.order_id,
-                amount_minor = EXCLUDED.amount_minor,
-                currency = EXCLUDED.currency,
-                invoice_code = COALESCE(EXCLUDED.invoice_code, trade_invoices.invoice_code)
-        """), {"id": invoice_id, "t": payload.tenant_id, "s": payload.site_id, "o": payload.order_id,
-               "amt": payload.amount_minor, "cur": payload.currency, "icode": payload.invoice_code})
-
-        # replace lines (with tax fields)
-        db.execute(text("DELETE FROM trade_invoice_lines WHERE invoice_id=:id"), {"id": invoice_id})
-        for ln in payload.lines:
-            db.execute(text("""
-                INSERT INTO trade_invoice_lines(
-                    invoice_id, sku, qty, unit_price_minor, currency, tax_minor, tax_code
-                )
-                VALUES(:id,:sku,:qty,:up,:cur,:tax,:tcode)
-            """), {"id": invoice_id, "sku": ln.sku, "qty": int(ln.qty),
-                   "up": int(ln.unit_price_minor), "cur": ln.currency or payload.currency,
-                   "tax": int(ln.tax_minor or 0), "tcode": ln.tax_code})
-
-        # post
-        db.execute(text("""
-            UPDATE trade_invoices SET status='posted', posted_at=NOW() WHERE id=:id
-        """), {"id": invoice_id})
-        db.commit()
-        return {"invoice_id": invoice_id, "status": "posted"}
+@app.post("/billing/v2/invoices", response_model=InvoiceResponse)
+async def create_invoice(request: CreateInvoiceRequest, db = Depends(get_db)):
+    """Create a new invoice using saga pattern"""
+    billing_requests_in_flight.inc()
     
-@app.post("/billing/trade-invoices/{invoice_id}/export")
-def export_invoice(invoice_id: str = Path(...)):
-    """
-    Mark a posted invoice as exported (assign export batch id + timestamp).
-    """
-    with SessionLocal() as db:
-        # FIX: `export_batch_id:=` → should be `export_batch_id =`
-        db.execute(text("""
-            UPDATE trade_invoices
-               SET status='exported',
-                   exported_at=NOW(),
-                   export_batch_id = 'batch-' || to_char(NOW(),'YYYYMMDDHH24MISS')
-             WHERE id=:id
-        """), {"id": invoice_id})
+    try:
+        with billing_requests_duration.time():
+            # Set RLS context
+            set_rls_context(db, request.tenant_id)
+            
+            # Execute saga
+            saga = InvoiceCreationSaga(db, request)
+            invoice_id = await saga.execute()
+            
+            # Get created invoice
+            invoice = db.query(TradeInvoice).filter(TradeInvoice.id == invoice_id).first()
+            if not invoice:
+                raise BillingNotFoundError(f"Invoice {invoice_id} not found after creation")
+            
+            # Get invoice lines
+            lines = db.query(TradeInvoiceLine).filter(TradeInvoiceLine.invoice_id == invoice_id).all()
+            
+            billing_requests.labels(method='POST', endpoint='/billing/v2/invoices', status='success').inc()
+            
+            return InvoiceResponse(
+                id=invoice.id,
+                tenant_id=invoice.tenant_id,
+                invoice_number=invoice.invoice_number,
+                status=invoice.status,
+                amount_minor=invoice.amount_minor,
+                currency=invoice.currency,
+                tax_total_minor=invoice.tax_total_minor,
+                subtotal_minor=invoice.subtotal_minor,
+                due_date=invoice.due_date,
+                posted_at=invoice.posted_at,
+                created_at=invoice.created_at,
+                updated_at=invoice.updated_at,
+                lines=[{
+                    "id": line.id,
+                    "line_number": line.line_number,
+                    "description": line.description,
+                    "quantity": line.quantity,
+                    "unit_price_minor": line.unit_price_minor,
+                    "line_total_minor": line.line_total_minor,
+                    "tax_minor": line.tax_minor,
+                    "tax_code": line.tax_code
+                } for line in lines]
+            )
+            
+    except Exception as e:
+        billing_requests.labels(method='POST', endpoint='/billing/v2/invoices', status='error').inc()
+        log.error("Failed to create invoice", error=str(e), tenant_id=request.tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to create invoice: {str(e)}")
+    
+    finally:
+        billing_requests_in_flight.dec()
+
+@app.get("/billing/v2/settlements")
+async def list_settlements(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    vendor_id: Optional[str] = Query(None, description="Vendor ID filter"),
+    status: Optional[str] = Query(None, description="Settlement status filter"),
+    start_date: Optional[date] = Query(None, description="Start date filter"),
+    end_date: Optional[date] = Query(None, description="End date filter"),
+    limit: int = Query(100, description="Number of results to return"),
+    offset: int = Query(0, description="Number of results to skip"),
+    db = Depends(get_db)
+):
+    """List settlements with filtering and pagination"""
+    try:
+        # Set RLS context
+        set_rls_context(db, tenant_id)
+        
+        # Build query
+        query = db.query(VendorSettlement).filter(VendorSettlement.tenant_id == tenant_id)
+        
+        if vendor_id:
+            query = query.filter(VendorSettlement.vendor_id == vendor_id)
+        
+        if status:
+            query = query.filter(VendorSettlement.settlement_status == status)
+        
+        if start_date:
+            query = query.filter(VendorSettlement.settlement_period_start >= start_date)
+        
+        if end_date:
+            query = query.filter(VendorSettlement.settlement_period_end <= end_date)
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Apply pagination
+        settlements = query.order_by(VendorSettlement.created_at.desc()).offset(offset).limit(limit).all()
+        
+        return {
+            "settlements": [
+                {
+                    "settlement_id": str(settlement.settlement_id),
+                    "vendor_id": str(settlement.vendor_id),
+                    "tenant_id": str(settlement.tenant_id),
+                    "settlement_period_start": settlement.settlement_period_start.isoformat(),
+                    "settlement_period_end": settlement.settlement_period_end.isoformat(),
+                    "total_sales_minor": settlement.total_sales_minor,
+                    "total_commission_minor": settlement.total_commission_minor,
+                    "net_settlement_minor": settlement.net_settlement_minor,
+                    "currency": settlement.currency,
+                    "settlement_status": settlement.settlement_status,
+                    "settlement_date": settlement.settlement_date.isoformat() if settlement.settlement_date else None,
+                    "created_at": settlement.created_at.isoformat(),
+                    "updated_at": settlement.updated_at.isoformat() if settlement.updated_at else None
+                }
+                for settlement in settlements
+            ],
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        log.error("Failed to list settlements", error=str(e), tenant_id=tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to list settlements: {str(e)}")
+
+@app.post("/billing/v2/settlements", response_model=SettlementResponse)
+async def create_settlement(request: CreateSettlementRequest, db = Depends(get_db)):
+    """Create a new vendor settlement using saga pattern"""
+    billing_requests_in_flight.inc()
+    
+    try:
+        with billing_requests_duration.time():
+            # Set RLS context
+            set_rls_context(db, request.tenant_id)
+            
+            # Execute saga
+            saga = SettlementCreationSaga(db, request)
+            settlement_id = await saga.execute()
+            
+            # Get created settlement
+            settlement = db.query(VendorSettlement).filter(VendorSettlement.settlement_id == settlement_id).first()
+            if not settlement:
+                raise BillingNotFoundError(f"Settlement {settlement_id} not found after creation")
+            
+            billing_requests.labels(method='POST', endpoint='/billing/v2/settlements', status='success').inc()
+            
+            return SettlementResponse(
+                settlement_id=str(settlement.settlement_id),
+                vendor_id=str(settlement.vendor_id),
+                tenant_id=str(settlement.tenant_id),
+                settlement_period_start=settlement.settlement_period_start,
+                settlement_period_end=settlement.settlement_period_end,
+                total_sales_minor=settlement.total_sales_minor,
+                total_commission_minor=settlement.total_commission_minor,
+                net_settlement_minor=settlement.net_settlement_minor,
+                currency=settlement.currency,
+                settlement_status=settlement.settlement_status,
+                settlement_date=settlement.settlement_date,
+                created_at=settlement.created_at
+            )
+            
+    except Exception as e:
+        billing_requests.labels(method='POST', endpoint='/billing/v2/settlements', status='error').inc()
+        log.error("Failed to create settlement", error=str(e), tenant_id=request.tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to create settlement: {str(e)}")
+    
+    finally:
+        billing_requests_in_flight.dec()
+
+@app.get("/billing/v2/invoices")
+async def list_invoices(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    status: Optional[str] = Query(None, description="Invoice status filter"),
+    start_date: Optional[date] = Query(None, description="Start date filter"),
+    end_date: Optional[date] = Query(None, description="End date filter"),
+    limit: int = Query(100, description="Number of results to return"),
+    offset: int = Query(0, description="Number of results to skip"),
+    db = Depends(get_db)
+):
+    """List invoices with filtering and pagination"""
+    try:
+        # Set RLS context
+        set_rls_context(db, tenant_id)
+        
+        # Build query
+        query = db.query(TradeInvoice).filter(TradeInvoice.tenant_id == tenant_id)
+        
+        if status:
+            query = query.filter(TradeInvoice.status == status)
+        
+        if start_date:
+            query = query.filter(TradeInvoice.created_at >= start_date)
+        
+        if end_date:
+            query = query.filter(TradeInvoice.created_at <= end_date)
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Apply pagination
+        invoices = query.order_by(TradeInvoice.created_at.desc()).offset(offset).limit(limit).all()
+        
+        return {
+            "invoices": [
+                {
+                    "id": invoice.id,
+                    "tenant_id": invoice.tenant_id,
+                    "invoice_number": invoice.invoice_number,
+                    "status": invoice.status,
+                    "amount_minor": invoice.amount_minor,
+                    "currency": invoice.currency,
+                    "tax_total_minor": invoice.tax_total_minor,
+                    "subtotal_minor": invoice.subtotal_minor,
+                    "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
+                    "posted_at": invoice.posted_at.isoformat() if invoice.posted_at else None,
+                    "created_at": invoice.created_at.isoformat(),
+                    "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
+                }
+                for invoice in invoices
+            ],
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        log.error("Failed to list invoices", error=str(e), tenant_id=tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to list invoices: {str(e)}")
+
+class CreateDisputeRequest(BaseModel):
+    """Request model for creating disputes"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    settlement_id: Optional[str] = Field(None, description="Settlement ID")
+    settlement_item_id: Optional[str] = Field(None, description="Settlement item ID")
+    dispute_amount_minor: int = Field(..., description="Dispute amount in minor units", ge=0)
+    dispute_reason: str = Field(..., description="Dispute reason", max_length=255)
+    dispute_notes: Optional[str] = Field(None, description="Dispute notes")
+    
+    @field_validator('tenant_id', 'settlement_id', 'settlement_item_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        if v is not None:
+            try:
+                uuid.UUID(v)
+                return v
+            except ValueError:
+                raise ValueError(f'Invalid UUID format: {v}')
+
+class DisputeResponse(BaseModel):
+    """Response model for disputes"""
+    id: str
+    settlement_id: Optional[str]
+    settlement_item_id: Optional[str]
+    tenant_id: str
+    dispute_amount_minor: int
+    dispute_reason: str
+    dispute_status: str
+    dispute_notes: Optional[str]
+    created_at: datetime
+
+@app.post("/billing/v2/disputes", response_model=DisputeResponse)
+async def create_dispute(request: CreateDisputeRequest, db = Depends(get_db)):
+    """Create a new dispute"""
+    try:
+        # Set RLS context
+        set_rls_context(db, request.tenant_id)
+        
+        # Validate that either settlement_id or settlement_item_id is provided
+        if not request.settlement_id and not request.settlement_item_id:
+            raise HTTPException(status_code=400, detail="Either settlement_id or settlement_item_id must be provided")
+        
+        # Create dispute
+        dispute = VendorDispute(
+            settlement_item_id=request.settlement_item_id or request.settlement_id,
+            vendor_id="550e8400-e29b-41d4-a716-446655440008",  # Default vendor for testing
+            dispute_type="amount_dispute",
+            dispute_reason=request.dispute_reason,
+            status='open',
+            sla_deadline=datetime.now(timezone.utc) + timedelta(days=7),  # 7 days SLA
+            tenant_id=request.tenant_id
+        )
+        
+        db.add(dispute)
         db.commit()
-        log.info("trade_invoice_exported invoice_id=%s", invoice_id)
-        return {"invoice_id": invoice_id, "status": "exported"}
+        db.refresh(dispute)
+        
+        log.info("Created dispute", dispute_id=str(dispute.id), tenant_id=request.tenant_id)
+        
+        return DisputeResponse(
+            id=str(dispute.dispute_id),
+            settlement_id=request.settlement_id,
+            settlement_item_id=str(dispute.settlement_item_id),
+            tenant_id=str(dispute.tenant_id),
+            dispute_amount_minor=request.dispute_amount_minor,
+            dispute_reason=dispute.dispute_reason,
+            dispute_status=dispute.status,
+            dispute_notes=request.dispute_notes,
+            created_at=dispute.created_at
+        )
+        
+    except Exception as e:
+        log.error("Failed to create dispute", error=str(e), tenant_id=request.tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to create dispute: {str(e)}")
 
-@app.get("/billing/trade-invoices/export.csv")
-def export_csv(
-    tenant_id: str = Query(...), site_id: str | None = Query(None),
-    date_from: str = Query(...), date_to: str = Query(...)
+class CreateAdjustmentRequest(BaseModel):
+    """Request model for creating adjustments"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    settlement_id: str = Field(..., description="Settlement ID")
+    settlement_item_id: Optional[str] = Field(None, description="Settlement item ID")
+    adjustment_amount_minor: int = Field(..., description="Adjustment amount in minor units")
+    adjustment_reason: str = Field(..., description="Adjustment reason", max_length=255)
+    adjustment_type: str = Field(..., description="Adjustment type", pattern="^(commission|chargeback|refund|bonus|penalty)$")
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    adjustment_notes: Optional[str] = Field(None, description="Adjustment notes")
+    
+    @field_validator('tenant_id', 'settlement_id', 'settlement_item_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        if v is not None:
+            try:
+                uuid.UUID(v)
+                return v
+            except ValueError:
+                raise ValueError(f'Invalid UUID format: {v}')
+
+class AdjustmentResponse(BaseModel):
+    """Response model for adjustments"""
+    id: str
+    settlement_id: str
+    settlement_item_id: Optional[str]
+    tenant_id: str
+    adjustment_amount_minor: int
+    adjustment_reason: str
+    adjustment_type: str
+    currency: str
+    adjustment_status: str
+    created_at: datetime
+
+@app.post("/billing/v2/adjustments", response_model=AdjustmentResponse)
+async def create_adjustment(request: CreateAdjustmentRequest, db = Depends(get_db)):
+    """Create a new settlement adjustment"""
+    try:
+        # Set RLS context
+        set_rls_context(db, request.tenant_id)
+        
+        # Create adjustment
+        adjustment = VendorSettlementAdjustment(
+            settlement_id=request.settlement_id,
+            settlement_item_id=request.settlement_item_id,
+            tenant_id=request.tenant_id,
+            adjustment_amount_minor=request.adjustment_amount_minor,
+            adjustment_reason=request.adjustment_reason,
+            adjustment_type=request.adjustment_type,
+            currency=request.currency,
+            adjustment_status='pending',
+            adjustment_notes=request.adjustment_notes
+        )
+        
+        db.add(adjustment)
+        db.commit()
+        db.refresh(adjustment)
+        
+        log.info("Created adjustment", adjustment_id=str(adjustment.id), tenant_id=request.tenant_id)
+        
+        return AdjustmentResponse(
+            id=str(adjustment.id),
+            settlement_id=str(adjustment.settlement_id),
+            settlement_item_id=str(adjustment.settlement_item_id) if adjustment.settlement_item_id else None,
+            tenant_id=str(adjustment.tenant_id),
+            adjustment_amount_minor=adjustment.adjustment_amount_minor,
+            adjustment_reason=adjustment.adjustment_reason,
+            adjustment_type=adjustment.adjustment_type,
+            currency=adjustment.currency,
+            adjustment_status=adjustment.adjustment_status,
+            created_at=adjustment.created_at
+        )
+        
+    except Exception as e:
+        log.error("Failed to create adjustment", error=str(e), tenant_id=request.tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to create adjustment: {str(e)}")
+
+@app.get("/billing/v2/reports/ar-aging")
+async def get_ar_aging_report(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    as_of_date: Optional[date] = Query(None, description="As of date for aging report"),
+    currency: Optional[str] = Query("GBP", description="Currency filter"),
+    db = Depends(get_db)
 ):
-    """
-    Export basic invoice CSV for a date range (created_at window).
-    """
-    q = """
-      SELECT id, tenant_id, site_id, amount_minor, currency, status, posted_at, exported_at
-        FROM trade_invoices
-       WHERE tenant_id=:t AND created_at >= :f AND created_at < :to
-    """
-    params = {"t": tenant_id, "f": date_from, "to": date_to}
-    if site_id:
-        q += " AND site_id=:s"
-        params["s"] = site_id
-    q += " ORDER BY id ASC"
+    """Get accounts receivable aging report"""
+    try:
+        # Set RLS context
+        set_rls_context(db, tenant_id)
+        
+        if not as_of_date:
+            as_of_date = date.today()
+        
+        # Calculate aging buckets
+        current_cutoff = as_of_date
+        days_31_60 = current_cutoff - timedelta(days=30)
+        days_61_90 = current_cutoff - timedelta(days=60)
+        days_over_90 = current_cutoff - timedelta(days=90)
+        
+        # Build base query with currency filter
+        base_query = db.query(TradeInvoice).filter(
+            TradeInvoice.tenant_id == tenant_id,
+            TradeInvoice.status == 'posted',
+            TradeInvoice.currency == currency
+        )
+        
+        # Get invoices by aging bucket
+        current_query = base_query.filter(TradeInvoice.due_date >= current_cutoff).with_entities(func.sum(TradeInvoice.amount_minor)).scalar() or 0
+        
+        bucket_31_60 = base_query.filter(
+            TradeInvoice.due_date >= days_31_60,
+            TradeInvoice.due_date < current_cutoff
+        ).with_entities(func.sum(TradeInvoice.amount_minor)).scalar() or 0
+        
+        bucket_61_90 = base_query.filter(
+            TradeInvoice.due_date >= days_61_90,
+            TradeInvoice.due_date < days_31_60
+        ).with_entities(func.sum(TradeInvoice.amount_minor)).scalar() or 0
+        
+        bucket_over_90 = base_query.filter(TradeInvoice.due_date < days_61_90).with_entities(func.sum(TradeInvoice.amount_minor)).scalar() or 0
+        
+        total_ar = current_query + bucket_31_60 + bucket_61_90 + bucket_over_90
+        
+        return {
+            "tenant_id": tenant_id,
+            "as_of_date": as_of_date.isoformat(),
+            "currency": currency,
+            "aging_buckets": {
+                "current": current_query,
+                "31_60": bucket_31_60,
+                "61_90": bucket_61_90,
+                "over_90": bucket_over_90
+            },
+            "total_ar_minor": total_ar
+        }
+        
+    except Exception as e:
+        log.error("Failed to generate AR aging report", error=str(e), tenant_id=tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to generate AR aging report: {str(e)}")
 
-    with SessionLocal() as db:
-        rows = db.execute(text(q), params).all()
-
-    lines = ["invoice_id,tenant_id,site_id,amount_minor,currency,status,posted_at,exported_at"]
-    for r in rows:
-        lines.append(",".join([
-            str(r[0]), r[1], (r[2] or ""), str(r[3]), r[4], r[5],
-            (r[6].isoformat() if r[6] else ""), (r[7].isoformat() if r[7] else "")
-        ]))
-    csv = "\n".join(lines)
-    log.info("trade_invoice_export_csv tenant=%s rows=%d", tenant_id, len(rows))
-    return PlainTextResponse(csv)
-
-@app.get("/billing/stripe-charges")
-def list_charges(tenant_id: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-          SELECT id, order_id, amount_minor, currency, status, receipt_url
-          FROM stripe_charges WHERE tenant_id=:t ORDER BY id DESC
-        """), {"t": tenant_id}).all()
-        return [{
-            "id": int(r[0]),
-            "order_id": r[1],
-            "amount_minor": int(r[2]),
-            "currency": r[3],
-            "status": r[4],
-            "receipt_url": r[5]
-        } for r in rows]
-
-@app.get("/billing/trade-invoices/export-gl.csv")
-def export_gl_csv(
-    tenant_id: str = Query(...),
-    date_from: str = Query(...),
-    date_to: str = Query(...),
-    site_id: str | None = Query(None),
+@app.post("/billing/v2/events/retry")
+async def retry_outbox_events(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    max_retries: int = Query(3, description="Maximum retry attempts"),
+    db = Depends(get_db)
 ):
-    """
-    Flat GL lines for posted (or exported) trade invoices.
-    Accounts (example):
-      - AccountsReceivable (DR)  total
-      - Revenue (CR)             sum(unit_price_minor * qty) across lines (exclusive of tax)
-      - TaxPayable (CR)          sum(tax_minor) across lines
-    """
-    where = ["ti.tenant_id=:t", "ti.status IN ('posted','exported')", "ti.created_at >= :f", "ti.created_at < :to"]
-    params = {"t": tenant_id, "f": date_from, "to": date_to}
-    if site_id:
-        where.append("COALESCE(ti.site_id,'') = COALESCE(:s,'')")
-        params["s"] = site_id
+    """Retry pending outbox events"""
+    try:
+        # Set RLS context
+        set_rls_context(db, tenant_id)
+        
+        # Get pending events that haven't exceeded max retries
+        pending_events = db.query(BillingOutboxEvent).filter(
+            BillingOutboxEvent.status == 'pending',
+            BillingOutboxEvent.retry_count < max_retries
+        ).limit(100).all()
+        
+        processed_count = 0
+        failed_count = 0
+        
+        for event in pending_events:
+            try:
+                # Simulate event publishing (in real implementation, this would call external services)
+                log.info("Processing outbox event", event_id=str(event.event_id), event_type=event.event_type)
+                
+                # Mark as published
+                event.status = 'published'
+                event.published_at = datetime.now(timezone.utc)
+                event.retry_count += 1
+                
+                processed_count += 1
+                
+            except Exception as e:
+                log.error("Failed to process outbox event", event_id=str(event.event_id), error=str(e))
+                event.retry_count += 1
+                
+                if event.retry_count >= max_retries:
+                    event.status = 'failed'
+                
+                failed_count += 1
+        
+        db.commit()
+        
+        return {
+            "processed_count": processed_count,
+            "failed_count": failed_count,
+            "total_events": len(pending_events)
+        }
+        
+    except Exception as e:
+        log.error("Failed to retry outbox events", error=str(e), tenant_id=tenant_id)
+        raise HTTPException(status_code=500, detail=f"Failed to retry outbox events: {str(e)}")
 
-    q = f"""
-      SELECT ti.id, ti.site_id, ti.currency,
-             COALESCE(SUM(til.qty * til.unit_price_minor),0) AS net_minor,
-             COALESCE(SUM(til.tax_minor),0) AS tax_minor,
-             COALESCE(SUM(til.qty * til.unit_price_minor) + SUM(til.tax_minor),0) AS total_minor
-        FROM trade_invoices ti
-        JOIN trade_invoice_lines til ON til.invoice_id = ti.id
-       WHERE {' AND '.join(where)}
-       GROUP BY ti.id, ti.site_id, ti.currency
-       ORDER BY ti.id
-    """
+# Event handlers for integration
+@app.post("/billing/v2/events/order-completed")
+async def handle_order_completed(event_data: Dict[str, Any], db = Depends(get_db)):
+    """Handle ORDER_COMPLETED event from orders service"""
+    try:
+        log.info("Handling ORDER_COMPLETED event", event_data=event_data)
+        
+        tenant_id = event_data.get("tenant_id")
+        vendor_id = event_data.get("vendor_id")
+        order_id = event_data.get("order_id")
+        total_amount_minor = event_data.get("total_amount_minor", 0)
+        currency = event_data.get("currency", "GBP")
+        
+        if tenant_id and vendor_id and total_amount_minor > 0:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Create settlement item for this order
+            settlement_item = SettlementItemRequest(
+                order_id=order_id,
+                payout_amount_minor=total_amount_minor,
+                commission_amount_minor=int(total_amount_minor * 0.05),  # 5% commission
+                fee_amount_minor=0,
+                notes=f"Settlement for order {order_id}"
+            )
+            
+            # Create settlement request
+            settlement_request = CreateSettlementRequest(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                settlement_period_start=date.today(),
+                settlement_period_end=date.today(),
+                currency=currency,
+                items=[settlement_item]
+            )
+            
+            # Execute settlement saga
+            saga = SettlementCreationSaga(db, settlement_request)
+            settlement_id = await saga.execute()
+            
+            log.info("Created settlement from order", settlement_id=settlement_id, order_id=order_id)
+            
+            return {"status": "success", "settlement_id": settlement_id}
+        
+        return {"status": "skipped", "reason": "Missing required fields"}
+        
+    except Exception as e:
+        log.error("Failed to handle ORDER_COMPLETED event", error=str(e), event_data=event_data)
+        raise HTTPException(status_code=500, detail=f"Failed to handle ORDER_COMPLETED event: {str(e)}")
 
-    with SessionLocal() as db:
-        rows = db.execute(text(q), params).all()
-
-    # CSV: date,invoice_id,site_id,account,debit_minor,credit_minor,currency
-    lines = ["date,invoice_id,site_id,account,debit_minor,credit_minor,currency"]
-    # simplified: use posted_at as date; fallback to current_date if null
-    with SessionLocal() as db:
-        for r in rows:
-            inv_id, site, cur, net, tax, total = r
-            posted_at = db.execute(text("SELECT posted_at FROM trade_invoices WHERE id=:id"), {"id": inv_id}).scalar()
-            day = (posted_at.date().isoformat() if posted_at else time.strftime("%Y-%m-%d"))
-
-            # AR (DR)
-            lines.append(f"{day},{inv_id},{site or ''},AccountsReceivable,{total},0,{cur}")
-            # Revenue (CR)
-            if int(net or 0) > 0:
-                lines.append(f"{day},{inv_id},{site or ''},Revenue,0,{int(net)}, {cur}")
-            # TaxPayable (CR)
-            if int(tax or 0) > 0:
-                lines.append(f"{day},{inv_id},{site or ''},TaxPayable,0,{int(tax)}, {cur}")
-
-    return PlainTextResponse("\n".join(lines))
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8083)

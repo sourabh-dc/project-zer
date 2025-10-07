@@ -19,6 +19,8 @@ ZeroQue V2 is built as a microservices architecture with the following core comp
 - **Provisioning Service** (Port 8201) - Tenant, site, store, user management
 - **Orders Service** (Port 8203) - Order processing with saga orchestration
 - **Pricing Service** (Port 8209) - Advanced pricing with pricebooks and rules
+- **Billing Service** (Port 8083) - Invoice creation and vendor settlements
+- **Approvals Service** (Port 8213) - Budget approval workflows
 
 **📚 Documentation:**
 
@@ -45,12 +47,14 @@ docker-compose up postgres redis -d
 alembic upgrade head
 
 # Start V2 services
-docker-compose up provisioning orders pricing -d
+docker-compose up provisioning orders pricing billing approvals -d
 
 # Verify installation
 curl http://localhost:8201/health  # Provisioning
 curl http://localhost:8203/health  # Orders
 curl http://localhost:8209/health  # Pricing
+curl http://localhost:8083/health  # Billing
+curl http://localhost:8213/health  # Approvals
 ```
 
 **📖 For detailed setup instructions, see [SETUP_NEW_SYSTEM.md](SETUP_NEW_SYSTEM.md)**

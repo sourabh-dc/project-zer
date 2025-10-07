@@ -365,10 +365,10 @@ async def check_entitlement_v2(
         
         if not subscription:
             ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='no_subscription').inc()
-            return {
+                        return {
                 "tenant_id": tenant_id,
                 "feature_code": feature_code,
-                "entitled": False,
+                            "entitled": False,
                 "enabled": False,
                 "reason": "No active subscription found"
             }
@@ -428,9 +428,9 @@ async def check_entitlement_v2(
                 if usage and limits.get("rate_limit"):
                     if usage.usage_count >= limits["rate_limit"]:
                         ENTITLEMENT_CHECKS.labels(tenant_id=tenant_id, feature_code=feature_code, result='limit_exceeded').inc()
-                        return {
+                    return {
                             "tenant_id": tenant_id,
-                            "feature_code": feature_code,
+                        "feature_code": feature_code,
                             "entitled": True,
                             "enabled": False,
                             "reason": f"Usage limit exceeded: {usage.usage_count}/{limits['rate_limit']}",
@@ -523,10 +523,10 @@ async def record_usage_v2(payload: RecordUsageV2Request = Body(...)):
                 "count": payload.count,
                 "total": usage.usage_count
             })
-            
-            return {
+        
+        return {
                 "tenant_id": payload.tenant_id,
-                "feature_code": payload.feature_code,
+            "feature_code": payload.feature_code,
                 "usage_type": payload.usage_type,
                 "count": payload.count,
                 "total": usage.usage_count,
@@ -571,8 +571,8 @@ async def get_usage_summary_v2(tenant_id: str = Path(...)):
                 SubscriptionUsage.period_start >= month_start,
                 SubscriptionUsage.period_start < month_end
             ).all()
-            
-            usage_summary = {}
+        
+        usage_summary = {}
             for record in usage_records:
                 key = f"{record.feature_code}:{record.usage_type}"
                 usage_summary[key] = {
@@ -638,7 +638,7 @@ async def clear_cache_v2(
             redis_client.flushdb()
             log.info("cache_cleared_all")
             return {"cleared": True, "message": "All cache cleared"}
-            
+        
     except Exception as e:
         log.error(f"Cache clear error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Cache clear failed: {str(e)}")

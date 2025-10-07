@@ -216,7 +216,7 @@ def list_plans_v2(active: Optional[bool] = Query(None)):
     List available subscription plans with pricing.
     """
     try:
-        with SessionLocal() as db:
+    with SessionLocal() as db:
             query = db.query(SubscriptionPlan)
             
             if active is not None:
@@ -249,7 +249,7 @@ def list_plan_features_v2(plan_code: str = Path(...)):
     List features included in a specific plan.
     """
     try:
-        with SessionLocal() as db:
+    with SessionLocal() as db:
             # Join PlanFeature with Feature to get feature details
             features = db.query(PlanFeature, Feature).join(
                 Feature, PlanFeature.feature_code == Feature.code
@@ -295,8 +295,8 @@ def create_subscription_v2(payload: TenantSubscriptionV2Payload = Body(...)):
                 TenantSubscription.tenant_id == payload.tenant_id,
                 TenantSubscription.status.in_(['active', 'trialing'])
             ).first()
-            
-            if existing:
+        
+        if existing:
                 raise SubscriptionDuplicateError(f"Tenant already has an active subscription")
             
             # Create subscription
@@ -315,8 +315,8 @@ def create_subscription_v2(payload: TenantSubscriptionV2Payload = Body(...)):
             
             log.info("subscription_created tenant=%s plan=%s external_id=%s", 
                     payload.tenant_id, payload.plan_code, subscription.external_id)
-            
-            return {
+        
+        return {
                 "subscription_id": subscription.id,
                 "tenant_id": payload.tenant_id,
                 "plan_code": payload.plan_code,
@@ -357,8 +357,8 @@ def get_subscription_v2(tenant_id: str = Path(...)):
             plan = db.query(SubscriptionPlan).filter(
                 SubscriptionPlan.code == subscription.plan_code
             ).first()
-            
-            return {
+        
+        return {
                 "subscription_id": subscription.id,
                 "tenant_id": tenant_id,
                 "plan_code": subscription.plan_code,
