@@ -1,0 +1,30 @@
+{
+  "all_results": {
+    "cv_connector_health": false,
+    "cv_gateway_health": false,
+    "cv_connector_metrics": false,
+    "cv_gateway_metrics": false,
+    "qr_endpoint_exists": false,
+    "product_event_endpoint": false,
+    "user_event_endpoint": false,
+    "admin_endpoint_secured": false,
+    "sync_endpoint_secured": false,
+    "cleanup_endpoint_exists": false,
+    "enhanced_entry_codes": false,
+    "enhanced_order_processing": false
+  },
+  "feature_results": {
+    "health_endpoints": false,
+    "metrics_observability": false,
+    "qr_code_generation": false,
+    "event_automation": false,
+    "security_permissions": false,
+    "stale_review_cleanup": false,
+    "enhanced_endpoints": false
+  },
+  "summary": {
+    "total_tests": 12,
+    "passed_tests": 0,
+    "success_rate": 0.0
+  }
+}

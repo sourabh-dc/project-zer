@@ -2453,6 +2453,142 @@ async def create_product_relationship(payload: ProductRelationshipV2Payload = Bo
         logger.error(f"Product relationship creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# =============================================================================
+# INTEGRATION ENDPOINTS
+# =============================================================================
+
+@app.post("/catalog/v2/integration/cv-connector/product-created")
+async def notify_cv_connector_product_created(
+    tenant_id: str = Body(...),
+    product_id: str = Body(...),
+    product_data: Dict[str, Any] = Body(...)
+):
+    """Integration endpoint for CV Connector service to handle PRODUCT_CREATED events"""
+    try:
+        logger.info(f"Processing PRODUCT_CREATED event for CV Connector integration: product_id={product_id}, tenant_id={tenant_id}")
+        
+        # Validate product exists
+        with SessionLocal() as db:
+            product = db.execute(
+                text("SELECT * FROM product_master WHERE id = :product_id AND tenant_id = :tenant_id"),
+                {"product_id": product_id, "tenant_id": tenant_id}
+            ).fetchone()
+            
+            if not product:
+                raise HTTPException(status_code=404, detail="Product not found")
+        
+        # Prepare event data for CV Connector service
+        cv_event_data = {
+            "tenant_id": tenant_id,
+            "product_id": product_id,
+            "product_data": product_data,
+            "event_source": "catalog_service"
+        }
+        
+        # Notify CV Connector service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "http://localhost:8100/events/product-created",
+                    json=cv_event_data
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"Successfully notified CV Connector service for product {product_id}")
+                    return {"ok": True, "cv_notified": True, "product_id": product_id}
+                else:
+                    logger.warning(f"CV Connector service returned status {response.status_code} for product {product_id}")
+                    return {"ok": False, "cv_notified": False, "product_id": product_id, "error": "CV Connector service error"}
+                    
+        except Exception as e:
+            logger.error(f"Failed to notify CV Connector service for product {product_id}: {str(e)}")
+            return {"ok": False, "cv_notified": False, "product_id": product_id, "error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"Error processing PRODUCT_CREATED event for product {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process PRODUCT_CREATED event: {str(e)}")
+
+@app.post("/catalog/v2/integration/cv-connector/batch-sync")
+async def trigger_cv_connector_batch_sync(
+    tenant_id: str = Body(...),
+    provider: str = Body("aifi"),
+    sync_type: str = Body("products"),  # products, customers, inventory
+    filters: Optional[Dict[str, Any]] = Body(None)
+):
+    """Integration endpoint for CV Connector service to trigger batch sync"""
+    try:
+        logger.info(f"Triggering CV Connector batch sync: tenant_id={tenant_id}, provider={provider}, sync_type={sync_type}")
+        
+        # Prepare batch sync data
+        batch_sync_data = {
+            "tenant_id": tenant_id,
+            "provider": provider,
+            "sync_type": sync_type,
+            "filters": filters or {},
+            "triggered_by": "catalog_service"
+        }
+        
+        # Notify CV Connector service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "http://localhost:8100/cv/sync/batch",
+                    json=batch_sync_data
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Successfully triggered CV Connector batch sync: {result}")
+                    return {"ok": True, "sync_triggered": True, "result": result}
+                else:
+                    logger.warning(f"CV Connector service returned status {response.status_code} for batch sync")
+                    return {"ok": False, "sync_triggered": False, "error": "CV Connector service error"}
+                    
+        except Exception as e:
+            logger.error(f"Failed to trigger CV Connector batch sync: {str(e)}")
+            return {"ok": False, "sync_triggered": False, "error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"Error triggering CV Connector batch sync: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to trigger CV Connector batch sync: {str(e)}")
+
+@app.get("/catalog/v2/integration/status")
+async def get_integration_status():
+    """Get status of all service integrations"""
+    try:
+        integration_status = {
+            "cv_connector_service": {"status": "unknown", "url": "http://localhost:8100"},
+            "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8000"},
+            "orders_service": {"status": "unknown", "url": "http://localhost:8081"},
+            "provisioning_service": {"status": "unknown", "url": "http://localhost:8082"}
+        }
+        
+        # Test each service connectivity
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for service_name, config in integration_status.items():
+                try:
+                    response = await client.get(f"{config['url']}/health")
+                    if response.status_code == 200:
+                        config["status"] = "healthy"
+                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
+                    else:
+                        config["status"] = "unhealthy"
+                except Exception as e:
+                    config["status"] = "unreachable"
+                    config["error"] = str(e)
+        
+        return {
+            "integration_status": integration_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting integration status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
+
 @app.get("/catalog/v2/media")
 async def list_product_media(product_id: Optional[str] = Query(None), variant_id: Optional[str] = Query(None), 
                            media_type: Optional[str] = Query(None), limit: int = Query(100, ge=1, le=1000)):
