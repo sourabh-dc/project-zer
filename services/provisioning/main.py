@@ -42,41 +42,17 @@ from zeroque_common.db.session import get_engine, init_db, check_db, SessionLoca
 from zeroque_common.middleware.usage_middleware import add_api_call_meter
 from zeroque_common.middleware.idempotency import add_idempotency_middleware
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
-from utils.helpers import set_rls_context
+from .utils.helpers import set_rls_context
 
 # Import service layer, repositories and schemas
-from .repositories import RepositoryFactory, ProvisioningError, ValidationError, NotFoundError, DuplicateError
+from .repositories.repository_factory import RepositoryFactory
+from .utils.custom_exceptions import ValidationError
 from .models import *
 from .schemas import *
 
 # Service configuration
 SERVICE_NAME = "provisioning"
 app = FastAPI(title="Enhanced ZeroQue Provisioning Service", version="2.0.0")
-
-# Custom exception handlers
-@app.exception_handler(ValidationError)
-async def validation_exception_handler(request, exc: ValidationError):
-    """Handle validation errors"""
-    logger.warning(f"Validation error: {exc}")
-    return HTTPException(status_code=400, detail=str(exc))
-
-@app.exception_handler(NotFoundError)
-async def not_found_exception_handler(request, exc: NotFoundError):
-    """Handle not found errors"""
-    logger.warning(f"Not found error: {exc}")
-    return HTTPException(status_code=404, detail=str(exc))
-
-@app.exception_handler(DuplicateError)
-async def duplicate_exception_handler(request, exc: DuplicateError):
-    """Handle duplicate errors"""
-    logger.warning(f"Duplicate error: {exc}")
-    return HTTPException(status_code=409, detail=str(exc))
-
-@app.exception_handler(ProvisioningError)
-async def provisioning_exception_handler(request, exc: ProvisioningError):
-    """Handle general provisioning errors"""
-    logger.error(f"Provisioning error: {exc}")
-    return HTTPException(status_code=500, detail="Internal provisioning error")
 
 # Initialize enhanced communication
 circuit_breaker_config = CircuitBreakerConfig(
@@ -128,8 +104,9 @@ def record_database_operation(operation: str, table: str, status: str, duration_
         ).observe(duration_ms / 1000.0)
     except Exception as e:
         logger.error(f"Error recording database operation metric: {e}")
-metrics = init_metrics(SERVICE_NAME)
-insights = init_insights(SERVICE_NAME, "2.0.0")
+
+init_metrics(SERVICE_NAME) #initialize metrics
+init_insights(SERVICE_NAME, "2.0.0") #initialize app insights
 
 # ---- middleware ----
 add_observability_middleware(app, SERVICE_NAME)
