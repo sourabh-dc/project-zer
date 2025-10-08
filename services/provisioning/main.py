@@ -16,6 +16,8 @@ import os
 import sys
 import uuid
 import time
+from datetime import timezone
+
 from fastapi import FastAPI, HTTPException, Body, Path, Query, Depends
 from typing import Dict, Any
 from sqlalchemy import text
@@ -50,22 +52,6 @@ from .schemas import *
 # Service configuration
 SERVICE_NAME = "provisioning"
 app = FastAPI(title="Enhanced ZeroQue Provisioning Service", version="2.0.0")
-
-# Dependency injection for database sessions
-# def get_db():
-#     """Get database session with proper lifecycle management"""
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     except Exception as e:
-#         db.rollback()
-#         logger.error(f"Database session error: {e}")
-#         raise e
-#     finally:
-#         try:
-#             db.close()
-#         except Exception as e:
-#             logger.error(f"Error closing database session: {e}")
 
 # Custom exception handlers
 @app.exception_handler(ValidationError)
@@ -1113,6 +1099,162 @@ async def get_entity_events(entity_id: str, limit: int = 100):
     """Get events for an entity"""
     events = await event_store.get_events(entity_id=entity_id, limit=limit)
     return {"entity_id": entity_id, "events": events}
+
+# =============================================================================
+# INTEGRATION ENDPOINTS
+# =============================================================================
+
+@app.post("/provisioning/v2/integration/cv-connector/user-created")
+async def notify_cv_connector_user_created(
+    tenant_id: str = Body(...),
+    user_id: str = Body(...),
+    user_data: Dict[str, Any] = Body(...)
+):
+    """Integration endpoint for CV Connector service to handle USER_CREATED events"""
+    try:
+        logger.info(f"Processing USER_CREATED event for CV Connector integration: user_id={user_id}, tenant_id={tenant_id}")
+
+        # Validate user exists
+        with SessionLocal() as db:
+            user = db.execute(
+                text("SELECT * FROM users WHERE id = :user_id AND tenant_id = :tenant_id"),
+                {"user_id": user_id, "tenant_id": tenant_id}
+            ).fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+        # Prepare event data for CV Connector service
+        cv_event_data = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "user_data": user_data,
+            "event_source": "provisioning_service"
+        }
+
+        # Notify CV Connector service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "http://localhost:8100/events/user-created",
+                    json=cv_event_data
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"Successfully notified CV Connector service for user {user_id}")
+                    return {"ok": True, "cv_notified": True, "user_id": user_id}
+                else:
+                    logger.warning(f"CV Connector service returned status {response.status_code} for user {user_id}")
+                    return {"ok": False, "cv_notified": False, "user_id": user_id, "error": "CV Connector service error"}
+
+        except Exception as e:
+            logger.error(f"Failed to notify CV Connector service for user {user_id}: {str(e)}")
+            return {"ok": False, "cv_notified": False, "user_id": user_id, "error": str(e)}
+
+    except Exception as e:
+        logger.error(f"Error processing USER_CREATED event for user {user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process USER_CREATED event: {str(e)}")
+
+@app.post("/provisioning/v2/integration/cv-connector/tenant-created")
+async def notify_cv_connector_tenant_created(
+    tenant_id: str = Body(...),
+    tenant_data: Dict[str, Any] = Body(...)
+):
+    """Integration endpoint for CV Connector service to handle TENANT_CREATED events"""
+    try:
+        logger.info(f"Processing TENANT_CREATED event for CV Connector integration: tenant_id={tenant_id}")
+
+        # Validate tenant exists
+        with SessionLocal() as db:
+            tenant = db.execute(
+                text("SELECT * FROM tenants WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id}
+            ).fetchone()
+
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+
+        # Prepare event data for CV Connector service
+        cv_event_data = {
+            "tenant_id": tenant_id,
+            "tenant_data": tenant_data,
+            "event_source": "provisioning_service"
+        }
+
+        # Notify CV Connector service via HTTP call for initial setup
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # First, create CV provider configuration for the tenant
+                provider_config = {
+                    "tenant_id": tenant_id,
+                    "type": "cv",
+                    "name": "aifi",
+                    "config": {
+                        "provider": "aifi",
+                        "api_key": "default_api_key",  # Should be configured per tenant
+                        "base_url": "https://api.aifi.example",
+                        "location_id": tenant_data.get("location_id"),
+                        "store_id": tenant_data.get("store_id")
+                    },
+                    "active": True
+                }
+
+                response = await client.post(
+                    "http://localhost:8100/admin/rails/cv",
+                    json=provider_config
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"Successfully set up CV provider configuration for tenant {tenant_id}")
+                    return {"ok": True, "cv_setup": True, "tenant_id": tenant_id}
+                else:
+                    logger.warning(f"CV Connector service returned status {response.status_code} for tenant {tenant_id}")
+                    return {"ok": False, "cv_setup": False, "tenant_id": tenant_id, "error": "CV Connector service error"}
+
+        except Exception as e:
+            logger.error(f"Failed to set up CV provider configuration for tenant {tenant_id}: {str(e)}")
+            return {"ok": False, "cv_setup": False, "tenant_id": tenant_id, "error": str(e)}
+
+    except Exception as e:
+        logger.error(f"Error processing TENANT_CREATED event for tenant {tenant_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process TENANT_CREATED event: {str(e)}")
+
+@app.get("/provisioning/v2/integration/status")
+async def get_integration_status():
+    """Get status of all service integrations"""
+    try:
+        integration_status = {
+            "cv_connector_service": {"status": "unknown", "url": "http://localhost:8100"},
+            "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8000"},
+            "catalog_service": {"status": "unknown", "url": "http://localhost:8080"},
+            "orders_service": {"status": "unknown", "url": "http://localhost:8081"}
+        }
+
+        # Test each service connectivity
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for service_name, config in integration_status.items():
+                try:
+                    response = await client.get(f"{config['url']}/health")
+                    if response.status_code == 200:
+                        config["status"] = "healthy"
+                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
+                    else:
+                        config["status"] = "unhealthy"
+                except Exception as e:
+                    config["status"] = "unreachable"
+                    config["error"] = str(e)
+
+        return {
+            "integration_status": integration_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting integration status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
 @app.get("/provisioning/services")
 async def get_services():
