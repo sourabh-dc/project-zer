@@ -822,7 +822,7 @@ async def health_check():
                 "database": {"status": "healthy"}
             }
         }
-    except Exception as e:
+        except Exception as e:
         return {
             "status": "unhealthy",
             "service": SERVICE_NAME,
@@ -1117,7 +1117,7 @@ async def create_dispute(request: CreateDisputeRequest, db = Depends(get_db)):
         )
         
         db.add(dispute)
-        db.commit()
+            db.commit()
         db.refresh(dispute)
         
         log.info("Created dispute", dispute_id=str(dispute.id), tenant_id=request.tenant_id)
@@ -1212,8 +1212,166 @@ async def create_adjustment(request: CreateAdjustmentRequest, db = Depends(get_d
         )
         
     except Exception as e:
-        log.error("Failed to create adjustment", error=str(e), tenant_id=request.tenant_id)
+        log.error("Failed to create adjustment", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to create adjustment: {str(e)}")
+
+# =============================================================================
+# INTEGRATION ENDPOINTS
+# =============================================================================
+
+@app.post("/billing/v2/integration/ledger/invoice-posted")
+async def notify_ledger_invoice_posted(
+    tenant_id: str = Body(...),
+    invoice_id: str = Body(...),
+    total_amount_minor: int = Body(...),
+    currency: str = Body("GBP"),
+    customer_id: str = Body(None)
+):
+    """Integration endpoint for Ledger service to handle INVOICE_POSTED events"""
+    try:
+        log.info("Processing INVOICE_POSTED event for ledger integration", invoice_id=invoice_id, tenant_id=tenant_id)
+        
+        # Validate invoice exists
+    with SessionLocal() as db:
+            invoice = db.execute(
+                text("SELECT * FROM trade_invoices WHERE id = :invoice_id AND tenant_id = :tenant_id"),
+                {"invoice_id": invoice_id, "tenant_id": tenant_id}
+            ).fetchone()
+            
+            if not invoice:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        # Prepare event data for ledger service
+        ledger_event_data = {
+            "tenant_id": tenant_id,
+            "invoice_id": invoice_id,
+            "total_amount_minor": total_amount_minor,
+            "currency": currency,
+            "customer_id": customer_id,
+            "event_source": "billing_service"
+        }
+        
+        # Notify ledger service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "http://localhost:8086/ledger/v4/events/invoice-posted",
+                    json=ledger_event_data
+                )
+                
+                if response.status_code == 200:
+                    log.info("Successfully notified ledger service", invoice_id=invoice_id)
+                    return {"ok": True, "ledger_notified": True, "invoice_id": invoice_id}
+                else:
+                    log.warning("Ledger service returned error status", invoice_id=invoice_id, status_code=response.status_code)
+                    return {"ok": False, "ledger_notified": False, "invoice_id": invoice_id, "error": "Ledger service error"}
+                    
+        except Exception as e:
+            log.error("Failed to notify ledger service", invoice_id=invoice_id, error=str(e))
+            return {"ok": False, "ledger_notified": False, "invoice_id": invoice_id, "error": str(e)}
+            
+    except Exception as e:
+        log.error("Error processing INVOICE_POSTED event", invoice_id=invoice_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to process INVOICE_POSTED event: {str(e)}")
+
+@app.post("/billing/v2/integration/cv-gateway/invoice-creation")
+async def create_invoice_for_cv_order(
+    tenant_id: str = Body(...),
+    order_id: str = Body(...),
+    total_amount_minor: int = Body(...),
+    currency: str = Body("GBP"),
+    customer_id: str = Body(None),
+    items: List[Dict[str, Any]] = Body(...)
+):
+    """Integration endpoint for CV Gateway service to create invoices"""
+    try:
+        log.info("Processing invoice creation for CV Gateway", order_id=order_id, tenant_id=tenant_id)
+        
+        # Create invoice using existing invoice creation logic
+        invoice_data = {
+            "tenant_id": tenant_id,
+            "customer_id": customer_id,
+            "currency": currency,
+            "total_amount_minor": total_amount_minor,
+            "tax_total_minor": int(total_amount_minor * 0.2),  # 20% tax
+            "subtotal_minor": int(total_amount_minor * 0.8),   # 80% subtotal
+            "status": "draft",
+            "due_date": datetime.now(timezone.utc) + timedelta(days=30),
+            "items": items
+        }
+        
+        # Use existing invoice creation endpoint logic
+        try:
+            # Create invoice lines
+            invoice_lines = []
+            for item in items:
+                line_data = {
+                    "product_id": item.get("product_id"),
+                    "description": item.get("description", "CV Order Item"),
+                    "quantity": item.get("quantity", 1),
+                    "unit_price_minor": item.get("unit_price_minor", 0),
+                    "total_price_minor": item.get("total_price_minor", 0),
+                    "tax_minor": int(item.get("total_price_minor", 0) * 0.2),
+                    "tax_code": "VAT_STANDARD"
+                }
+                invoice_lines.append(line_data)
+            
+            invoice_data["lines"] = invoice_lines
+            
+            # Create invoice using existing logic
+            invoice = await create_invoice_endpoint(invoice_data)
+            
+            if invoice:
+                log.info("Successfully created invoice for CV order", invoice_id=invoice.get("id"), order_id=order_id)
+                return {"ok": True, "invoice_created": True, "invoice_id": invoice.get("id"), "order_id": order_id}
+            else:
+                log.warning("Failed to create invoice for CV order", order_id=order_id)
+                return {"ok": False, "invoice_created": False, "order_id": order_id, "error": "Invoice creation failed"}
+                
+        except Exception as e:
+            log.error("Failed to create invoice for CV order", order_id=order_id, error=str(e))
+            return {"ok": False, "invoice_created": False, "order_id": order_id, "error": str(e)}
+            
+    except Exception as e:
+        log.error("Error processing invoice creation for CV Gateway", order_id=order_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to process invoice creation: {str(e)}")
+
+@app.get("/billing/v2/integration/status")
+async def get_integration_status():
+    """Get status of all service integrations"""
+    try:
+        integration_status = {
+            "ledger_service": {"status": "unknown", "url": "http://localhost:8086"},
+            "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8000"},
+            "cv_connector_service": {"status": "unknown", "url": "http://localhost:8100"},
+            "orders_service": {"status": "unknown", "url": "http://localhost:8081"},
+            "approvals_service": {"status": "unknown", "url": "http://localhost:8084"}
+        }
+        
+        # Test each service connectivity
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for service_name, config in integration_status.items():
+                try:
+                    response = await client.get(f"{config['url']}/health")
+                    if response.status_code == 200:
+                        config["status"] = "healthy"
+                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
+                    else:
+                        config["status"] = "unhealthy"
+                except Exception as e:
+                    config["status"] = "unreachable"
+                    config["error"] = str(e)
+        
+        return {
+            "integration_status": integration_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        log.error("Error getting integration status", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
 @app.get("/billing/v2/reports/ar-aging")
 async def get_ar_aging_report(

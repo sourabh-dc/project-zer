@@ -74,7 +74,7 @@ class PaymentProcessingError(Exception):
 
 # Service configuration
 SERVICE_NAME = "orders"
-app = FastAPI(title="Enhanced ZeroQue Orders Service", version="2.0.0")
+# FastAPI app will be created with lifespan after the lifespan function is defined
 
 # Initialize enhanced communication
 service_bus = global_service_bus
@@ -90,40 +90,9 @@ metrics = init_metrics(SERVICE_NAME)
 insights = init_insights(SERVICE_NAME, "2.0.0")
 
 # ---- middleware ----
-add_observability_middleware(app, SERVICE_NAME)
-add_api_call_meter(app)
-add_idempotency_middleware(app, routes=[("POST", "/orders"), ("POST", "/orders/v2")])
+# Middleware will be added after app creation
 
-# Custom exception handlers
-@app.exception_handler(OrderValidationError)
-async def order_validation_exception_handler(request, exc: OrderValidationError):
-    """Handle order validation errors"""
-    logger.warning(f"Order validation error: {exc}")
-    return HTTPException(status_code=400, detail=str(exc))
-
-@app.exception_handler(OrderNotFoundError)
-async def order_not_found_exception_handler(request, exc: OrderNotFoundError):
-    """Handle order not found errors"""
-    logger.warning(f"Order not found error: {exc}")
-    return HTTPException(status_code=404, detail=str(exc))
-
-@app.exception_handler(OrderDuplicateError)
-async def order_duplicate_exception_handler(request, exc: OrderDuplicateError):
-    """Handle order duplicate errors"""
-    logger.warning(f"Order duplicate error: {exc}")
-    return HTTPException(status_code=409, detail=str(exc))
-
-@app.exception_handler(OrderProcessingError)
-async def order_processing_exception_handler(request, exc: OrderProcessingError):
-    """Handle order processing errors"""
-    logger.error(f"Order processing error: {exc}")
-    return HTTPException(status_code=500, detail=str(exc))
-
-@app.exception_handler(PaymentProcessingError)
-async def payment_processing_exception_handler(request, exc: PaymentProcessingError):
-    """Handle payment processing errors"""
-    logger.error(f"Payment processing error: {exc}")
-    return HTTPException(status_code=500, detail=str(exc))
+# Exception handlers moved after app creation
 
 # ---- config ----
 PAYMENTS_BASE = os.getenv("PAYMENTS_BASE", "http://localhost:8216")
@@ -289,9 +258,11 @@ def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] 
         raise HTTPException(status_code=500, detail="Failed to set security context")
 
 # ---- lifecycle ----
-@app.on_event("startup")
-async def startup():
-    """Initialize enhanced service"""
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     logger.info(f"Starting enhanced {SERVICE_NAME} service")
     
     # Initialize database
@@ -329,6 +300,56 @@ async def startup():
             "enhanced_features": ["saga", "circuit_breaker", "event_sourcing"]
         }
     )
+    
+    yield
+    
+    # Shutdown
+    logger.info(f"Shutting down enhanced {SERVICE_NAME} service")
+    await service_bus.stop_consumer()
+    await health_monitor.stop_monitoring()
+
+app = FastAPI(
+    title="Orders Service V2",
+    description="Enhanced Orders Service with V2 Multi-Tenant Marketplace Architecture",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# Add middleware
+add_observability_middleware(app, SERVICE_NAME)
+add_api_call_meter(app)
+add_idempotency_middleware(app, routes=[("POST", "/orders"), ("POST", "/orders/v2")])
+
+# Add exception handlers
+@app.exception_handler(OrderValidationError)
+async def order_validation_exception_handler(request, exc: OrderValidationError):
+    """Handle order validation errors"""
+    logger.warning(f"Order validation error: {exc}")
+    return HTTPException(status_code=400, detail=str(exc))
+
+@app.exception_handler(OrderNotFoundError)
+async def order_not_found_exception_handler(request, exc: OrderNotFoundError):
+    """Handle order not found errors"""
+    logger.warning(f"Order not found error: {exc}")
+    return HTTPException(status_code=404, detail=str(exc))
+
+@app.exception_handler(OrderDuplicateError)
+async def order_duplicate_exception_handler(request, exc: OrderDuplicateError):
+    """Handle order duplicate errors"""
+    logger.warning(f"Order duplicate error: {exc}")
+    return HTTPException(status_code=409, detail=str(exc))
+
+@app.exception_handler(OrderProcessingError)
+async def order_processing_exception_handler(request, exc: OrderProcessingError):
+    """Handle order processing errors"""
+    logger.error(f"Order processing error: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
+
+@app.exception_handler(PaymentProcessingError)
+async def payment_processing_exception_handler(request, exc: PaymentProcessingError):
+    """Handle payment processing errors"""
+    logger.error(f"Payment processing error: {exc}")
+    return HTTPException(status_code=500, detail=str(exc))
 
 # ---- Event Handlers ----
 async def handle_inventory_update(event: ServiceEvent):
@@ -1895,3 +1916,170 @@ async def get_system_health():
         
         logger.info(f"order_settled order_id={order_id} total={total_minor} currency={currency}")
         return {"ok": True, "order_id": order_id, "status": "completed"}
+
+# =============================================================================
+# INTEGRATION ENDPOINTS
+# =============================================================================
+
+@app.post("/orders/v2/integration/ledger/order-completed")
+async def notify_ledger_order_completed(
+    tenant_id: str = Body(...),
+    order_id: str = Body(...),
+    site_id: str = Body(None),
+    store_id: str = Body(None),
+    user_id: str = Body(None),
+    total_amount_minor: int = Body(...),
+    currency: str = Body("GBP"),
+    cost_centre_id: str = Body(None)
+):
+    """Integration endpoint for Ledger service to handle ORDER_COMPLETED events"""
+    try:
+        logger.info(f"Processing ORDER_COMPLETED event for ledger integration: order_id={order_id}, tenant_id={tenant_id}")
+        
+        # Validate order exists
+        with SessionLocal() as db:
+            order = db.execute(
+                text("SELECT * FROM orders_new WHERE id = :order_id AND tenant_id = :tenant_id"),
+                {"order_id": order_id, "tenant_id": tenant_id}
+            ).fetchone()
+            
+            if not order:
+                raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Prepare event data for ledger service
+        ledger_event_data = {
+            "tenant_id": tenant_id,
+            "order_id": order_id,
+            "total_amount_minor": total_amount_minor,
+            "currency": currency,
+            "site_id": site_id,
+            "store_id": store_id,
+            "cost_centre_id": cost_centre_id,
+            "user_id": user_id,
+            "event_source": "orders_service"
+        }
+        
+        # Notify ledger service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "http://localhost:8086/ledger/v4/events/order-completed",
+                    json=ledger_event_data
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"Successfully notified ledger service for order {order_id}")
+                    return {"ok": True, "ledger_notified": True, "order_id": order_id}
+                else:
+                    logger.warning(f"Ledger service returned status {response.status_code} for order {order_id}")
+                    return {"ok": False, "ledger_notified": False, "order_id": order_id, "error": "Ledger service error"}
+                    
+        except Exception as e:
+            logger.error(f"Failed to notify ledger service for order {order_id}: {str(e)}")
+            return {"ok": False, "ledger_notified": False, "order_id": order_id, "error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"Error processing ORDER_COMPLETED event for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process ORDER_COMPLETED event: {str(e)}")
+
+@app.post("/orders/v2/integration/cv-gateway/order-created")
+async def notify_cv_gateway_order_created(
+    tenant_id: str = Body(...),
+    order_id: str = Body(...),
+    provider: str = Body("aifi"),
+    provider_order_id: str = Body(...),
+    site_id: str = Body(None),
+    store_id: str = Body(None),
+    shopper_id: str = Body(None),
+    currency: str = Body("GBP"),
+    items: List[Dict[str, Any]] = Body(...),
+    occurred_at: str = Body(None)
+):
+    """Integration endpoint for CV Gateway service to create orders"""
+    try:
+        logger.info(f"Processing CV Gateway order creation: order_id={order_id}, tenant_id={tenant_id}")
+        
+        # Prepare order data for CV Gateway
+        cv_order_data = {
+            "provider": provider,
+            "provider_order_id": provider_order_id,
+            "tenant_id": tenant_id,
+            "site_id": site_id,
+            "store_id": store_id,
+            "shopper_id": shopper_id,
+            "currency": currency,
+            "items": items,
+            "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Notify CV Gateway service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    "http://localhost:8000/cv/webhook/order",
+                    json=cv_order_data
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Successfully created CV order: {result}")
+                    return {"ok": True, "cv_order_created": True, "order_id": order_id, "cv_result": result}
+                else:
+                    logger.warning(f"CV Gateway returned status {response.status_code} for order {order_id}")
+                    return {"ok": False, "cv_order_created": False, "order_id": order_id, "error": "CV Gateway error"}
+                    
+        except Exception as e:
+            logger.error(f"Failed to create CV order for order {order_id}: {str(e)}")
+            return {"ok": False, "cv_order_created": False, "order_id": order_id, "error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"Error processing CV Gateway order creation for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process CV Gateway order creation: {str(e)}")
+
+@app.get("/orders/v2/integration/status")
+async def get_integration_status():
+    """Get status of all service integrations"""
+    try:
+        integration_status = {
+            "ledger_service": {"status": "unknown", "url": "http://localhost:8086"},
+            "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8000"},
+            "cv_connector_service": {"status": "unknown", "url": "http://localhost:8100"},
+            "approvals_service": {"status": "unknown", "url": "http://localhost:8084"},
+            "billing_service": {"status": "unknown", "url": "http://localhost:8083"}
+        }
+        
+        # Test each service connectivity
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for service_name, config in integration_status.items():
+                try:
+                    response = await client.get(f"{config['url']}/health")
+                    if response.status_code == 200:
+                        config["status"] = "healthy"
+                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
+                    else:
+                        config["status"] = "unhealthy"
+                except Exception as e:
+                    config["status"] = "unreachable"
+                    config["error"] = str(e)
+        
+        return {
+            "integration_status": integration_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting integration status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
+
+# Startup script
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=os.getenv("ENVIRONMENT") == "development"
+    )

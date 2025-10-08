@@ -1834,6 +1834,167 @@ async def validate_permission(
         "roles": user_context.roles
     }
 
+# =============================================================================
+# INTEGRATION ENDPOINTS
+# =============================================================================
+
+@app.post("/approvals/v2/integration/ledger/approval-resolved")
+async def notify_ledger_approval_resolved(
+    tenant_id: str = Body(...),
+    request_id: str = Body(...),
+    amount_minor: int = Body(...),
+    currency: str = Body("GBP"),
+    approved: bool = Body(...),
+    cost_centre_id: str = Body(None)
+):
+    """Integration endpoint for Ledger service to handle APPROVAL_RESOLVED events"""
+    try:
+        logger.info(f"Processing APPROVAL_RESOLVED event for ledger integration: request_id={request_id}, tenant_id={tenant_id}")
+        
+        # Validate approval request exists
+        with SessionLocal() as db:
+            request = db.execute(
+                text("SELECT * FROM approval_requests_new WHERE id = :request_id AND tenant_id = :tenant_id"),
+                {"request_id": request_id, "tenant_id": tenant_id}
+            ).fetchone()
+            
+            if not request:
+                raise HTTPException(status_code=404, detail="Approval request not found")
+        
+        # Prepare event data for ledger service
+        ledger_event_data = {
+            "tenant_id": tenant_id,
+            "request_id": request_id,
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "approved": approved,
+            "cost_centre_id": cost_centre_id,
+            "event_source": "approvals_service"
+        }
+        
+        # Notify ledger service via HTTP call
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "http://localhost:8086/ledger/v4/events/approval-resolved",
+                    json=ledger_event_data
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"Successfully notified ledger service for approval request {request_id}")
+                    return {"ok": True, "ledger_notified": True, "request_id": request_id}
+                else:
+                    logger.warning(f"Ledger service returned status {response.status_code} for approval request {request_id}")
+                    return {"ok": False, "ledger_notified": False, "request_id": request_id, "error": "Ledger service error"}
+                    
+        except Exception as e:
+            logger.error(f"Failed to notify ledger service for approval request {request_id}: {str(e)}")
+            return {"ok": False, "ledger_notified": False, "request_id": request_id, "error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"Error processing APPROVAL_RESOLVED event for request {request_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process APPROVAL_RESOLVED event: {str(e)}")
+
+@app.post("/approvals/v2/integration/cv-gateway/budget-check")
+async def check_budget_for_cv_order(
+    tenant_id: str = Body(...),
+    amount_minor: int = Body(...),
+    currency: str = Body("GBP"),
+    cost_centre_id: str = Body(None),
+    site_id: str = Body(None),
+    store_id: str = Body(None)
+):
+    """Integration endpoint for CV Gateway service to check budget before order processing"""
+    try:
+        logger.info(f"Processing budget check for CV Gateway: tenant_id={tenant_id}, amount={amount_minor}")
+        
+        # Check if budget approval is required
+        approval_required = False
+        approval_request_id = None
+        
+        # Check budget limits (simplified logic)
+        with SessionLocal() as db:
+            # Check if amount exceeds threshold (e.g., 1000 GBP)
+            if amount_minor > 100000:  # 1000 GBP in minor units
+                approval_required = True
+                
+                # Create approval request if needed
+                if approval_required:
+                    approval_request_id = str(uuid.uuid4())
+                    
+                    # Insert approval request
+                    db.execute(text("""
+                        INSERT INTO approval_requests_new 
+                        (id, tenant_id, request_type, requester_id, amount_minor, currency, 
+                         cost_centre_id, site_id, store_id, description, status, created_at)
+                        VALUES (:id, :tenant_id, 'budget_overspend', 'system', :amount_minor, 
+                                :currency, :cost_centre_id, :site_id, :store_id, 
+                                'CV Gateway budget check', 'pending', NOW())
+                    """), {
+                        "id": approval_request_id,
+                        "tenant_id": tenant_id,
+                        "amount_minor": amount_minor,
+                        "currency": currency,
+                        "cost_centre_id": cost_centre_id,
+                        "site_id": site_id,
+                        "store_id": store_id
+                    })
+                    
+                    db.commit()
+        
+        return {
+            "ok": True,
+            "approval_required": approval_required,
+            "approval_request_id": approval_request_id,
+            "budget_check": {
+                "amount_minor": amount_minor,
+                "currency": currency,
+                "threshold_exceeded": approval_required,
+                "threshold_amount_minor": 100000
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing budget check for CV Gateway: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process budget check: {str(e)}")
+
+@app.get("/approvals/v2/integration/status")
+async def get_integration_status():
+    """Get status of all service integrations"""
+    try:
+        integration_status = {
+            "ledger_service": {"status": "unknown", "url": "http://localhost:8086"},
+            "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8000"},
+            "cv_connector_service": {"status": "unknown", "url": "http://localhost:8100"},
+            "orders_service": {"status": "unknown", "url": "http://localhost:8081"},
+            "billing_service": {"status": "unknown", "url": "http://localhost:8083"}
+        }
+        
+        # Test each service connectivity
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for service_name, config in integration_status.items():
+                try:
+                    response = await client.get(f"{config['url']}/health")
+                    if response.status_code == 200:
+                        config["status"] = "healthy"
+                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
+                    else:
+                        config["status"] = "unhealthy"
+                except Exception as e:
+                    config["status"] = "unreachable"
+                    config["error"] = str(e)
+        
+        return {
+            "integration_status": integration_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting integration status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
+
 # Main execution
 if __name__ == "__main__":
     import uvicorn
