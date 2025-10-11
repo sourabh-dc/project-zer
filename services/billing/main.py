@@ -10,7 +10,7 @@ from datetime import datetime, timezone, date, timedelta
 from contextlib import asynccontextmanager, contextmanager
 from typing import Dict, Any, Optional, List, Callable
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -822,7 +822,7 @@ async def health_check():
                 "database": {"status": "healthy"}
             }
         }
-        except Exception as e:
+    except Exception as e:
         return {
             "status": "unhealthy",
             "service": SERVICE_NAME,
@@ -1117,7 +1117,7 @@ async def create_dispute(request: CreateDisputeRequest, db = Depends(get_db)):
         )
         
         db.add(dispute)
-            db.commit()
+        db.commit()
         db.refresh(dispute)
         
         log.info("Created dispute", dispute_id=str(dispute.id), tenant_id=request.tenant_id)
@@ -1232,25 +1232,25 @@ async def notify_ledger_invoice_posted(
         log.info("Processing INVOICE_POSTED event for ledger integration", invoice_id=invoice_id, tenant_id=tenant_id)
         
         # Validate invoice exists
-    with SessionLocal() as db:
+        with SessionLocal() as db:
             invoice = db.execute(
                 text("SELECT * FROM trade_invoices WHERE id = :invoice_id AND tenant_id = :tenant_id"),
                 {"invoice_id": invoice_id, "tenant_id": tenant_id}
             ).fetchone()
-            
+
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
-        
-        # Prepare event data for ledger service
-        ledger_event_data = {
-            "tenant_id": tenant_id,
-            "invoice_id": invoice_id,
-            "total_amount_minor": total_amount_minor,
-            "currency": currency,
-            "customer_id": customer_id,
-            "event_source": "billing_service"
-        }
-        
+
+            # Prepare event data for ledger
+            ledger_event_data = {
+                "tenant_id": tenant_id,
+                "invoice_id": invoice_id,
+                "total_amount_minor": total_amount_minor,
+                "currency": currency,
+                "customer_id": customer_id,
+                "event_source": "billing_service"
+            }
+
         # Notify ledger service via HTTP call
         try:
             import httpx
@@ -1259,14 +1259,13 @@ async def notify_ledger_invoice_posted(
                     "http://localhost:8086/ledger/v4/events/invoice-posted",
                     json=ledger_event_data
                 )
-                
+
                 if response.status_code == 200:
                     log.info("Successfully notified ledger service", invoice_id=invoice_id)
                     return {"ok": True, "ledger_notified": True, "invoice_id": invoice_id}
                 else:
                     log.warning("Ledger service returned error status", invoice_id=invoice_id, status_code=response.status_code)
                     return {"ok": False, "ledger_notified": False, "invoice_id": invoice_id, "error": "Ledger service error"}
-                    
         except Exception as e:
             log.error("Failed to notify ledger service", invoice_id=invoice_id, error=str(e))
             return {"ok": False, "ledger_notified": False, "invoice_id": invoice_id, "error": str(e)}
@@ -1320,7 +1319,7 @@ async def create_invoice_for_cv_order(
             invoice_data["lines"] = invoice_lines
             
             # Create invoice using existing logic
-            invoice = await create_invoice_endpoint(invoice_data)
+            invoice = await create_invoice(invoice_data)
             
             if invoice:
                 log.info("Successfully created invoice for CV order", invoice_id=invoice.get("id"), order_id=order_id)
