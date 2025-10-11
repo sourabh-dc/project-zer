@@ -23,3 +23,15 @@ class RolesService:
         r = self.role_repository.create_role(db, role_id, payload.code, payload.description)
         logger.info("role_created", extra={"role_id": str(role_id)})
         return {"role_id": str(r.role_id), "name": r.code, "permissions": r.description, "created": True}
+
+    def assign_role_to_user(self, payload, db: Session):
+        assignment = self.assignment_repository.assign_role(
+            db=db,
+            user_id=payload.user_id,
+            role_id=payload.role_id,
+            scope_type=payload.scope_type,
+            scope_id=payload.scope_id
+        )
+
+        logger.info("role_assignment_created", extra={"id": assignment.id})
+        return {"id": assignment.id, "created": True}

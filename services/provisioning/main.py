@@ -29,6 +29,7 @@ from services.provisioning.services.site_service import SiteService
 from services.provisioning.services.store_service import StoreService
 from services.provisioning.services.tenant_service import TenantService
 from services.provisioning.services.user_service import UserService
+from services.provisioning.services.vendor_service import VendorService
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
@@ -102,6 +103,7 @@ site_service = SiteService()
 store_service = StoreService()
 user_service = UserService()
 roles_service = RolesService()
+vendor_service = VendorService()
 
 # Service startup
 @app.on_event("startup")
@@ -198,19 +200,7 @@ async def upsert_role_v2(role_id: str = Path(...), payload: RoleV2Payload = Body
 async def upsert_role_assignment_v2(payload: RoleAssignmentV2Payload = Body(...), db: Session = Depends(get_db)):
     """Assign a Role to a User with scope (V2 architecture)."""
     try:
-        role_assignment_repo = RepositoryFactory.get_role_assignment_repository()
-        
-        assignment = role_assignment_repo.assign_role(
-            db=db,
-            user_id=payload.user_id,
-            role_id=payload.role_id,
-            scope_type=payload.scope_type,
-            scope_id=payload.scope_id
-        )
-        
-        logger.info("role_assignment_created", extra={"id": assignment.id})
-        return {"id": assignment.id, "created": True}
-        
+        return roles_service.assign_role_to_user(payload, db)
     except Exception as e:
         logger.error(f"Role assignment failed: {str(e)}")
         if "not found" in str(e).lower():
@@ -221,40 +211,13 @@ async def upsert_role_assignment_v2(payload: RoleAssignmentV2Payload = Body(...)
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/vendors/{vendor_id}")
-async def upsert_vendor_v2(vendor_id: str = Path(...), payload: VendorV2Payload = Body(...)):
+async def upsert_vendor_v2(vendor_id: str = Path(...), payload: VendorV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create or update a Vendor (V2 architecture)."""
-    with SessionLocal() as db:
-        # Convert string IDs to UUIDs if needed
-        try:
-            vendor_uuid = uuid.UUID(vendor_id)
-        except ValueError:
-            vendor_uuid = uuid.uuid4()
-        
-        try:
-            tenant_uuid = uuid.UUID(payload.tenant_id)
-        except ValueError:
-            tenant_uuid = uuid.uuid4()
-        
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none():
-            raise HTTPException(status_code=400, detail="Tenant not found")
-        
-        v = db.query(VendorV2).filter(VendorV2.vendor_id == vendor_uuid).one_or_none()
-        if v:
-            v.tenant_id = tenant_uuid
-            v.name = payload.name
-            v.description = payload.description
-            if payload.rating is not None:
-                v.rating = payload.rating
-            v.updated_at = datetime.now()
-            db.commit()
-            logger.info("vendor_updated", extra={"vendor_id": str(vendor_uuid)})
-            return {"vendor_id": str(v.vendor_id), "tenant_id": str(v.tenant_id), "name": v.name, "updated": True}
-        
-        v = VendorV2(vendor_id=vendor_uuid, tenant_id=tenant_uuid, name=payload.name, description=payload.description, rating=payload.rating)
-        db.add(v)
-        db.commit()
-        logger.info("vendor_created", extra={"vendor_id": str(vendor_uuid)})
-        return {"vendor_id": str(v.vendor_id), "tenant_id": str(v.tenant_id), "name": v.name, "created": True}
+    try:
+       return vendor_service.upsert_vendor_v2(vendor_id, payload, db)
+    except Exception as e:
+        logger.error(f"Vendor operation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/tenant-sites")
 async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...), db: Session = Depends(get_db)):
