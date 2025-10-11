@@ -2,6 +2,10 @@ import uuid
 from datetime import datetime
 import logging
 
+from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 from services.provisioning.core.recording_service import record_provisioning_metric
 from ..utils.helpers import set_rls_context
 from ..repositories.tenant_repository import TenantRepository
@@ -70,7 +74,30 @@ class TenantService:
             return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "updated": True}
         else:
             # Create new tenant
-            self.tenant_repository.create_tenant(db, payload.name, payload.type, payload.scenario_id)
+            self.tenant_repository.create_tenant(db, tenant_id, payload.name, payload.type, payload.scenario_id)
             logger.info("tenant_created", extra={"tenant_id": str(tenant_uuid)})
             record_provisioning_metric("create_tenant", "success", str(tenant_uuid))
             return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "created": True}
+
+    async def upsert_tenant_link_v2(self, payload, db: Session):
+        """Create a parent→child tenant link (V2 architecture)."""
+        try:
+            # Validate parent and child tenants exist
+            if not self.tenant_repository.get_by_id(db, payload.parent_tenant_id):
+                raise HTTPException(status_code=400, detail="Parent tenant not found")
+            if not self.tenant_repository.get_by_id(db, payload.child_tenant_id):
+                raise HTTPException(status_code=400, detail="Child tenant not found")
+
+            # Check if link already exists
+            existing = self.tenant_repository.check_relationship(db, payload.parent_tenant_id, payload.child_tenant_id, payload.relationship)
+            if existing:
+                logger.info("tenant_link_exists", extra={"id": existing[0]})
+                return {"id": existing[0], "exists": True}
+
+            # Create new link
+            link_id = self.tenant_repository.create_relationship(db, payload.parent_tenant_id, payload.child_tenant_id, payload.relationship)
+            logger.info("tenant_link_created", extra={"id": link_id})
+            return {"id": link_id, "created": True}
+        except Exception as e:
+            logger.error(f"Error creating tenant link: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")

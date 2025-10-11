@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 import logging
 
+from ..repositories.store_repository import StoreRepository
 from ..repositories.vendor_repository import VendorRepository
 from ..repositories.tenant_repository import TenantRepository
 
@@ -12,6 +13,7 @@ class VendorService:
     def __init__(self):
         self.repo = VendorRepository()
         self.tenant_repo = TenantRepository()
+        self.store_repo = StoreRepository()
 
     async def upsert_vendor_v2(self, vendor_id: str, payload, db: Session):
         # Convert string IDs to UUIDs if needed
@@ -36,4 +38,24 @@ class VendorService:
         v = self.repo.create_vendor(db, str(vendor_uuid), str(tenant_uuid), payload.name, payload.description, payload.rating)
         logger.info("vendor_created", extra={"vendor_id": str(vendor_uuid)})
         return {"vendor_id": str(v.vendor_id), "tenant_id": str(v.tenant_id), "name": v.name, "created": True}
+
+    async def upsert_store_vendor_v2(self, payload, db: Session):
+        """Link a Store to a Vendor (V2 architecture)."""
+        # Validate store and vendor exist
+        if not self.store_repo.get_by_id(db, payload.store_id):
+            raise HTTPException(status_code=400, detail="Store not found")
+        if not self.repo.get_by_id(db, payload.vendor_id):
+            raise HTTPException(status_code=400, detail="Vendor not found")
+
+        # Check if link already exists
+        existing = self.repo.check_link(db, str(payload.store_id), str(payload.vendor_id))
+
+        if existing:
+            logger.info("store_vendor_exists", extra={"id": existing[0]})
+            return {"id": existing[0], "exists": True}
+
+        # Create new link
+        link_id = self.repo.create_link(db, str(payload.store_id), str(payload.vendor_id))
+        logger.info("store_vendor_created", extra={"id": link_id})
+        return {"id": link_id, "created": True}
 

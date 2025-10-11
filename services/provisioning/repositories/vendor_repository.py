@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from uuid import uuid4
 import logging
@@ -70,3 +71,32 @@ class VendorRepository(BaseRepository):
         vendor.updated_at = datetime.utcnow()
         db.commit()
         return vendor
+
+    def check_link(self, db: Session, store_id: str, vendor_id: str):
+        """Check if a link between store and vendor exists"""
+        try:
+            link = db.execute(text("""
+                                   SELECT id
+                                   FROM store_vendors
+                                   WHERE store_id = :s
+                                     AND vendor_id = :v
+                                   """), {"s": store_id, "v": vendor_id}).first()
+            return link if link else False
+        except Exception as e:
+            logger.error(f"Error checking link between store {store_id} and vendor {vendor_id}: {e}")
+            return False
+
+    def create_link(self, db: Session, store_id: str, vendor_id: str) -> str:
+        """Create a link between a store and a vendor"""
+        link_id = str(uuid4())
+        try:
+            db.execute(text("""
+                            INSERT INTO store_vendors (id, store_id, vendor_id)
+                            VALUES (:id, :s, :v)
+                            """), {"id": link_id, "s": store_id, "v": vendor_id})
+            db.commit()
+            return link_id
+        except Exception as e:
+            logger.error(f"Error creating link between store {store_id} and vendor {vendor_id}: {e}")
+            db.rollback()
+            raise ValidationError("Failed to create store-vendor link")

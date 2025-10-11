@@ -1,4 +1,6 @@
 from typing import Optional, List
+
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from uuid import uuid4
 import logging
@@ -39,7 +41,7 @@ class TenantRepository(BaseRepository):
             logger.error(f"Error getting tenants by type {tenant_type}: {e}")
             return []
 
-    def create_tenant(self, db: Session, name: str, tenant_type: str = "customer",
+    def create_tenant(self, db: Session, tenant_id, name: str, tenant_type: str = "customer",
                       scenario_id: Optional[str] = None) -> TenantV2:
         """Create tenant with validation"""
         # Check if name already exists
@@ -49,8 +51,36 @@ class TenantRepository(BaseRepository):
 
         return self.create(
             db,
-            tenant_id=str(uuid4()),
+            tenant_id=tenant_id,
             name=name,
             type=tenant_type,
             scenario_id=scenario_id
         )
+
+    def check_relationship(self, db: Session, parent_tenant_id, child_tenant_id, relationship) -> Optional[List]:
+        """Check if a link between store and vendor exists"""
+        existing = db.execute(text("""
+                                   SELECT id
+                                   FROM tenant_links_new
+                                   WHERE parent_tenant_id = :p
+                                     AND child_tenant_id = :c
+                                     AND relationship = :r
+                                   """), {"p": parent_tenant_id, "c": child_tenant_id,
+                                          "r": relationship}).first()
+        return existing if existing else None
+
+    def create_relationship(self, db: Session, parent_tenant_id, child_tenant_id, relationship) -> str:
+        """Create link between parent and child tenant"""
+        link_id = str(uuid4())
+        try:
+            db.execute(text("""
+                            INSERT INTO tenant_links_new(id, parent_tenant_id, child_tenant_id, relationship)
+                            VALUES (:id, :p, :c, :r)
+                            """), {"id": link_id, "p": parent_tenant_id,
+                                   "c": child_tenant_id, "r": relationship})
+            db.commit()
+            return link_id
+        except Exception as e:
+            logger.error(f"Error creating link between parent tenant {parent_tenant_id} and child tenant {child_tenant_id}: {e}")
+            db.rollback()
+            raise e

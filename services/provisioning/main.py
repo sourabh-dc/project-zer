@@ -243,36 +243,8 @@ async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...), db: Sess
 async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Store to a Vendor (V2 architecture)."""
     try:
-        # Validate store and vendor exist
-        store_repo = RepositoryFactory.get_store_repository()
-        vendor_repo = RepositoryFactory.get_vendor_repository()
-        
-        if not store_repo.get_by_id(db, payload.store_id):
-            raise HTTPException(status_code=400, detail="Store not found")
-        if not vendor_repo.get_by_id(db, payload.vendor_id):
-            raise HTTPException(status_code=400, detail="Vendor not found")
+        return vendor_service.upsert_store_vendor_v2(payload, db)
 
-        # Check if link already exists
-        existing = db.execute(text("""
-            SELECT id FROM store_vendors WHERE store_id=:s AND vendor_id=:v
-        """), {"s": payload.store_id, "v": payload.vendor_id}).first()
-
-        if existing:
-            logger.info("store_vendor_exists", extra={"id": existing[0]})
-            return {"id": existing[0], "exists": True}
-
-        # Create new link
-        link_id = str(uuid.uuid4())
-        db.execute(text("""
-            INSERT INTO store_vendors(id, store_id, vendor_id)
-            VALUES(:id,:s,:v)
-        """), {"id": link_id, "s": payload.store_id, "v": payload.vendor_id})
-        db.commit()
-        logger.info("store_vendor_created", extra={"id": link_id})
-        return {"id": link_id, "created": True}
-        
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Store-vendor linking failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -281,35 +253,8 @@ async def upsert_store_vendor_v2(payload: StoreVendorV2Payload = Body(...), db: 
 async def upsert_tenant_link_v2(payload: TenantLinkV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create a parent→child tenant link (V2 architecture)."""
     try:
-        # Validate parent and child tenants exist
-        tenant_repo = RepositoryFactory.get_tenant_repository()
-        
-        if not tenant_repo.get_by_id(db, payload.parent_tenant_id):
-            raise HTTPException(status_code=400, detail="Parent tenant not found")
-        if not tenant_repo.get_by_id(db, payload.child_tenant_id):
-            raise HTTPException(status_code=400, detail="Child tenant not found")
+        return await tenant_service.upsert_tenant_link_v2(payload, db)
 
-        # Check if link already exists
-        existing = db.execute(text("""
-            SELECT id FROM tenant_links_new WHERE parent_tenant_id=:p AND child_tenant_id=:c AND relationship=:r
-        """), {"p": payload.parent_tenant_id, "c": payload.child_tenant_id, "r": payload.relationship}).first()
-
-        if existing:
-            logger.info("tenant_link_exists", extra={"id": existing[0]})
-            return {"id": existing[0], "exists": True}
-
-        # Create new link
-        link_id = str(uuid.uuid4())
-        db.execute(text("""
-            INSERT INTO tenant_links_new(id, parent_tenant_id, child_tenant_id, relationship)
-            VALUES(:id,:p,:c,:r)
-        """), {"id": link_id, "p": payload.parent_tenant_id, "c": payload.child_tenant_id, "r": payload.relationship})
-        db.commit()
-        logger.info("tenant_link_created", extra={"id": link_id})
-        return {"id": link_id, "created": True}
-        
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Tenant linking failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
