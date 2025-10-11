@@ -24,9 +24,11 @@ from sqlalchemy.orm import Session
 
 from services.provisioning.core.provisioning_saga import ProvisioningSaga
 from services.provisioning.core.recording_service import record_provisioning_metric
+from services.provisioning.services.roles_service import RolesService
 from services.provisioning.services.site_service import SiteService
 from services.provisioning.services.store_service import StoreService
 from services.provisioning.services.tenant_service import TenantService
+from services.provisioning.services.user_service import UserService
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
@@ -98,6 +100,8 @@ provisioning_saga = ProvisioningSaga()
 tenant_service = TenantService()
 site_service = SiteService()
 store_service = StoreService()
+user_service = UserService()
+roles_service = RolesService()
 
 # Service startup
 @app.on_event("startup")
@@ -171,61 +175,24 @@ async def upsert_store_v2(store_id: str = Path(...), payload: StoreV2Payload = B
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/users/{user_id}")
-async def upsert_user_v2(user_id: str = Path(...), payload: UserV2Payload = Body(...)):
+async def upsert_user_v2(user_id: str = Path(...), payload: UserV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create or update a User (V2 architecture)."""
-    with SessionLocal() as db:
-        try:
-            # Convert string user_id to UUID if needed
-            try:
-                user_uuid = uuid.UUID(user_id)
-            except ValueError:
-                user_uuid = uuid.uuid4()
-            
-            u = db.query(UserV2).filter(UserV2.user_id == user_uuid).one_or_none()
-            if u:
-                u.email = payload.email
-                u.display_name = payload.display_name
-                u.active = payload.active
-                u.updated_at = datetime.now()
-                db.commit()
-                logger.info("user_updated", extra={"user_id": str(user_uuid)})
-                return {"user_id": str(u.user_id), "email": u.email, "display_name": u.display_name, "updated": True}
-            
-            # Check if email already exists for a different user
-            existing_user = db.query(UserV2).filter(UserV2.email == payload.email).first()
-            if existing_user:
-                raise HTTPException(status_code=400, detail=f"Email {payload.email} already exists for user {existing_user.user_id}")
-            
-            u = UserV2(user_id=user_uuid, email=payload.email, display_name=payload.display_name, active=payload.active)
-            db.add(u)
-            db.commit()
-            logger.info("user_created", extra={"user_id": str(user_uuid)})
-            return {"user_id": str(u.user_id), "email": u.email, "display_name": u.display_name, "created": True}
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            db.rollback()
-            logger.error(f"User creation/update failed: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    try:
+        return await user_service.upsert_user_v2(user_id, payload, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User creation/update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/roles/{role_id}")
-async def upsert_role_v2(role_id: str = Path(...), payload: RoleV2Payload = Body(...)):
+async def upsert_role_v2(role_id: str = Path(...), payload: RoleV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create or update a Role (V2 architecture)."""
-    with SessionLocal() as db:
-        r = db.query(RoleV2).filter(RoleV2.role_id == role_id).one_or_none()
-        if r:
-            r.code = payload.code
-            r.description = payload.description
-            db.commit()
-            logger.info("role_updated", extra={"role_id": role_id})
-            return {"role_id": r.role_id, "code": r.code, "description": r.description, "updated": True}
-        
-        r = RoleV2(role_id=role_id, code=payload.code, description=payload.description)
-        db.add(r)
-        db.commit()
-        logger.info("role_created", extra={"role_id": role_id})
-        return {"role_id": r.role_id, "code": r.code, "description": r.description, "created": True}
+    try:
+      return await roles_service.upsert_role_v2(role_id, payload, db)
+    except Exception as e:
+        logger.error(f"Role operation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/role-assignments")
 async def upsert_role_assignment_v2(payload: RoleAssignmentV2Payload = Body(...), db: Session = Depends(get_db)):

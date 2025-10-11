@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -31,7 +31,15 @@ class RoleRepository(BaseRepository):
             logger.error(f"Error getting role by code {code}: {e}")
             return None
 
-    def create_role(self, db: Session, code: str, description: str = "") -> RoleV2:
+    def get_by_id(self, db: Session, role_id: str) -> Optional[Any]:
+        """Get a role by its ID"""
+        try:
+            return db.query(RoleV2).filter(RoleV2.role_id == role_id).one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting role by id {role_id}: {e}")
+            return None
+
+    def create_role(self, db: Session, role_id: str, code: str, description: str = "") -> RoleV2:
         """Create role with code validation"""
         # Check if code already exists
         existing = self.get_by_code(db, code)
@@ -40,10 +48,19 @@ class RoleRepository(BaseRepository):
 
         return self.create(
             db,
-            role_id=str(uuid4()),
+            role_id=role_id,
             code=code,
             description=description
         )
+
+    def update_role(self, db: Session, role, code: Optional[str] = None, description: Optional[str] = None) -> Optional[RoleV2]:
+        """Update role fields by role_id"""
+        if code is not None:
+            role.code = code
+        if description is not None:
+            role.description = description
+        db.commit()
+        return role
 
 
 class RoleAssignmentRepository(BaseRepository):
