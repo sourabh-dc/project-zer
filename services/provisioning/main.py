@@ -15,7 +15,6 @@ This service implements:
 import os
 import sys
 import uuid
-import time
 from datetime import timezone
 
 from fastapi import FastAPI, HTTPException, Body, Path, Query, Depends
@@ -23,9 +22,10 @@ from typing import Dict, Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from services.provisioning.services.provisioning_saga import ProvisioningSaga
+from services.provisioning.core.provisioning_saga import ProvisioningSaga
 from services.provisioning.services.recording_service import record_provisioning_metric
 from services.provisioning.services.subscription_limits import SubscriptionLimits
+from services.provisioning.services.tenant_service import TenantService
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
@@ -33,7 +33,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 
 from zeroque_common.communication import (
     ServiceEvent, ServiceEventType,
     CircuitBreakerConfig,
-    SagaOrchestrator, SagaStep,
     # Global instances
     service_bus,
     service_circuit_breaker,
@@ -53,6 +52,9 @@ from .repositories.repository_factory import RepositoryFactory
 from .utils.custom_exceptions import ValidationError
 from .models import *
 from .schemas import *
+
+
+tenant_service = TenantService()
 
 # Service configuration
 SERVICE_NAME = "provisioning"
@@ -135,80 +137,16 @@ def readiness():
 @app.post("/provisioning/tenants", response_model=Dict[str, Any])
 async def create_tenant_v2(payload: TenantV2Payload = Body(...)):
     """Create tenant with enhanced communication patterns"""
-    
-    correlation_id = f"tenant_{datetime.now().isoformat()}"
-    
     try:
-        # Generate tenant ID using uuid.uuid4()
-        tenant_id = str(uuid.uuid4())
-        
-        # Prepare tenant data
-        tenant_data = {
-            "tenant_id": tenant_id,
-            "name": payload.name,
-            "type": payload.type,
-            "scenario_id": payload.scenario_id,
-            "correlation_id": correlation_id
-        }
-        
-        # Execute saga
-        result = await provisioning_saga.execute_tenant_provisioning_saga(tenant_data)
-        
-        # Store event in event store
-        await event_store.append_event(ServiceEvent(
-            event_type=ServiceEventType.SERVICE_STARTED,
-            service_name=SERVICE_NAME,
-            correlation_id=correlation_id,
-            data=result,
-            metadata={"enhanced": True, "saga_completed": True},
-            timestamp=datetime.now()
-        ))
-        
-        return {
-            "tenant_id": result["tenant_id"],
-            "name": payload.name,
-            "type": payload.type,
-            "status": "created",
-            "created_at": datetime.now(),
-            "saga_id": correlation_id
-        }
-        
+        return await tenant_service.create_tenant_v2(payload, SERVICE_NAME)
     except Exception as e:
-        logger.error(f"Tenant creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/provisioning/tenants/{tenant_id}")
 async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload = Body(...), db: Session = Depends(get_db)):
     """Create or update a Tenant (V2 architecture)."""
     try:
-        # Convert string tenant_id to UUID if needed
-        try:
-            tenant_uuid = uuid.UUID(tenant_id)
-        except ValueError:
-            # If not a valid UUID, generate a new one
-            tenant_uuid = uuid.uuid4()
-        
-        # Set RLS context
-        set_rls_context(db, tenant_id=str(tenant_uuid))
-        
-        # Check if tenant exists
-        tenant_repo = RepositoryFactory.get_tenant_repository()
-        existing = tenant_repo.get_by_id(db, str(tenant_uuid))
-        
-        if existing:
-            # Update existing tenant
-            tenant_repo.update(db, str(tenant_uuid),
-                             name=payload.name,
-                             type=payload.type)
-            logger.info("tenant_updated", extra={"tenant_id": str(tenant_uuid)})
-            record_provisioning_metric("update_tenant", "success", str(tenant_uuid))
-            return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "updated": True}
-        else:
-            # Create new tenant
-            tenant_repo.create_tenant(db, payload.name, payload.type, payload.scenario_id)
-            logger.info("tenant_created", extra={"tenant_id": str(tenant_uuid)})
-            record_provisioning_metric("create_tenant", "success", str(tenant_uuid))
-            return {"tenant_id": str(tenant_uuid), "name": payload.name, "type": payload.type, "created": True}
+        return await tenant_service.upsert_tenant_v2(tenant_id, payload, db)
     except ValidationError as e:
         record_provisioning_metric("create_tenant", "validation_error", tenant_id)
         raise HTTPException(status_code=400, detail=str(e))
