@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 import logging
 
-from .recording_service import record_provisioning_metric
+from services.provisioning.core.recording_service import record_provisioning_metric
 from ..utils.helpers import set_rls_context
 from ..repositories.tenant_repository import TenantRepository
 from ..core.provisioning_saga import ProvisioningSaga

@@ -23,15 +23,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from services.provisioning.core.provisioning_saga import ProvisioningSaga
-from services.provisioning.services.recording_service import record_provisioning_metric
-from services.provisioning.services.subscription_limits import SubscriptionLimits
+from services.provisioning.core.recording_service import record_provisioning_metric
+from services.provisioning.services.site_service import SiteService
+from services.provisioning.services.store_service import StoreService
 from services.provisioning.services.tenant_service import TenantService
 
 # Add the packages path to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'packages', 'zeroque_common'))
 
 from zeroque_common.communication import (
-    ServiceEvent, ServiceEventType,
     CircuitBreakerConfig,
     # Global instances
     service_bus,
@@ -45,16 +45,12 @@ from zeroque_common.db.session import get_engine, init_db, check_db, SessionLoca
 from zeroque_common.middleware.usage_middleware import add_api_call_meter
 from zeroque_common.middleware.idempotency import add_idempotency_middleware
 from zeroque_common.observability import setup_logging, init_metrics, init_insights, add_observability_middleware
-from .utils.helpers import set_rls_context
 
 # Import service layer, repositories and schemas
 from .repositories.repository_factory import RepositoryFactory
 from .utils.custom_exceptions import ValidationError
 from .models import *
 from .schemas import *
-
-
-tenant_service = TenantService()
 
 # Service configuration
 SERVICE_NAME = "provisioning"
@@ -97,14 +93,11 @@ add_idempotency_middleware(app, routes=[
     ("PUT", "/provisioning/role-assignments"),
 ])
 
-# Import existing models from zeroque_common and alias them for V2 use
-# Note: We'll use the _new tables directly
-
-# Subscription limits enforcement
-
-
 # Initialize saga
 provisioning_saga = ProvisioningSaga()
+tenant_service = TenantService()
+site_service = SiteService()
+store_service = StoreService()
 
 # Service startup
 @app.on_event("startup")
@@ -156,82 +149,26 @@ async def upsert_tenant_v2(tenant_id: str = Path(...), payload: TenantV2Payload 
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/sites/{site_id}")
-async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body(...), tenant_id: str = Query(...)):
+async def upsert_site_v2(site_id: str = Path(...), payload: SiteV2Payload = Body(...), tenant_id: str = Query(...), db: Session = Depends(get_db)):
     """Create or update a Site (V2 architecture)."""
-    with SessionLocal() as db:
-        # Convert string IDs to UUIDs if needed
-        try:
-            site_uuid = uuid.UUID(site_id)
-        except ValueError:
-            site_uuid = uuid.uuid4()
-        
-        try:
-            tenant_uuid = uuid.UUID(tenant_id)
-        except ValueError:
-            tenant_uuid = uuid.uuid4()
-        
-        # Enforce subscription limits
-        try:
-            await SubscriptionLimits.enforce_limits(tenant_id, "create_site", db)
-        except ValidationError as e:
-            record_provisioning_metric("create_site", "limit_exceeded", tenant_id)
-            raise HTTPException(status_code=400, detail=str(e))
-        
-        # Validate tenant exists
-        if not db.query(TenantV2).filter(TenantV2.tenant_id == tenant_uuid).one_or_none():
-            record_provisioning_metric("create_site", "tenant_not_found", tenant_id)
-            raise HTTPException(status_code=400, detail="Tenant not found")
-        
-        s = db.query(SiteV2).filter(SiteV2.site_id == site_uuid).one_or_none()
-        if s:
-            s.name = payload.name
-            s.site_type = payload.site_type
-            s.geo = payload.geo
-            db.commit()
-            logger.info("site_updated", extra={"site_id": str(site_uuid)})
-            record_provisioning_metric("update_site", "success", tenant_id)
-            return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "updated": True}
-        
-        s = SiteV2(site_id=site_uuid, tenant_id=tenant_uuid, name=payload.name, site_type=payload.site_type, geo=payload.geo)
-        db.add(s)
-        db.commit()
-        logger.info("site_created", extra={"site_id": str(site_uuid)})
-        record_provisioning_metric("create_site", "success", tenant_id)
-        return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "created": True}
+    try:
+        return await site_service.upsert_site_v2(site_id, payload, tenant_id, db)
+    except ValidationError as e:
+        record_provisioning_metric("create_site", "validation_error", tenant_id)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Site operation failed: {str(e)}")
+        record_provisioning_metric("create_site", "error", tenant_id)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/stores/{store_id}")
-async def upsert_store_v2(store_id: str = Path(...), payload: StoreV2Payload = Body(...), site_id: str = Query(...)):
+async def upsert_store_v2(store_id: str = Path(...), payload: StoreV2Payload = Body(...), site_id: str = Query(...), db: Session = Depends(get_db)):
     """Create or update a Store (V2 architecture)."""
-    with SessionLocal() as db:
-        # Convert string IDs to UUIDs if needed
-        try:
-            store_uuid = uuid.UUID(store_id)
-        except ValueError:
-            store_uuid = uuid.uuid4()
-        
-        try:
-            site_uuid = uuid.UUID(site_id)
-        except ValueError:
-            site_uuid = uuid.uuid4()
-        
-        # Validate site exists
-        if not db.query(SiteV2).filter(SiteV2.site_id == site_uuid).one_or_none():
-            raise HTTPException(status_code=400, detail="Site not found")
-        
-        st = db.query(StoreV2).filter(StoreV2.store_id == store_uuid).one_or_none()
-        if st:
-            st.name = payload.name
-            st.store_type = payload.store_type
-            st.geo = payload.geo
-            db.commit()
-            logger.info("store_updated", extra={"store_id": str(store_uuid)})
-            return {"store_id": str(st.store_id), "name": st.name, "store_type": st.store_type, "geo": st.geo, "updated": True}
-        
-        st = StoreV2(store_id=store_uuid, site_id=site_uuid, name=payload.name, store_type=payload.store_type, geo=payload.geo)
-        db.add(st)
-        db.commit()
-        logger.info("store_created", extra={"store_id": str(store_uuid)})
-        return {"store_id": str(st.store_id), "name": st.name, "store_type": st.store_type, "geo": st.geo, "created": True}
+    try:
+        return await store_service.upsert_store_v2(store_id, payload, site_id, db)
+    except Exception as e:
+        logger.error(f"Store operation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.put("/provisioning/users/{user_id}")
 async def upsert_user_v2(user_id: str = Path(...), payload: UserV2Payload = Body(...)):

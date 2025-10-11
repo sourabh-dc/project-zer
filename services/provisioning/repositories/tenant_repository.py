@@ -19,6 +19,10 @@ class TenantRepository(BaseRepository):
     def __init__(self):
         super().__init__(TenantV2)
 
+    def get_tenant_by_id(self, db: Session, tenant_id):
+        """Get tenant by ID"""
+        return db.query(TenantV2).filter(TenantV2.tenant_id == tenant_id).one_or_none()
+
     def get_by_name(self, db: Session, name: str) -> Optional[TenantV2]:
         """Get tenant by name"""
         try:

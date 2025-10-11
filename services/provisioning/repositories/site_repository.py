@@ -29,6 +29,10 @@ class SiteRepository(BaseRepository):
             logger.error(f"Error getting sites by tenant {tenant_id}: {e}")
             return []
 
+    def get_site_by_id(self, db: Session, site_id):
+        """Get site by ID"""
+        return db.query(SiteV2).filter(SiteV2.site_id == site_id).one_or_none()
+
     def create_site(self, db: Session, tenant_id: str, name: str, site_type: str = "retail",
                     geo: Optional[Dict] = None) -> SiteV2:
         """Create site with tenant validation"""
@@ -45,3 +49,10 @@ class SiteRepository(BaseRepository):
             site_type=site_type,
             geo=geo
         )
+
+    def update_site(self, db: Session, site, name, site_type, geo):
+        site.name = name
+        site.site_type = site_type
+        site.geo = geo
+        db.commit()
+        return site
