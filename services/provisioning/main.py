@@ -223,36 +223,8 @@ async def upsert_vendor_v2(vendor_id: str = Path(...), payload: VendorV2Payload 
 async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Tenant to a Site (V2 architecture)."""
     try:
-        # Validate tenant and site exist
-        tenant_repo = RepositoryFactory.get_tenant_repository()
-        site_repo = RepositoryFactory.get_site_repository()
-        
-        if not tenant_repo.get_by_id(db, payload.tenant_id):
-            raise HTTPException(status_code=400, detail="Tenant not found")
-        if not site_repo.get_by_id(db, payload.site_id):
-            raise HTTPException(status_code=400, detail="Site not found")
+        return site_service.upsert_tenant_site_v2(payload, db)
 
-        # Check if link already exists
-        existing = db.execute(text("""
-            SELECT id FROM tenant_sites WHERE tenant_id=:t AND site_id=:s
-        """), {"t": payload.tenant_id, "s": payload.site_id}).first()
-
-        if existing:
-            logger.info("tenant_site_exists", extra={"id": existing[0]})
-            return {"id": existing[0], "exists": True}
-
-        # Create new link
-        link_id = str(uuid.uuid4())
-        db.execute(text("""
-            INSERT INTO tenant_sites(id, tenant_id, site_id, role_type, rights_expire_at)
-            VALUES(:id,:t,:s,:rt,:rea)
-        """), {"id": link_id, "t": payload.tenant_id, "s": payload.site_id, "rt": payload.role_type, "rea": payload.rights_expire_at})
-        db.commit()
-        logger.info("tenant_site_created", extra={"id": link_id})
-        return {"id": link_id, "created": True}
-        
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Tenant-site linking failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -261,36 +233,8 @@ async def upsert_tenant_site_v2(payload: TenantSiteV2Payload = Body(...), db: Se
 async def upsert_site_store_v2(payload: SiteStoreV2Payload = Body(...), db: Session = Depends(get_db)):
     """Link a Site to a Store (V2 architecture)."""
     try:
-        # Validate site and store exist
-        site_repo = RepositoryFactory.get_site_repository()
-        store_repo = RepositoryFactory.get_store_repository()
-        
-        if not site_repo.get_by_id(db, payload.site_id):
-            raise HTTPException(status_code=400, detail="Site not found")
-        if not store_repo.get_by_id(db, payload.store_id):
-            raise HTTPException(status_code=400, detail="Store not found")
+        return store_service.upsert_site_store_v2(payload, db)
 
-        # Check if link already exists
-        existing = db.execute(text("""
-            SELECT id FROM site_stores WHERE site_id=:s AND store_id=:st
-        """), {"s": payload.site_id, "st": payload.store_id}).first()
-
-        if existing:
-            logger.info("site_store_exists", extra={"id": existing[0]})
-            return {"id": existing[0], "exists": True}
-
-        # Create new link
-        link_id = str(uuid.uuid4())
-        db.execute(text("""
-            INSERT INTO site_stores(id, site_id, store_id)
-            VALUES(:id,:s,:st)
-        """), {"id": link_id, "s": payload.site_id, "st": payload.store_id})
-        db.commit()
-        logger.info("site_store_created", extra={"id": link_id})
-        return {"id": link_id, "created": True}
-        
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Site-store linking failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

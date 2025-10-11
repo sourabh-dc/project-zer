@@ -52,3 +52,22 @@ class SiteService:
         record_provisioning_metric("create_site", "success", tenant_id)
         return {"site_id": str(s.site_id), "name": s.name, "site_type": s.site_type, "geo": s.geo, "created": True}
 
+    async def upsert_tenant_site_v2(self, payload, db: Session):
+        # Validate tenant and site exist
+        if not self.tenant_repo.get_by_id(db, payload.tenant_id):
+            raise HTTPException(status_code=400, detail="Tenant not found")
+        if not self.repo.get_by_id(db, payload.site_id):
+            raise HTTPException(status_code=400, detail="Site not found")
+
+        # Check if link already exists
+        existing_id = self.repo.get_link(db, payload.tenant_id, payload.site_id)
+        if existing_id:
+            logger.info("tenant_site_exists", extra={"id": existing_id})
+            return {"id": existing_id, "exists": True}
+
+        # Create new link
+        link_id = self.repo.create_link(db, payload.tenant_id, payload.site_id, payload.role_type, payload.rights_expire_at)
+        logger.info("tenant_site_created", extra={"id": link_id})
+        return {"id": link_id, "created": True}
+
+

@@ -1,4 +1,7 @@
+import uuid
 from typing import Optional, List, Dict
+
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from uuid import uuid4
 import logging
@@ -56,3 +59,18 @@ class SiteRepository(BaseRepository):
         site.geo = geo
         db.commit()
         return site
+
+    def get_link(self, db: Session, tenant_id: str, site_id: str) -> Optional[str]:
+        result = db.execute(text("""
+            SELECT id FROM tenant_sites WHERE tenant_id=:t AND site_id=:s
+        """), {"t": tenant_id, "s": site_id}).first()
+        return result[0] if result else None
+
+    def create_link(self, db: Session, tenant_id: str, site_id: str, role_type: Optional[str], rights_expire_at: Optional[str]) -> str:
+        link_id = str(uuid.uuid4())
+        db.execute(text("""
+            INSERT INTO tenant_sites(id, tenant_id, site_id, role_type, rights_expire_at)
+            VALUES(:id,:t,:s,:rt,:rea)
+        """), {"id": link_id, "t": tenant_id, "s": site_id, "rt": role_type, "rea": rights_expire_at})
+        db.commit()
+        return link_id

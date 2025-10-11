@@ -40,3 +40,22 @@ class StoreService:
         store = self.repo.create_store(db, store_id, site_id, payload.name, payload.store_type, payload.geo)
         logger.info("store_created", extra={"store_id": str(store_uuid)})
         return {"store_id": str(store.store_id), "name": store.name, "store_type": store.store_type, "geo": store.geo, "created": True}
+
+    async def upsert_site_store_v2(self, payload, db: Session):
+        """Link a Site to a Store (V2 architecture)."""
+        # Validate site and store exist
+        if not self.site_repo.get_by_id(db, payload.site_id):
+            raise HTTPException(status_code=400, detail="Site not found")
+        if not self.repo.get_by_id(db, payload.store_id):
+            raise HTTPException(status_code=400, detail="Store not found")
+
+        # Check if link already exists
+        existing = self.repo.get_link(db, payload.site_id, payload.store_id)
+        if existing:
+            logger.info("site_store_exists", extra={"id": existing[0]})
+            return {"id": existing[0], "exists": True}
+
+        # Create new link
+        link_id = self.repo.create_link(db, payload.site_id, payload.store_id)
+        logger.info("site_store_created", extra={"id": link_id})
+        return {"id": link_id, "created": True}

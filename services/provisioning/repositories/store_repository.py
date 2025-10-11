@@ -1,4 +1,6 @@
 from typing import Optional, List, Dict
+
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from uuid import uuid4
 import logging
@@ -70,3 +72,32 @@ class StoreRepository(BaseRepository):
             logger.error(f"Error updating store {store.id}: {e}")
             db.rollback()
             return None
+
+    def get_link(self, db: Session, site_id: str, store_id: str) -> Optional[str]:
+        """Get link ID between site and store if exists"""
+        try:
+            result = db.execute(text("""
+                                       SELECT id
+                                       FROM site_stores
+                                       WHERE site_id = :s
+                                         AND store_id = :st
+                                       """), {"s": site_id, "st": store_id}).first()
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting link between site {site_id} and store {store_id}: {e}")
+            return None
+
+    def create_link(self, db: Session, site_id: str, store_id: str) -> str:
+        """Create link between site and store"""
+        link_id = str(uuid4())
+        try:
+            db.execute(text("""
+                            INSERT INTO site_stores(id, site_id, store_id)
+                            VALUES (:id, :s, :st)
+                            """), {"id": link_id, "s": site_id, "st": store_id})
+            db.commit()
+            return link_id
+        except Exception as e:
+            logger.error(f"Error creating link between site {site_id} and store {store_id}: {e}")
+            db.rollback()
+            raise ValidationError("Failed to create link between site and store")
