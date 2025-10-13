@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text, Column, String, Integer, DateTime, Text, func, JSON, ForeignKey
@@ -157,6 +158,17 @@ def get_db(user_context: Dict[str, Any] = Depends(get_user_context)):
     db = SessionLocal()
     try:
         set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        # Skip RLS in demo mode to avoid transaction issues
+        if not ALLOW_DEMO:
+            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
         yield db
     finally:
         db.close()
@@ -350,11 +362,24 @@ def cleanup_old_usage():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Entitlements Service v4.1")
-    init_db()
+    global redis_client
+    try:
+        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning(f"Redis connection failed: {e}")
     Base.metadata.create_all(bind=engine)
     yield
     logger.info("Shutting down Entitlements Service v4.1")
 
+
+
+app = FastAPI(
+    title="ZeroQue Entitlements Service",
+    version=SERVICE_VERSION,
+    lifespan=lifespan
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -362,11 +387,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-)
-app = FastAPI(
-    title="ZeroQue Entitlements Service",
-    version=SERVICE_VERSION,
-    lifespan=lifespan
 )
 
 # Health
@@ -377,8 +397,72 @@ def health():
 # Endpoints
 @app.get("/entitlements/v2/check")
 async def check_entitlement(req: CheckEntitlementRequest = Body(...), user_context: Dict = Depends(get_user_context), db: Session = Depends(get_db_with_rls)):
+    """Check if tenant has access to feature and within limits"""
     if not check_permission("entitlements.check", user_context):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Get tenant's subscription from subscriptions service
+        subscription = None
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"http://localhost:8212/subscriptions/v2/subscriptions/{req.tenant_id}")
+                if response.status_code == 200:
+                    sub_data = response.json()
+                    subscription = sub_data
+        except Exception as e:
+            logger.warning(f"Could not fetch subscription for tenant {req.tenant_id}: {e}")
+
+        if not subscription:
+            # No subscription found, deny access
+            audit_log(db, req.tenant_id, user_context["user_id"], "CHECK_ENTITLEMENT", "entitlement", req.feature_code, {"result": "denied", "reason": "no_subscription"})
+            return {"allowed": False, "reason": "No active subscription found"}
+
+        # Check if feature is enabled for the plan
+        plan_features = []
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"http://localhost:8212/subscriptions/v2/plans/{subscription['plan_code']}/features")
+                if response.status_code == 200:
+                    plan_features = response.json()
+        except Exception as e:
+            logger.warning(f"Could not fetch plan features: {e}")
+
+        # Find the feature in the plan
+        feature_limit = None
+        for pf in plan_features:
+            if pf.get("feature_code") == req.feature_code and pf.get("enabled"):
+                feature_limit = pf.get("limits", {})
+                break
+
+        if not feature_limit:
+            # Feature not found in plan or not enabled
+            audit_log(db, req.tenant_id, user_context["user_id"], "CHECK_ENTITLEMENT", "entitlement", req.feature_code, {"result": "denied", "reason": "feature_not_in_plan"})
+            return {"allowed": False, "reason": "Feature not available in subscription plan"}
+
+        # Check current usage against limits
+        current_usage = db.query(SubscriptionUsage).filter(
+            SubscriptionUsage.tenant_id == req.tenant_id,
+            SubscriptionUsage.feature_code == req.feature_code,
+            SubscriptionUsage.period_start <= datetime.now(timezone.utc),
+            SubscriptionUsage.period_end >= datetime.now(timezone.utc)
+        ).first()
+
+        usage_count = current_usage.usage_count if current_usage else 0
+        limit_value = feature_limit.get("rate_limit", float('inf'))
+
+        if usage_count >= limit_value:
+            # Usage limit exceeded
+            audit_log(db, req.tenant_id, user_context["user_id"], "CHECK_ENTITLEMENT", "entitlement", req.feature_code, {"result": "denied", "reason": "limit_exceeded", "usage": usage_count, "limit": limit_value})
+            return {"allowed": False, "reason": "Usage limit exceeded", "usage": usage_count, "limit": limit_value}
+
+        # Access allowed
+        audit_log(db, req.tenant_id, user_context["user_id"], "CHECK_ENTITLEMENT", "entitlement", req.feature_code, {"result": "allowed", "usage": usage_count, "limit": limit_value})
+        return {"allowed": True, "usage": usage_count, "limit": limit_value, "remaining": limit_value - usage_count}
+
+    except Exception as e:
+        logger.error(f"Error checking entitlement: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     # ... (rest as per previous code, with RLS in process)
     # Add audit_log(db, req.tenant_id, user_context["user_id"], "CHECK_ENTITLEMENT", "entitlement", req.feature_code)
 
@@ -408,4 +492,6 @@ def metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8009)
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8003")))
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION} on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)

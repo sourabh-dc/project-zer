@@ -181,10 +181,14 @@ class OutboxEvent(Base):
     event_type = Column(String(100), nullable=False, index=True)
     aggregate_id = Column(String(255), nullable=False)
     event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default="pending")
+    event_version = Column(Integer, nullable=False, default=1)
+    event_timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True))
     retry_count = Column(Integer, nullable=False, default=0)
-    published_at = Column(DateTime(timezone=True))
+    max_retries = Column(Integer, nullable=False, default=3)
+    status = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    published_at = Column(DateTime(timezone=True))
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
@@ -263,11 +267,13 @@ def publish_to_rabbitmq(event_type: str, event_data: Dict, tenant_id: str):
 
 def store_outbox(db, evt_type, tid, eid, data):
     evt = OutboxEvent(
-        event_id=f"evt_{uuid.uuid4().hex[:12]}", 
-        event_type=evt_type, 
-        aggregate_id=tid, 
-        event_data=json.dumps(data), 
+        event_id=f"evt_{uuid.uuid4().hex[:12]}",
+        event_type=evt_type,
+        aggregate_id=tid,
+        event_data=json.dumps(data),
+        event_version=1,
         retry_count=0,
+        max_retries=3,
         status="pending"
     )
     db.add(evt)
@@ -329,6 +335,11 @@ def verify_api_key(key, db):
         return None
 
 def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
+    # Demo mode (dev only) - check first for demo API key
+    if ALLOW_DEMO and x_api_key == "zq_demo_key_for_testing":
+        logger.warning("Using demo API key - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+
     # Try API key first
     if x_api_key:
         with SessionLocal() as db:
@@ -336,7 +347,7 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
             if ctx:
                 return ctx
             raise HTTPException(status_code=401, detail="Invalid API key")
-    
+
     # Try JWT
     if authorization and "Bearer " in authorization:
         try:
@@ -347,12 +358,12 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
             raise HTTPException(status_code=401, detail="Token expired")
         except jwt.InvalidTokenError:
             raise HTTPException(status_code=401, detail="Invalid JWT")
-    
-    # Demo mode (dev only)
+
+    # Demo mode fallback (dev only)
     if ALLOW_DEMO:
         logger.warning("Using demo mode - not for production!")
         return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-    
+
     raise HTTPException(status_code=401, detail="Authentication required")
 
 def get_db_with_rls(uctx: Dict = Depends(get_user_context)):

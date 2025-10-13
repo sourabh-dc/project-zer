@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends, Request, BackgroundTasks
+from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends, Request, BackgroundTasks, Header
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Numeric, BigInteger
@@ -36,6 +36,37 @@ import redis
 import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for demo)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["payments.create", "payments.refund", "payments.adjust", "pricing.create", "pricing.calculate"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+    
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+    
+    raise HTTPException(status_code=401, detail="Authentication required")
+
 import pybreaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -56,6 +87,17 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 # Database setup
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        # Skip RLS in demo mode to avoid transaction issues
+        if not ALLOW_DEMO:
+            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
+        yield db
+    finally:
+        db.close()
+
 Base = declarative_base()
 
 # Redis setup
@@ -660,7 +702,7 @@ async def metrics():
 async def create_payment_intent(
     request: PaymentIntentRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Create a payment intent with any supported provider"""
@@ -697,7 +739,7 @@ async def create_payment_intent(
 @app.post("/payments/v2/customers")
 async def create_customer(
     request: CustomerRequest,
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Create or update a customer with any supported provider"""
@@ -763,7 +805,7 @@ async def create_customer(
 async def refund_payment(
     request: RefundRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Refund a payment"""
@@ -854,7 +896,7 @@ async def process_webhook(
     provider: str,
     request: Request,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(SessionLocal)
+    db: Session = Depends(get_db_with_rls)
 ):
     """Process webhook from payment providers"""
     try:
@@ -973,7 +1015,7 @@ async def _handle_payment_failure(db: Session, tenant_id: str, result: Dict[str,
 @app.post("/payments/v2/admin/rails/payment")
 async def configure_payment_provider(
     request: RailRequest,
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Configure payment provider for a tenant"""
@@ -1027,7 +1069,7 @@ async def list_transactions(
     status: Optional[str] = Query(None),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """List payment transactions with filters"""
@@ -1101,7 +1143,7 @@ async def get_payment_reports(
     period_start: str = Query(...),
     period_end: str = Query(...),
     currency: Optional[str] = Query("GBP"),
-    db: Session = Depends(SessionLocal),
+    db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Get payment reports and analytics (blueprint-inspired)"""
@@ -1232,7 +1274,7 @@ async def stripe_webhook_legacy():
 @app.post("/payments/v2/integration/orders/payment-required")
 async def handle_payment_required_event(
     event_data: Dict[str, Any] = Body(...),
-    db: Session = Depends(SessionLocal)
+    db: Session = Depends(get_db_with_rls)
 ):
     """Handle ORDER_COMPLETED event from Orders service requiring payment"""
     try:
@@ -1403,6 +1445,94 @@ def cleanup_old_payments(self):
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
+
+
+# =============================================================================
+# CELERY WORKERS - Event Consumption
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3, name='payments.process_order_completed')
+def process_order_completed(self, event_data: Dict[str, Any]):
+    """Process ORDER_COMPLETED event from orders service"""
+    try:
+        tenant_id = event_data.get('tenant_id')
+        order_id = event_data.get('order_id')
+        total_amount = event_data.get('total_minor')
+
+        if not all([tenant_id, order_id, total_amount]):
+            logger.error('Missing required fields in ORDER_COMPLETED event')
+            return {'status': 'error', 'message': 'Missing required fields'}
+
+        with SessionLocal() as db:
+            # Create payment intent for the order
+            payment_intent_id = f"pi_{uuid.uuid4().hex[:12]}"
+            
+            payment_intent = PaymentTransaction(
+                transaction_id=payment_intent_id,
+                tenant_id=tenant_id,
+                order_id=order_id,
+                amount_minor=total_amount,
+                currency='GBP',
+                status='pending',
+                provider='stripe',
+                payment_method='card'
+            )
+            db.add(payment_intent)
+            db.commit()
+
+            logger.info(f"Created payment intent {payment_intent_id} for order {order_id}")
+
+        return {'status': 'ok', 'payment_intent_id': payment_intent_id}
+
+    except Exception as e:
+        logger.error(f"Failed to process ORDER_COMPLETED event: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+@celery_app.task(bind=True, max_retries=3, name='payments.cleanup_old_outbox_events')
+def cleanup_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            result = db.execute(
+                text("DELETE FROM outbox_events WHERE created_at < :cutoff AND status IN ('published', 'failed')"),
+                {'cutoff': cutoff}
+            )
+            db.commit()
+            logger.info(f'Cleaned up {result.rowcount} old outbox events')
+            return {'deleted': result.rowcount}
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup outbox events: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+@celery_app.task(bind=True, max_retries=3, name='payments.cleanup_old_payments')
+def cleanup_old_payments(self):
+    """Clean up old payment transactions and refunds"""
+    try:
+        with SessionLocal() as db:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=365)
+            
+            # Clean old transactions
+            trans_result = db.execute(
+                text("DELETE FROM payment_transactions_new WHERE created_at < :cutoff AND status IN ('failed', 'canceled')"),
+                {'cutoff': cutoff}
+            )
+            
+            # Clean old refunds
+            refund_result = db.execute(
+                text("DELETE FROM payment_refunds WHERE created_at < :cutoff"),
+                {'cutoff': cutoff}
+            )
+            
+            db.commit()
+            logger.info(f"Cleaned {trans_result.rowcount} old transactions and {refund_result.rowcount} old refunds")
+            return {'transactions_deleted': trans_result.rowcount, 'refunds_deleted': refund_result.rowcount}
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old payments: {e}")
+        raise self.retry(exc=e, countdown=300)
+
 
 if __name__ == "__main__":
     import uvicorn

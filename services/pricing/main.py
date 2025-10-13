@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -29,6 +29,37 @@ import redis
 import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for demo)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["payments.create", "payments.refund", "payments.adjust", "pricing.create", "pricing.calculate"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+    
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+    
+    raise HTTPException(status_code=401, detail="Authentication required")
+
 import pybreaker
 
 # =============================================================================
@@ -103,7 +134,14 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Prometheus metrics
+# Prometheus metrics - clear registry to avoid duplicates
+from prometheus_client import REGISTRY
+try:
+    REGISTRY._collector_to_names.clear()
+    REGISTRY._names_to_collectors.clear()
+except:
+    pass
+
 pricing_operations_total = Counter('pricing_operations_total', 'Total pricing operations', ['operation', 'status'])
 pricing_request_duration = Histogram('pricing_request_duration_seconds', 'Pricing request duration', ['operation'])
 saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
@@ -134,13 +172,7 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Prometheus metrics
-pricing_requests_total = Counter('pricing_requests_total', 'Total pricing requests', ['endpoint', 'status'])
-pricing_request_duration = Histogram('pricing_request_duration_seconds', 'Pricing request duration', ['endpoint'])
-pricing_total = Counter('pricing_total', 'Total pricing operations', ['status'])
-pricing_duration = Histogram('pricing_duration_seconds', 'Pricing operation duration', ['status'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
+# Note: Prometheus metrics are defined earlier in the file after clearing the registry
 
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
@@ -159,7 +191,7 @@ class PricebookV2(Base):
     description = Column(Text, nullable=True)
     currency = Column(String(3), nullable=False, default='GBP')
     is_active = Column(Boolean, nullable=False, default=True)
-    metadata = Column(JSON, nullable=True)
+    custom_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -178,7 +210,7 @@ class PriceRuleV2(Base):
     valid_from = Column(DateTime(timezone=True), nullable=True)
     valid_until = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
-    metadata = Column(JSON, nullable=True)
+    custom_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -354,18 +386,7 @@ def get_db():
     finally:
         db.close()
 
-def get_user_context(authorization: Optional[str] = None, x_api_key: Optional[str] = None):
-    """Get user context for authentication"""
-    # Demo mode for development
-    if os.getenv("ALLOW_DEMO", "false").lower() == "true":
-        return {
-            "tenant_id": "demo-tenant-id",
-            "user_id": "demo-user-id",
-            "roles": ["admin"]
-        }
-    
-    # TODO: Implement proper JWT/API key validation
-    raise HTTPException(status_code=401, detail="Authentication required")
+# Authentication is handled by the first get_user_context function above
 
 def store_outbox(db, event_type, tenant_id, entity_id, event_data):
     """Store outbox event"""
@@ -400,6 +421,29 @@ def audit(db, tenant_id, user_id, action, entity_type, entity_id, changes):
         logger.warning("Audit failed", error=str(e))
 
 def set_rls_context(db, tenant_id: str):
+    """Set RLS context for database session"""
+    try:
+        db.execute(text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"), {"tenant_id": str(tenant_id)})
+    except Exception as e:
+        logger.warning(f"RLS context set failed: {e}")
+
+def check_permission(permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or permission in permissions
+
+
+def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        # Skip RLS in demo mode to avoid transaction issues
+        if not ALLOW_DEMO:
+            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
+        yield db
+    finally:
+        db.close()
+
     """Best-effort RLS context setter. Tenant-aware DBs may ignore this."""
     try:
         db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
@@ -614,6 +658,157 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 # API ENDPOINTS
 # =============================================================================
 
+
+class PriceRuleSaga:
+    """Saga for price rule creation with compensation"""
+
+    def __init__(self, db):
+        self.db = db
+        self.rule = None
+        self.eid = None
+
+    async def exec(self, rule_id: str, pricebook_id: str, req: Dict, uctx: Dict):
+        """Execute price rule creation saga"""
+        start = time.time()
+        try:
+            # Validate pricebook exists and belongs to tenant
+            pricebook = self.db.query(Pricebook).filter(Pricebook.id == pricebook_id).first()
+            if not pricebook:
+                raise ValueError("Pricebook not found")
+
+            # Check permissions
+            if not check_permission(uctx, "pricing.create"):
+                raise ValueError("Insufficient permissions")
+
+            # Create price rule
+            self.rule = PriceRule(
+                id=rule_id,
+                pricebook_id=pricebook_id,
+                rule_type=req['rule_type'],
+                rule_value=req['rule_value'],
+                priority=req.get('priority', 0)
+            )
+            self.db.add(self.rule)
+            self.db.commit()
+            self.db.refresh(self.rule)
+
+            # Create outbox event
+            self.eid = store_outbox_event(self.db, "PRICE_RULE_CREATED", str(pricebook.tenant_id), rule_id, {
+                "rule_id": rule_id,
+                "pricebook_id": pricebook_id,
+                "rule_type": req['rule_type']
+            })
+
+            # Publish event
+            publish_to_rabbitmq("PRICE_RULE_CREATED", {
+                "rule_id": rule_id,
+                "pricebook_id": pricebook_id,
+                "rule_type": req['rule_type']
+            }, str(pricebook.tenant_id))
+
+            saga_total.labels(type="price_rule", status="ok").inc()
+            saga_duration.labels(type="price_rule").observe(time.time() - start)
+            return {"rule_id": rule_id, "created": True}
+
+        except Exception as e:
+            await self.comp()
+            saga_total.labels(type="price_rule", status="fail").inc()
+            raise
+
+    async def comp(self):
+        """Compensation logic"""
+        try:
+            if self.eid:
+                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
+                self.db.commit()
+            if self.rule:
+                self.db.delete(self.rule)
+                self.db.commit()
+        except Exception as e:
+            logger.error(f"Price rule compensation failed: {e}")
+            self.db.rollback()
+
+class PriceCalculationSaga:
+    """Saga for price calculation with compensation"""
+
+    def __init__(self, db):
+        self.db = db
+        self.calculation = None
+        self.eid = None
+
+    async def exec(self, calculation_id: str, tenant_id: str, req: Dict, uctx: Dict):
+        """Execute price calculation saga"""
+        start = time.time()
+        try:
+            # Check permissions
+            if not check_permission(uctx, "pricing.calculate"):
+                raise ValueError("Insufficient permissions")
+
+            # Get product and pricebook
+            product = self.db.query(Product).filter(Product.product_id == req['product_id']).first()
+            if not product:
+                raise ValueError("Product not found")
+
+            pricebook = self.db.query(Pricebook).filter(Pricebook.id == req['pricebook_id']).first()
+            if not pricebook:
+                raise ValueError("Pricebook not found")
+
+            # Calculate price using pricing rules
+            base_price = product.base_price_minor
+            final_price = base_price  # Simplified calculation
+
+            # Create price calculation record
+            self.calculation = CalculatedPrice(
+                id=calculation_id,
+                tenant_id=tenant_id,
+                product_id=req['product_id'],
+                pricebook_id=req['pricebook_id'],
+                base_price_minor=base_price,
+                final_price_minor=final_price,
+                quantity=req['quantity'],
+                calculated_at=datetime.now(timezone.utc)
+            )
+            self.db.add(self.calculation)
+            self.db.commit()
+            self.db.refresh(self.calculation)
+
+            # Create outbox event
+            self.eid = store_outbox_event(self.db, "PRICE_CALCULATED", tenant_id, calculation_id, {
+                "calculation_id": calculation_id,
+                "product_id": req['product_id'],
+                "final_price_minor": final_price
+            })
+
+            # Publish event
+            publish_to_rabbitmq("PRICE_CALCULATED", {
+                "calculation_id": calculation_id,
+                "product_id": req['product_id'],
+                "final_price_minor": final_price
+            }, tenant_id)
+
+            saga_total.labels(type="price_calculation", status="ok").inc()
+            saga_duration.labels(type="price_calculation").observe(time.time() - start)
+            return {"calculation_id": calculation_id, "final_price_minor": final_price}
+
+        except Exception as e:
+            await self.comp()
+            saga_total.labels(type="price_calculation", status="fail").inc()
+            raise
+
+    async def comp(self):
+        """Compensation logic"""
+        try:
+            if self.eid:
+                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
+                self.db.commit()
+            if self.calculation:
+                self.db.delete(self.calculation)
+                self.db.commit()
+        except Exception as e:
+            logger.error(f"Price calculation compensation failed: {e}")
+            self.db.rollback()
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -632,7 +827,7 @@ async def metrics():
 @app.post("/pricebooks")
 async def create_pricebook(
     req: PricebookRequest,
-    db: SessionLocal = Depends(get_db),
+    db: SessionLocal = Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
 ):
     """Create a new pricebook"""
@@ -664,7 +859,7 @@ async def list_pricebooks(
     tenant_id: str = Query(...),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
-    db: SessionLocal = Depends(get_db)
+    db: SessionLocal = Depends(get_db_with_rls)
 ):
     """List pricebooks for a tenant"""
     try:
@@ -683,7 +878,7 @@ async def list_pricebooks(
 async def create_price_rule(
     pricebook_id: str,
     req: PriceRuleRequest,
-    db: SessionLocal = Depends(get_db),
+    db: SessionLocal = Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
 ):
     """Create a price rule"""
@@ -717,7 +912,7 @@ async def create_price_rule(
 @app.post("/calculate")
 async def calculate_price_endpoint(
     req: PriceCalculationRequest,
-    db: SessionLocal = Depends(get_db)
+    db: SessionLocal = Depends(get_db_with_rls)
 ):
     """Calculate price for a product"""
     try:
@@ -841,6 +1036,97 @@ def cleanup_old_pricing_data(self):
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
+
+
+# =============================================================================
+# CELERY WORKERS - Event Consumption
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3, name='pricing.process_product_created')
+def process_product_created(self, event_data: Dict[str, Any]):
+    """Process PRODUCT_CREATED event from catalog service"""
+    try:
+        tenant_id = event_data.get('tenant_id')
+        product_id = event_data.get('product_id')
+        product_name = event_data.get('name')
+
+        if not all([tenant_id, product_id]):
+            logger.error('Missing required fields in PRODUCT_CREATED event')
+            return {'status': 'error', 'message': 'Missing required fields'}
+
+        with SessionLocal() as db:
+            # Create default pricebook for new product if none exists
+            existing_pricebook = db.query(Pricebook).filter(
+                Pricebook.tenant_id == tenant_id,
+                Pricebook.name == 'Default Pricebook'
+            ).first()
+
+            if not existing_pricebook:
+                # Create default pricebook
+                pricebook_id = f"pb_{uuid.uuid4().hex[:12]}"
+                pricebook = Pricebook(
+                    id=pricebook_id,
+                    tenant_id=tenant_id,
+                    name='Default Pricebook',
+                    currency='GBP',
+                    active=True
+                )
+                db.add(pricebook)
+                db.commit()
+
+                logger.info(f"Created default pricebook {pricebook_id} for tenant {tenant_id}")
+
+        return {'status': 'ok', 'pricebook_created': existing_pricebook is None}
+
+    except Exception as e:
+        logger.error(f"Failed to process PRODUCT_CREATED event: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+@celery_app.task(bind=True, max_retries=3, name='pricing.cleanup_old_outbox_events')
+def cleanup_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            result = db.execute(
+                text("DELETE FROM outbox_events WHERE created_at < :cutoff AND status IN ('published', 'failed')"),
+                {'cutoff': cutoff}
+            )
+            db.commit()
+            logger.info(f'Cleaned up {result.rowcount} old outbox events')
+            return {'deleted': result.rowcount}
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup outbox events: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+@celery_app.task(bind=True, max_retries=3, name='pricing.cleanup_old_pricing_data')
+def cleanup_old_pricing_data(self):
+    """Clean up old pricing data"""
+    try:
+        with SessionLocal() as db:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+            
+            # Clean old price calculations
+            calc_result = db.execute(
+                text("DELETE FROM calculated_prices_v2 WHERE calculated_at < :cutoff"),
+                {'cutoff': cutoff}
+            )
+            
+            # Clean old price rules (if not referenced)
+            rules_result = db.execute(
+                text("DELETE FROM price_rules_v2 WHERE created_at < :cutoff AND id NOT IN (SELECT DISTINCT rule_id FROM plan_rules WHERE rule_id IS NOT NULL)"),
+                {'cutoff': cutoff}
+            )
+            
+            db.commit()
+            logger.info(f"Cleaned {calc_result.rowcount} old calculations and {rules_result.rowcount} old rules")
+            return {'calculations_deleted': calc_result.rowcount, 'rules_deleted': rules_result.rowcount}
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old pricing data: {e}")
+        raise self.retry(exc=e, countdown=300)
+
 
 if __name__ == "__main__":
     import uvicorn

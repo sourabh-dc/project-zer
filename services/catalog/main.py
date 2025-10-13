@@ -104,7 +104,14 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Prometheus metrics
+# Prometheus metrics - clear registry to avoid duplicates
+from prometheus_client import REGISTRY
+try:
+    REGISTRY._collector_to_names.clear()
+    REGISTRY._names_to_collectors.clear()
+except:
+    pass
+
 catalog_requests_total = Counter('catalog_requests_total', 'Total catalog requests', ['endpoint', 'status'])
 catalog_request_duration = Histogram('catalog_request_duration_seconds', 'Catalog request duration', ['endpoint'])
 catalog_operations_total = Counter('catalog_operations_total', 'Total catalog operations', ['operation', 'status'])
@@ -395,18 +402,7 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     finally:
         db.close()
 
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
-    """Get user context for authentication"""
-    # Demo mode for development
-    if os.getenv("ALLOW_DEMO", "false").lower() == "true":
-        return {
-            "tenant_id": "demo-tenant-id",
-            "user_id": "demo-user-id",
-            "roles": ["admin"]
-        }
-    
-    # TODO: Implement proper JWT/API key validation
-    raise HTTPException(status_code=401, detail="Authentication required")
+# Authentication is handled by the first get_user_context function above
 
 def store_outbox(db, event_type, tenant_id, entity_id, event_data):
     """Store outbox event"""
@@ -576,7 +572,6 @@ app = FastAPI(
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-        CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://yourdomain.com"],  # Restrict origins
     allow_credentials=True, allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"],
 )
@@ -787,6 +782,12 @@ async def list_products(
 ):
     """List products for a tenant"""
     try:
+        # Validate tenant_id is a valid UUID
+        try:
+            uuid.UUID(tenant_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid tenant_id format. Must be a valid UUID.")
+
         query = "SELECT * FROM products_v2 WHERE tenant_id = :tenant_id"
         params = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
         
