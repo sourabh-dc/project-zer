@@ -231,6 +231,42 @@ def audit_log(db_session, action: str, resource_type: str, resource_id: str, use
         except Exception:
             pass
 
+# Rate limiting with Redis (production-ready)
+async def check_rate_limit(user_id: str) -> bool:
+    """Check if user has exceeded rate limit using Redis"""
+    global redis_client
+
+    if redis_client is None:
+        return True  # Allow if Redis not available
+
+    current_time = datetime.now()
+    minute_key = current_time.replace(second=0, microsecond=0)
+
+    try:
+        # Use Redis pipeline for atomic operations
+        pipe = redis_client.pipeline()
+
+        # Clean old entries (older than 1 minute)
+        cutoff_time = minute_key - timedelta(minutes=1)
+        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
+
+        # Get current count
+        current_key = f"entry_rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
+        pipe.incr(current_key)
+        pipe.expire(current_key, 60)  # Expire after 60 seconds
+
+        results = pipe.execute()
+        current_count = results[-2]  # The INCR result
+
+        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
+        return True  # Fail open for rate limiting
+
 # =============================================================================
 # DATABASE MODELS
 # =============================================================================
@@ -401,10 +437,21 @@ async def metrics():
 # =============================================================================
 
 @app.post("/entry/v4/issue-code", response_model=EntryCodeResponse)
-async def issue_code(request: IssueCodeRequest):
+async def issue_code(
+    request: IssueCodeRequest,
+    user_context: Dict[str, Any] = Depends(get_user_context)
+):
     """Issue an entry code"""
     start_time = time.time()
-    
+
+    # Check rate limit
+    if not await check_rate_limit(user_context["user_id"]):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    # Check permissions
+    if not check_permission("entry.create", user_context):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     try:
         code = f"ENTRY{uuid.uuid4().hex[:8].upper()}"
         code_id = f"code_{uuid.uuid4().hex[:12]}"
@@ -435,9 +482,12 @@ async def issue_code(request: IssueCodeRequest):
         entry_code_duration.labels(operation="issue").observe(time.time() - start_time)
         active_codes.labels(tenant_id=request.tenant_id).inc()
         
-        logger.info("Entry code issued", 
+        logger.info("Entry code issued",
                    code=code, tenant_id=request.tenant_id, user_id=request.user_id)
-        
+
+        # Audit log
+        audit_log(db, "issue_entry_code", "entry_codes_new", code_id, user_context, request.dict(), 201)
+
         return EntryCodeResponse(
             code=code,
             code_id=code_id,

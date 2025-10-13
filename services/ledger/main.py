@@ -14,7 +14,12 @@ from contextlib import asynccontextmanager
 logger = structlog.get_logger(__name__)
 
 import httpx
-from fastapi import FastAPI, Body, HTTPException, Request, Query, Path, Depends, Response
+from fastapi import FastAPI, Body, HTTPException, Request, Query, Path, Depends, Response, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, BigInteger, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -40,6 +45,7 @@ import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
+import jwt
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -88,6 +94,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 EVENT_BUS_URL = os.getenv("EVENT_BUS_URL", "http://localhost:8085")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 
@@ -286,6 +296,116 @@ async def check_permission(user_context: dict, required_permission: str) -> bool
 def set_rls_context(db: Session, tenant_id: str):
     """Set RLS context for database session"""
     db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+
+# =============================================================================
+# AUTHENTICATION & AUTHORIZATION
+# =============================================================================
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for Ledger service)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["ledger.create", "ledger.view", "ledger.admin"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or required_permission in permissions
+
+def get_db_with_rls(user_context: Dict[str, Any] = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
+    """Publish event directly to RabbitMQ"""
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({
+            "event_type": event_type,
+            "tenant_id": tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": event_data
+        })
+        channel.basic_publish(
+            exchange='zeroque_events',
+            routing_key=event_type,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        connection.close()
+        logger.info(f"Published {event_type} to RabbitMQ")
+        return True
+    except Exception as e:
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
+
+# Rate limiting with Redis (production-ready)
+async def check_rate_limit(user_id: str) -> bool:
+    """Check if user has exceeded rate limit using Redis"""
+    global redis_client
+
+    if redis_client is None:
+        return True  # Allow if Redis not available
+
+    current_time = datetime.now()
+    minute_key = current_time.replace(second=0, microsecond=0)
+
+    try:
+        # Use Redis pipeline for atomic operations
+        pipe = redis_client.pipeline()
+
+        # Clean old entries (older than 1 minute)
+        cutoff_time = minute_key - timedelta(minutes=1)
+        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
+
+        # Get current count
+        current_key = f"ledger_rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
+        pipe.incr(current_key)
+        pipe.expire(current_key, 60)  # Expire after 60 seconds
+
+        results = pipe.execute()
+        current_count = results[-2]  # The INCR result
+
+        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
+        return True  # Fail open for rate limiting
 
 async def log_audit(
     db: Session, 
@@ -523,6 +643,30 @@ app = FastAPI(
     # lifespan=lifespan  # Temporarily disabled for debugging
 )
 
+# Production Middleware - Restrict CORS origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+if ENVIRONMENT == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*.zeroque.com", "zeroque.com"])
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
 # Add middleware
 add_api_call_meter(app)
 add_idempotency_middleware(app, routes=[
@@ -570,12 +714,16 @@ async def metrics():
 @app.post("/ledger/v4/entries", response_model=dict)
 async def create_ledger_entry(
     request: LedgerEntryRequest,
-    db: Session = Depends(get_db),
-    user_context: dict = Depends(get_user_context)
+    user_context: Dict[str, Any] = Depends(get_user_context),
+    db = Depends(get_db_with_rls)
 ):
     """Create ledger entry with saga pattern"""
+    # Check rate limit
+    if not await check_rate_limit(user_context["user_id"]):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
     # Check permissions
-    if not await check_permission(user_context, "ledger.create"):
+    if not check_permission("ledger.create", user_context):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
     # Update metrics
@@ -987,12 +1135,15 @@ async def handle_order_completed(
                 "event_source": "order_completed"
             }
         )
-        
+
         saga = LedgerEntrySaga(db, ledger_request)
         result = await saga.execute()
-        
+
+        # Audit log
+        await log_audit(db, "create_ledger_entry", "ledger_entries", result["entry_id"], user_context, request.dict(), 201)
+
         return {"ok": True, "ledger_entry_id": result["entry_id"]}
-        
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
