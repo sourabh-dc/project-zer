@@ -10,7 +10,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -29,6 +30,7 @@ import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
+import jwt
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -63,6 +65,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 
 # Database setup
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
@@ -102,6 +108,124 @@ def set_rls_context(db, tenant_id: str):
     try:
         db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
     except Exception:
+
+def generate_entry_code() -> str:
+    """Generate a unique entry code"""
+    import random
+    import string
+
+    # Generate a 8-character alphanumeric code
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(8))
+
+# =============================================================================
+# AUTHENTICATION & AUTHORIZATION
+# =============================================================================
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for Entry service)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["entry.create", "entry.view", "entry.admin"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or required_permission in permissions
+
+def get_db_with_rls(user_context: Dict[str, Any] = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
+    """Publish event directly to RabbitMQ"""
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({
+            "event_type": event_type,
+            "tenant_id": tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": event_data
+        })
+        channel.basic_publish(
+            exchange='zeroque_events',
+            routing_key=event_type,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        connection.close()
+        logger.info(f"Published {event_type} to RabbitMQ")
+        return True
+    except Exception as e:
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
+
+# Audit logging
+def audit_log(db_session, action: str, resource_type: str, resource_id: str, user_context: Dict[str, Any],
+              request_data: Dict[str, Any] = None, response_status: int = None, error_message: str = None,
+              ip_address: str = None, user_agent: str = None):
+    """Create audit log entry"""
+    try:
+        # Create audit log entry
+        from sqlalchemy import text
+
+        db_session.execute(text("""
+            INSERT INTO audit_logs (tenant_id, table_name, record_id, operation, new_values, changed_by, ip_address, user_agent)
+            VALUES (:tenant_id, :table_name, :record_id, :operation, :new_values, :changed_by, :ip_address, :user_agent)
+        """), {
+            "tenant_id": user_context["tenant_id"],
+            "table_name": resource_type,
+            "record_id": resource_id,
+            "operation": action,
+            "new_values": json.dumps({
+                "request_data": request_data,
+                "response_status": response_status,
+                "error_message": error_message,
+                "user_id": user_context.get("user_id"),
+                "tenant_id": user_context.get("tenant_id")
+            }),
+            "changed_by": user_context.get("user_id"),
+            "ip_address": ip_address,
+            "user_agent": user_agent
+        })
+
+        db_session.commit()
+
+    except Exception as e:
+        logger.warning(f"Failed to create audit log: {e}")
+        # Don't fail the main operation if audit logging fails
         try:
             db.rollback()
         except Exception:
@@ -215,16 +339,29 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add middleware
+# Production Middleware - Restrict CORS origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
+if ENVIRONMENT == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*.zeroque.com", "zeroque.com"])
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # =============================================================================
 # HEALTH ENDPOINTS
@@ -516,6 +653,122 @@ def process_entry_denied(self, tenant_id: str, user_id: str, code: str, reason: 
         logger.error(f"Failed to process entry denied: {e}")
         entry_operations_total.labels(operation="denied", status="failed").inc()
         raise self.retry(exc=e, countdown=60)
+
+# =============================================================================
+# EVENT CONSUMPTION WORKERS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
+    """Process TENANT_CREATED events for Entry service"""
+    try:
+        logger.info(f"Processing TENANT_CREATED for Entry service tenant: {tenant_id}")
+
+        # Create default entry configurations for new tenant
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+
+            # Create default entry configurations
+            default_configs = [
+                {
+                    "tenant_id": tenant_id,
+                    "config_name": "standard_entry",
+                    "config_type": "entry_rules",
+                    "config_data": {
+                        "require_approval": False,
+                        "max_entries_per_day": 100,
+                        "entry_timeout_minutes": 30
+                    }
+                }
+            ]
+
+            for config_data in default_configs:
+                # Check if config already exists
+                existing = db.execute(text("""
+                    SELECT 1 FROM entry_configs
+                    WHERE tenant_id = :tenant_id AND config_name = :config_name
+                """), {
+                    "tenant_id": config_data["tenant_id"],
+                    "config_name": config_data["config_name"]
+                }).fetchone()
+
+                if not existing:
+                    # Create new entry configuration
+                    db.execute(text("""
+                        INSERT INTO entry_configs (tenant_id, config_name, config_type, config_data)
+                        VALUES (:tenant_id, :config_name, :config_type, :config_data)
+                    """), {
+                        "tenant_id": config_data["tenant_id"],
+                        "config_name": config_data["config_name"],
+                        "config_type": config_data["config_type"],
+                        "config_data": json.dumps(config_data["config_data"])
+                    })
+
+            db.commit()
+            logger.info(f"Created default entry configurations for tenant: {tenant_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process TENANT_CREATED for Entry service {tenant_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
+    """Process ORDER_COMPLETED events for Entry service"""
+    try:
+        logger.info(f"Processing ORDER_COMPLETED for Entry service order: {order_id}")
+
+        # Check if order completion requires entry code generation
+        with SessionLocal() as db:
+            tenant_id = order_data.get("tenant_id")
+
+            if tenant_id:
+                set_rls_context(db, tenant_id)
+
+            # Check if order has pickup requirements that need entry codes
+            pickup_required = order_data.get("pickup_required", False)
+            if pickup_required:
+                # Generate entry code for order pickup
+                entry_code = generate_entry_code()
+                expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+
+                # Create entry code record
+                db.execute(text("""
+                    INSERT INTO entry_codes (tenant_id, code, order_id, expires_at, status, created_by)
+                    VALUES (:tenant_id, :code, :order_id, :expires_at, 'active', 'system')
+                """), {
+                    "tenant_id": tenant_id,
+                    "code": entry_code,
+                    "order_id": order_id,
+                    "expires_at": expires_at
+                })
+
+                db.commit()
+                logger.info(f"Generated entry code {entry_code} for order pickup: {order_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process ORDER_COMPLETED for Entry service {order_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+            result = db.execute(text("""
+                DELETE FROM outbox_events
+                WHERE status = 'published' AND processed_at < :cutoff_date
+            """), {"cutoff_date": cutoff_date})
+
+            db.commit()
+
+            logger.info(f"Cleaned up {result.rowcount} old Entry service outbox events")
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old Entry service outbox events: {e}")
+        raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
 # MAIN EXECUTION

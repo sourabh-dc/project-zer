@@ -15,7 +15,14 @@ from contextlib import asynccontextmanager
 import httpx
 import qrcode
 from PIL import Image
-from fastapi import FastAPI, Body, HTTPException, Request, Query, Path, Depends
+import jwt
+import pika
+from fastapi import FastAPI, Body, HTTPException, Request, Query, Path, Depends, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -88,6 +95,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 
 # Database setup
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
@@ -664,6 +675,115 @@ def set_rls_context(db: Session, tenant_id: str):
     """Set RLS context for database session"""
     db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
 
+# =============================================================================
+# AUTHENTICATION & AUTHORIZATION
+# =============================================================================
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for CV Connector)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["cv_connector.create", "cv_connector.view", "cv_connector.admin"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or required_permission in permissions
+
+def get_db_with_rls(user_context: Dict[str, Any] = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
+    """Publish event directly to RabbitMQ"""
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({
+            "event_type": event_type,
+            "tenant_id": tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": event_data
+        })
+        channel.basic_publish(
+            exchange='zeroque_events',
+            routing_key=event_type,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        connection.close()
+        logger.info(f"Published {event_type} to RabbitMQ")
+        return True
+    except Exception as e:
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
+
+# Audit logging
+def audit_log(db_session, action: str, resource_type: str, resource_id: str, user_context: Dict[str, Any],
+              request_data: Dict[str, Any] = None, response_status: int = None, error_message: str = None,
+              ip_address: str = None, user_agent: str = None):
+    """Create audit log entry"""
+    try:
+        # Create audit log entry
+        from sqlalchemy import text
+
+        db_session.execute(text("""
+            INSERT INTO audit_logs (tenant_id, table_name, record_id, operation, new_values, changed_by, ip_address, user_agent)
+            VALUES (:tenant_id, :table_name, :record_id, :operation, :new_values, :changed_by, :ip_address, :user_agent)
+        """), {
+            "tenant_id": user_context["tenant_id"],
+            "table_name": resource_type,
+            "record_id": resource_id,
+            "operation": action,
+            "new_values": json.dumps({
+                "request_data": request_data,
+                "response_status": response_status,
+                "error_message": error_message,
+                "user_id": user_context.get("user_id"),
+                "tenant_id": user_context.get("tenant_id")
+            }),
+            "changed_by": user_context.get("user_id"),
+            "ip_address": ip_address,
+            "user_agent": user_agent
+        })
+
+        db_session.commit()
+
+    except Exception as e:
+        logger.warning(f"Failed to create audit log: {e}")
+        # Don't fail the main operation if audit logging fails
+
 async def get_provider_config(db: Session, tenant_id: str, provider_name: str) -> Optional[ProviderConfig]:
     """Get provider configuration from zeroque_rails"""
     rail = db.query(ZeroqueRail).filter(
@@ -817,6 +937,30 @@ app = FastAPI(
     version="2.0.0"
     # lifespan=lifespan  # Temporarily disabled for debugging
 )
+
+# Production Middleware - Restrict CORS origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+if ENVIRONMENT == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*.zeroque.com", "zeroque.com"])
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # Add middleware (safe no-op stubs if not defined)
 try:
@@ -1151,9 +1295,10 @@ async def entry_codes_validate(
 @app.post("/cv/webhook/checkout", response_model=SimpleOK)
 async def checkout_webhook(
     request: Request,
+    user_context: Dict[str, Any] = Depends(get_user_context),
     payload: dict = Body(...),
     provider_param: ProviderParam = Body(..., embed=True),
-    db: Session = Depends(get_db)
+    db = Depends(get_db_with_rls)
 ):
     """Process checkout webhook"""
     try:
@@ -1610,6 +1755,105 @@ def cleanup_old_cv_data(self):
             
     except Exception as e:
         logger.error(f"Failed to cleanup old CV data: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# EVENT CONSUMPTION WORKERS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
+    """Process TENANT_CREATED events for CV Connector"""
+    try:
+        logger.info(f"Processing TENANT_CREATED for CV Connector tenant: {tenant_id}")
+
+        # Create default CV provider configurations for new tenant
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+
+            # Create default provider configurations
+            providers = ["aifi", "standard_cognition", "trigo"]
+            for provider in providers:
+                # Check if provider config already exists
+                existing = db.query(ProviderConfig).filter(
+                    ProviderConfig.tenant_id == tenant_id,
+                    ProviderConfig.provider == provider
+                ).first()
+
+                if not existing:
+                    # Create new provider configuration
+                    config = ProviderConfig(
+                        tenant_id=tenant_id,
+                        provider=provider,
+                        config_json={"enabled": True, "webhook_url": f"https://api.zeroque.com/cv/{provider}/webhook"},
+                        is_active=True
+                    )
+                    db.add(config)
+
+            db.commit()
+            logger.info(f"Created default CV provider configs for tenant: {tenant_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process TENANT_CREATED for CV Connector {tenant_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
+    """Process ORDER_COMPLETED events for CV Connector"""
+    try:
+        logger.info(f"Processing ORDER_COMPLETED for CV Connector order: {order_id}")
+
+        # Check if order needs CV processing
+        with SessionLocal() as db:
+            tenant_id = order_data.get("tenant_id")
+
+            if tenant_id:
+                set_rls_context(db, tenant_id)
+
+            # Check if order has items that need CV verification
+            order_items = order_data.get("items", [])
+            needs_cv_processing = any(item.get("requires_cv_verification", False) for item in order_items)
+
+            if needs_cv_processing:
+                # Create CV unknown item review for processing job
+                cv_review = CvUnknownItemReview(
+                    tenant_id=tenant_id,
+                    provider="cv_processing",
+                    external_sku="order_processing",
+                    name=f"CV Processing for Order {order_id}",
+                    qty=1,
+                    price_minor=0,
+                    payload_json={"order_id": order_id, "order_data": order_data, "job_type": "cv_processing"},
+                    status="pending"
+                )
+                db.add(cv_review)
+
+                db.commit()
+                logger.info(f"Created CV processing job for order: {order_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process ORDER_COMPLETED for CV Connector {order_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+            result = db.execute(text("""
+                DELETE FROM outbox_events
+                WHERE status = 'published' AND processed_at < :cutoff_date
+            """), {"cutoff_date": cutoff_date})
+
+            db.commit()
+
+            logger.info(f"Cleaned up {result.rowcount} old CV Connector outbox events")
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old CV Connector outbox events: {e}")
         raise self.retry(exc=e, countdown=300)
 
 # =============================================================================

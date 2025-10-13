@@ -8,8 +8,12 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text, select, insert, update, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -32,6 +36,10 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 EVENT_RETENTION_DAYS = int(os.getenv("EVENT_RETENTION_DAYS", "30"))
 MAX_EVENTS_PER_REQUEST = int(os.getenv("MAX_EVENTS_PER_REQUEST", "100"))
+ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 
 # Configure structured logging
 structlog.configure(
@@ -558,6 +566,47 @@ async def set_rls_context(db: AsyncSession, tenant_id: str, user_id: str):
     await db.execute(text("SET app.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
     await db.execute(text("SET app.user_id = :user_id"), {"user_id": user_id})
 
+# Rate limiting with Redis (production-ready)
+rate_limit_store = {}
+
+async def check_rate_limit(user_id: str) -> bool:
+    """Check if user has exceeded rate limit using Redis"""
+    global rate_limit_store
+
+    if redis_client is None:
+        return True  # Allow if Redis not available
+
+    current_time = datetime.now()
+    minute_key = current_time.replace(second=0, microsecond=0)
+
+    try:
+        # Use Redis pipeline for atomic operations
+        pipe = redis_client.pipeline()
+
+        # Clean old entries (older than 1 minute)
+        cutoff_time = minute_key - timedelta(minutes=1)
+        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
+
+        # Get current count
+        current_key = f"events_rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
+        pipe.incr(current_key)
+        pipe.expire(current_key, 60)  # Expire after 60 seconds
+
+        results = pipe.execute()
+        current_count = results[-2]  # The INCR result
+
+        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
+        return True  # Fail open for rate limiting
+
+# Event consumption workers (if needed for this service)
+# The Events service primarily publishes events, so event consumption may not be needed
+
 # =============================================================================
 # FASTAPI APPLICATION
 # =============================================================================
@@ -586,6 +635,30 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+# Production Middleware - Restrict CORS origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+if ENVIRONMENT == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*.zeroque.com", "zeroque.com"])
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # =============================================================================
 # HEALTH & METRICS ENDPOINTS
@@ -653,6 +726,10 @@ async def publish_event(
 ):
     """Publish an event to the event bus"""
     try:
+        # Check rate limit
+        if not await check_rate_limit(user_context["user_id"]):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
         # Check permissions
         if not check_permission("events.publish", user_context):
             raise HTTPException(status_code=403, detail="Insufficient permissions")

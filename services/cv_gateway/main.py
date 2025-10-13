@@ -8,7 +8,12 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends
+from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends, Header, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -33,6 +38,7 @@ import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
+import jwt
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -87,6 +93,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
+MAX_REQUEST_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
 
 # Database setup
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
@@ -290,6 +301,153 @@ class OrderResponse(BaseModel):
 def set_rls_context(db: Session, tenant_id: str):
     """Set RLS context for database session"""
     db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+
+# =============================================================================
+# AUTHENTICATION & AUTHORIZATION
+# =============================================================================
+
+def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """Get user context from JWT or API key"""
+    # Try API key first (simplified for CV Gateway)
+    if x_api_key:
+        if ALLOW_DEMO or x_api_key.startswith('zq_'):
+            return {
+                "user_id": "demo_user",
+                "tenant_id": "demo_tenant",
+                "permissions": ["cv_gateway.create", "cv_gateway.view", "cv_gateway.admin"]
+            }
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Try JWT
+    if authorization and "Bearer " in authorization:
+        try:
+            token = authorization.replace("Bearer ", "")
+            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid JWT")
+
+    # Demo mode (dev only)
+    if ALLOW_DEMO:
+        logger.warning("Using demo mode - not for production!")
+        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or required_permission in permissions
+
+def get_db_with_rls(user_context: Dict[str, Any] = Depends(get_user_context)):
+    """Database dependency with RLS"""
+    db = SessionLocal()
+    try:
+        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
+    """Publish event directly to RabbitMQ"""
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({
+            "event_type": event_type,
+            "tenant_id": tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": event_data
+        })
+        channel.basic_publish(
+            exchange='zeroque_events',
+            routing_key=event_type,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        connection.close()
+        logger.info(f"Published {event_type} to RabbitMQ")
+        return True
+    except Exception as e:
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
+
+# Rate limiting with Redis (production-ready)
+rate_limit_store = {}
+
+async def check_rate_limit(user_id: str) -> bool:
+    """Check if user has exceeded rate limit using Redis"""
+    global rate_limit_store
+
+    if redis_client is None:
+        return True  # Allow if Redis not available
+
+    current_time = datetime.now()
+    minute_key = current_time.replace(second=0, microsecond=0)
+
+    try:
+        # Use Redis pipeline for atomic operations
+        pipe = redis_client.pipeline()
+
+        # Clean old entries (older than 1 minute)
+        cutoff_time = minute_key - timedelta(minutes=1)
+        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
+
+        # Get current count
+        current_key = f"cv_gateway_rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
+        pipe.incr(current_key)
+        pipe.expire(current_key, 60)  # Expire after 60 seconds
+
+        results = pipe.execute()
+        current_count = results[-2]  # The INCR result
+
+        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
+        return True  # Fail open for rate limiting
+
+# Audit logging
+def audit_log(db_session, action: str, resource_type: str, resource_id: str, user_context: Dict[str, Any],
+              request_data: Dict[str, Any] = None, response_status: int = None, error_message: str = None,
+              ip_address: str = None, user_agent: str = None):
+    """Create audit log entry"""
+    try:
+        # Create audit log entry
+        from sqlalchemy import text
+
+        db_session.execute(text("""
+            INSERT INTO audit_logs (tenant_id, table_name, record_id, operation, new_values, changed_by, ip_address, user_agent)
+            VALUES (:tenant_id, :table_name, :record_id, :operation, :new_values, :changed_by, :ip_address, :user_agent)
+        """), {
+            "tenant_id": user_context["tenant_id"],
+            "table_name": resource_type,
+            "record_id": resource_id,
+            "operation": action,
+            "new_values": json.dumps({
+                "request_data": request_data,
+                "response_status": response_status,
+                "error_message": error_message,
+                "user_id": user_context.get("user_id"),
+                "tenant_id": user_context.get("tenant_id")
+            }),
+            "changed_by": user_context.get("user_id"),
+            "ip_address": ip_address,
+            "user_agent": user_agent
+        })
+
+        db_session.commit()
+
+    except Exception as e:
+        logger.warning(f"Failed to create audit log: {e}")
+        # Don't fail the main operation if audit logging fails
 
 async def _map_provider(db: Session, provider: str, entity_type: str, external_id: str) -> Optional[str]:
     """Map external provider ID to local ID"""
@@ -774,6 +932,30 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Production Middleware - Restrict CORS origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+if ENVIRONMENT == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*.zeroque.com", "zeroque.com"])
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
 # Add middleware
 add_api_call_meter(app)
 add_idempotency_middleware(app, routes=[
@@ -819,7 +1001,11 @@ async def metrics():
 # =============================================================================
 
 @app.post("/cv/webhook/order", response_model=OrderResponse)
-async def cv_order_webhook(order: AiFiOrder, db: Session = Depends(get_db)):
+async def cv_order_webhook(
+    order: AiFiOrder,
+    user_context: Dict[str, Any] = Depends(get_user_context),
+    db = Depends(get_db_with_rls)
+):
     """Process CV order webhook with saga pattern"""
     # Update metrics
     cv_gateway_requests_total.labels(
@@ -855,7 +1041,10 @@ async def cv_order_webhook(order: AiFiOrder, db: Session = Depends(get_db)):
         cv_gateway_requests_total.labels(
             method="POST", endpoint="/cv/webhook/order", provider=order.provider, status="success"
         ).inc()
-        
+
+        # Audit log
+        audit_log(db, "create_cv_order", "cv_orders_new", str(order.order_id), user_context, order.dict(), 201)
+
         return OrderResponse(**result)
         
     except HTTPException as e:
@@ -1289,6 +1478,106 @@ def cleanup_old_cv_gateway_data(self):
             
     except Exception as e:
         logger.error(f"Failed to cleanup old CV gateway data: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# EVENT CONSUMPTION WORKERS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
+    """Process TENANT_CREATED events for CV Gateway"""
+    try:
+        logger.info(f"Processing TENANT_CREATED for CV Gateway tenant: {tenant_id}")
+
+        # Create default CV provider mappings for new tenant
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+
+            # Create default provider mappings
+            providers = ["provider_a", "provider_b", "provider_c"]
+            for provider in providers:
+                # Check if mapping already exists
+                existing = db.execute(text("""
+                    SELECT 1 FROM provider_mappings
+                    WHERE provider = :provider AND tenant_id = :tenant_id
+                """), {"provider": provider, "tenant_id": tenant_id}).fetchone()
+
+                if not existing:
+                    # Create new provider mapping
+                    db.execute(text("""
+                        INSERT INTO provider_mappings (provider, entity_type, external_id, local_id, tenant_id)
+                        VALUES (:provider, 'provider', :provider, :local_id, :tenant_id)
+                    """), {
+                        "provider": provider,
+                        "local_id": f"{provider}_{tenant_id}",
+                        "tenant_id": tenant_id
+                    })
+
+            db.commit()
+            logger.info(f"Created default provider mappings for CV Gateway tenant: {tenant_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process TENANT_CREATED for CV Gateway {tenant_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
+    """Process ORDER_COMPLETED events for CV Gateway"""
+    try:
+        logger.info(f"Processing ORDER_COMPLETED for CV Gateway order: {order_id}")
+
+        # Check if order needs CV processing
+        with SessionLocal() as db:
+            tenant_id = order_data.get("tenant_id")
+
+            if tenant_id:
+                set_rls_context(db, tenant_id)
+
+            # Check if order has unknown items that need CV processing
+            unknown_items = order_data.get("unknown_items", [])
+            if unknown_items:
+                # Process unknown items through CV providers
+                for item in unknown_items:
+                    # Create CV unknown item review for unknown item
+                    cv_review = CvUnknownItemReview(
+                        tenant_id=uuid.UUID(tenant_id) if tenant_id else None,
+                        provider="auto",
+                        external_sku=item.get("sku", "unknown"),
+                        name=item.get("name", "Unknown Item"),
+                        qty=item.get("qty", 1),
+                        price_minor=item.get("price_minor", 0),
+                        payload_json={"original_order_id": order_id, "unknown_item": item},
+                        status="pending"
+                    )
+                    db.add(cv_review)
+
+                db.commit()
+                logger.info(f"Created CV orders for unknown items in order: {order_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process ORDER_COMPLETED for CV Gateway {order_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+            result = db.execute(text("""
+                DELETE FROM outbox_events
+                WHERE status = 'published' AND processed_at < :cutoff_date
+            """), {"cutoff_date": cutoff_date})
+
+            db.commit()
+
+            logger.info(f"Cleaned up {result.rowcount} old CV Gateway outbox events")
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old CV Gateway outbox events: {e}")
         raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
