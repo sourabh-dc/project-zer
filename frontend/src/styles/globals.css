@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* App-wide base styles */
+html, body { height: 100%; }
+
+
