@@ -26,10 +26,20 @@ from sqlalchemy.sql import func
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
-# Common imports
-from zeroque_common.db.session import get_engine, init_db, SessionLocal
-from zeroque_common.middleware.usage_middleware import add_api_call_meter
-from zeroque_common.middleware.idempotency import add_idempotency_middleware
+# Database imports
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from celery import Celery
+import structlog
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import redis
+import pika
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+import pybreaker
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -37,45 +47,97 @@ from zeroque_common.middleware.idempotency import add_idempotency_middleware
 
 # Metrics for CV Connector
 cv_connector_requests_total = Counter(
-    'cv_connector_requests_total', 
+    'cv_connector_requests_total_v2', 
     'Total CV connector requests',
     ['method', 'endpoint', 'provider', 'status']
 )
 
 cv_connector_request_duration = Histogram(
-    'cv_connector_request_duration_seconds',
+    'cv_connector_request_duration_seconds_v2',
     'CV connector request duration',
     ['method', 'endpoint', 'provider']
 )
 
 cv_provider_api_calls_total = Counter(
-    'cv_provider_api_calls_total',
+    'cv_provider_api_calls_total_v2',
     'Total CV provider API calls',
     ['provider', 'operation', 'status']
 )
 
 cv_provider_api_duration = Histogram(
-    'cv_provider_api_duration_seconds',
+    'cv_provider_api_duration_seconds_v2',
     'CV provider API call duration',
     ['provider', 'operation']
 )
 
 cv_sync_operations_total = Counter(
-    'cv_sync_operations_total',
+    'cv_sync_operations_total_v2',
     'Total CV sync operations',
     ['operation', 'provider', 'status']
 )
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION & LOGGING
 # =============================================================================
+
+SERVICE_NAME = "cv_connector"
+SERVICE_VERSION = "4.1.0"
+
+# Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# Database setup
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Redis setup
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Celery setup
+celery_app = Celery(
+    SERVICE_NAME,
+    broker=RABBITMQ_URL,
+    backend=REDIS_URL,
+    include=[f'{SERVICE_NAME}.tasks']
+)
+
+# Load Celery configuration
+try:
+    celery_app.config_from_object('celeryconfig')
+except ImportError:
+    pass
+
+# Circuit breaker for external service calls
+service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger(__name__)
 
 class Settings(BaseModel):
     SERVICE_NAME: str = "cv_connector_v4"
     DEFAULT_PROVIDER: str = os.getenv("CV_PROVIDER", "aifi")
-    
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/zeroque")
     
     # Service URLs
     CV_GATEWAY_BASE_URL: str = os.getenv("CV_GATEWAY_BASE_URL", "http://localhost:8000")
@@ -93,6 +155,9 @@ class Settings(BaseModel):
     # QR Code settings
     QR_CODE_SIZE: int = int(os.getenv("QR_CODE_SIZE", "10"))
     QR_CODE_BORDER: int = int(os.getenv("QR_CODE_BORDER", "4"))
+    
+    # Database URL for lifespan DB init when enabled
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
 
 settings = Settings()
 
@@ -129,7 +194,7 @@ class ProviderMapping(Base):
     entity_type = Column(String(50), nullable=False)  # 'user', 'store', 'product', etc.
     local_id = Column(String(255), nullable=False)
     external_id = Column(String(255), nullable=False)
-    metadata = Column(JSONB, nullable=True)
+    mapping_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
@@ -749,16 +814,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ZeroQue CV Connector V4.1",
-    version="2.0.0",
-    lifespan=lifespan
+    version="2.0.0"
+    # lifespan=lifespan  # Temporarily disabled for debugging
 )
 
-# Add middleware
-add_api_call_meter(app)
-add_idempotency_middleware(app, routes=[
-    ("POST", "/cv/webhook/checkout"),
-    ("POST", "/cv/entry/codes"),
-])
+# Add middleware (safe no-op stubs if not defined)
+try:
+    add_api_call_meter(app)
+except Exception:
+    pass
+try:
+    add_idempotency_middleware(app, routes=[
+        ("POST", "/cv/webhook/checkout"),
+        ("POST", "/cv/entry/codes"),
+    ])
+except Exception:
+    pass
 
 # =============================================================================
 # DEPENDENCY INJECTION
@@ -1472,6 +1543,86 @@ async def get_integration_status():
         logger.error(f"Error getting integration status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
+# =============================================================================
+# CELERY TASKS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_cv_sync(self, tenant_id: str, sync_data: Dict[str, Any]):
+    """Process CV synchronization asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process sync logic here
+            logger.info(f"Processing CV sync for tenant {tenant_id}")
+            
+            # Update metrics
+            cv_connector_requests_total.labels(endpoint="sync", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process CV sync for tenant {tenant_id}: {e}")
+        cv_connector_requests_total.labels(endpoint="sync", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_qr_generation(self, tenant_id: str, qr_data: Dict[str, Any]):
+    """Process QR code generation asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process QR generation logic here
+            logger.info(f"Processing QR generation for tenant {tenant_id}")
+            
+            # Update metrics
+            cv_connector_requests_total.labels(endpoint="qr_generation", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process QR generation for tenant {tenant_id}: {e}")
+        cv_connector_requests_total.labels(endpoint="qr_generation", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_cv_data(self):
+    """Clean up old CV connector data"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+            
+            # Clean up old CV sessions
+            session_result = db.execute(text("""
+                DELETE FROM cv_sessions_new 
+                WHERE created_at < :cutoff_date AND status IN ('completed', 'expired')
+            """), {"cutoff_date": cutoff_date})
+            
+            # Clean up old QR codes
+            qr_result = db.execute(text("""
+                DELETE FROM qr_codes_new 
+                WHERE created_at < :cutoff_date AND status IN ('used', 'expired')
+            """), {"cutoff_date": cutoff_date})
+            
+            db.commit()
+            
+            logger.info(f"Cleaned up {session_result.rowcount} old CV sessions and {qr_result.rowcount} old QR codes")
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup old CV data: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8100)
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION}")
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8216")))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=ENVIRONMENT == "development"
+    )

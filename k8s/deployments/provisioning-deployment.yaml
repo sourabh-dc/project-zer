@@ -1,0 +1,262 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioning-service
+  namespace: zeroque
+  labels:
+    app: provisioning-service
+    version: "4.1"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: provisioning-service
+  template:
+    metadata:
+      labels:
+        app: provisioning-service
+        version: "4.1"
+    spec:
+      serviceAccountName: zeroque-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: provisioning-service
+          image: zeroque/provisioning-service:4.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-database-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-redis-secret
+                  key: REDIS_URL
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-rabbitmq-secret
+                  key: RABBITMQ_URL
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-jwt-secret
+                  key: JWT_SECRET_KEY
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-api-keys
+                  key: API_KEY_PROVISIONING
+          envFrom:
+            - configMapRef:
+                name: zeroque-config
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioning-celery-worker
+  namespace: zeroque
+  labels:
+    app: provisioning-celery-worker
+    version: "4.1"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: provisioning-celery-worker
+  template:
+    metadata:
+      labels:
+        app: provisioning-celery-worker
+        version: "4.1"
+    spec:
+      serviceAccountName: zeroque-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: celery-worker
+          image: zeroque/provisioning-service:4.1
+          imagePullPolicy: Always
+          command:
+            [
+              "celery",
+              "-A",
+              "main.celery_app",
+              "worker",
+              "--loglevel=info",
+              "--concurrency=4",
+            ]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-database-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-redis-secret
+                  key: REDIS_URL
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-rabbitmq-secret
+                  key: RABBITMQ_URL
+          envFrom:
+            - configMapRef:
+                name: zeroque-config
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioning-celery-beat
+  namespace: zeroque
+  labels:
+    app: provisioning-celery-beat
+    version: "4.1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: provisioning-celery-beat
+  template:
+    metadata:
+      labels:
+        app: provisioning-celery-beat
+        version: "4.1"
+    spec:
+      serviceAccountName: zeroque-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: celery-beat
+          image: zeroque/provisioning-service:4.1
+          imagePullPolicy: Always
+          command:
+            ["celery", "-A", "main.celery_app", "beat", "--loglevel=info"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-database-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-redis-secret
+                  key: REDIS_URL
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zeroque-rabbitmq-secret
+                  key: RABBITMQ_URL
+          envFrom:
+            - configMapRef:
+                name: zeroque-config
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+

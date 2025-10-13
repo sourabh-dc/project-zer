@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zeroque-config
+  namespace: zeroque
+data:
+  # Database Configuration
+  DATABASE_URL: "postgresql://zeroque:zeroque@postgresql-service:5432/zeroque_dev"
+  DATABASE_POOL_SIZE: "20"
+  DATABASE_MAX_OVERFLOW: "30"
+
+  # Redis Configuration
+  REDIS_URL: "redis://redis-service:6379/0"
+  REDIS_POOL_SIZE: "10"
+
+  # RabbitMQ Configuration
+  RABBITMQ_URL: "amqp://guest:guest@rabbitmq-service:5672//"
+
+  # Service Configuration
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  SERVICE_TIMEOUT: "30"
+
+  # Monitoring Configuration
+  PROMETHEUS_ENABLED: "true"
+  METRICS_PORT: "9090"
+
+  # Security Configuration
+  JWT_SECRET_KEY: "your-production-jwt-secret-key"
+  JWT_ALGORITHM: "HS256"
+  JWT_EXPIRATION: "3600"
+
+  # API Configuration
+  API_RATE_LIMIT: "1000"
+  API_TIMEOUT: "30"
+
+  # Celery Configuration
+  CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq-service:5672//"
+  CELERY_RESULT_BACKEND: "redis://redis-service:6379/0"
+  CELERY_WORKER_CONCURRENCY: "4"
+
+  # Circuit Breaker Configuration
+  CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5"
+  CIRCUIT_BREAKER_RECOVERY_TIMEOUT: "60"
+
+  # Retry Configuration
+  RETRY_MAX_ATTEMPTS: "3"
+  RETRY_BACKOFF_FACTOR: "2"
+  RETRY_MAX_DELAY: "60"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zeroque-service-ports
+  namespace: zeroque
+data:
+  # Service Ports
+  PROVISIONING_PORT: "8000"
+  ORDERS_PORT: "8224"
+  PAYMENTS_PORT: "8225"
+  PRICING_PORT: "8226"
+  BILLING_PORT: "8214"
+  NOTIFICATIONS_PORT: "8222"
+  CATALOG_PORT: "8215"
+  SUBSCRIPTIONS_PORT: "8010"
+  ENTITLEMENTS_PORT: "8011"
+  LEDGER_PORT: "8220"
+  MONITORING_PORT: "8221"
+  OBSERVABILITY_PORT: "8223"
+  REPORTS_PORT: "8227"
+  USAGE_PORT: "8218"
+  IDENTITY_PORT: "8219"
+  APPROVALS_PORT: "8213"
+  CV_CONNECTOR_PORT: "8216"
+  CV_GATEWAY_PORT: "8217"
+  ENTRY_PORT: "8218"
+  EVENTS_PORT: "8212"
+  SERVICE_REGISTRY_PORT: "8211"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zeroque-health-checks
+  namespace: zeroque
+data:
+  # Health Check Configuration
+  HEALTH_CHECK_PATH: "/health"
+  HEALTH_CHECK_INTERVAL: "30"
+  HEALTH_CHECK_TIMEOUT: "10"
+  HEALTH_CHECK_RETRIES: "3"
+
+  # Liveness Probe Configuration
+  LIVENESS_PROBE_PATH: "/health"
+  LIVENESS_PROBE_INTERVAL: "30"
+  LIVENESS_PROBE_TIMEOUT: "10"
+  LIVENESS_PROBE_RETRIES: "3"
+
+  # Readiness Probe Configuration
+  READINESS_PROBE_PATH: "/health"
+  READINESS_PROBE_INTERVAL: "10"
+  READINESS_PROBE_TIMEOUT: "5"
+  READINESS_PROBE_RETRIES: "3"
+

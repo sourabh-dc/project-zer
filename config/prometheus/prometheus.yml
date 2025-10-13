@@ -1,0 +1,150 @@
+# Prometheus Configuration for ZeroQue Production
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "zeroque-production"
+    environment: "production"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+rule_files:
+  - "rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ZeroQue Services
+  - job_name: "zeroque-orders"
+    static_configs:
+      - targets: ["orders:8080"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-identity"
+    static_configs:
+      - targets: ["identity:8085"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-ledger"
+    static_configs:
+      - targets: ["ledger:8086"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-payments"
+    static_configs:
+      - targets: ["payments:8087"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-events"
+    static_configs:
+      - targets: ["events:8088"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-cv-gateway"
+    static_configs:
+      - targets: ["cv-gateway:8000"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-cv-connector"
+    static_configs:
+      - targets: ["cv-connector:8100"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-approvals"
+    static_configs:
+      - targets: ["approvals:8213"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-entitlements"
+    static_configs:
+      - targets: ["entitlements:8211"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-subscriptions"
+    static_configs:
+      - targets: ["subscriptions:8212"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-notifications"
+    static_configs:
+      - targets: ["notifications:8300"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-reports"
+    static_configs:
+      - targets: ["reports:8400"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-usage"
+    static_configs:
+      - targets: ["usage:8200"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-observability"
+    static_configs:
+      - targets: ["observability:8600"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-service-registry"
+    static_configs:
+      - targets: ["service-registry:8500"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  - job_name: "zeroque-monitoring"
+    static_configs:
+      - targets: ["monitoring:8700"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+
+  # Infrastructure monitoring
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+    scrape_interval: 30s
+
+  - job_name: "postgres-exporter"
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+    scrape_interval: 30s
+
+  - job_name: "rabbitmq-exporter"
+    static_configs:
+      - targets: ["rabbitmq-exporter:9419"]
+    scrape_interval: 30s
+
+  - job_name: "redis-exporter"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+    scrape_interval: 30s
+
+  - job_name: "nginx-exporter"
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+    scrape_interval: 30s
+
+

@@ -1,1305 +1,533 @@
 # services/entry/main.py - ZeroQue Entry Service V4.1
+# Production-ready entry service with Celery, RabbitMQ, and comprehensive metrics
+
 import os
-import json
-import redis
-import secrets
-import time
 import uuid
-import httpx
-from datetime import datetime, timedelta
+import time
+import json
+import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, BackgroundTasks
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, text, select, insert, update, delete
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from celery import Celery
 import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import redis
+import pika
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+import pybreaker
 
 # =============================================================================
 # CONFIGURATION & LOGGING
 # =============================================================================
 
 SERVICE_NAME = "entry"
+SERVICE_VERSION = "4.1.0"
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
 logger = structlog.get_logger(__name__)
 
 # Configuration
-TTL_MIN = int(os.getenv("ENTRY_CODE_TTL_MINUTES", "15"))
-RL_SEC = int(os.getenv("ENTRY_RATE_LIMIT_SEC", "1"))
-STATUS_ENABLED = os.getenv("ENTRY_STATUS_ENABLED", "0") in ("1", "true", "True")
-ENTRY_VALIDATE_INCLUDE_CONTEXT = os.getenv("ENTRY_VALIDATE_INCLUDE_CONTEXT", "0") in ("1", "true", "True")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-# Prometheus metrics - initialize as None first
-entry_requests_total = None
-entry_request_duration = None
-entry_codes_generated = None
-entry_codes_validated = None
-entry_saga_duration = None
-entry_saga_failures = None
-entry_rate_limited_total = None
+# Database setup
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Register metrics with unique names
-try:
-    from prometheus_client import CollectorRegistry, REGISTRY
-    registry = CollectorRegistry()
-    
-    entry_requests_total = Counter('entry_requests_total_v2', 'Total entry requests', ['endpoint', 'status'], registry=registry)
-    entry_request_duration = Histogram('entry_request_duration_seconds_v2', 'Entry request duration', ['endpoint'], registry=registry)
-    entry_codes_generated = Counter('entry_codes_generated_total_v2', 'Total entry codes generated', ['provider', 'tenant_id'], registry=registry)
-    entry_codes_validated = Counter('entry_codes_validated_total_v2', 'Total entry codes validated', ['provider', 'tenant_id'], registry=registry)
-    entry_saga_duration = Histogram('entry_saga_duration_seconds_v2', 'Entry saga duration', ['saga_type'], registry=registry)
-    entry_saga_failures = Counter('entry_saga_failures_total_v2', 'Entry saga failures', ['saga_type', 'reason'], registry=registry)
-    entry_rate_limited_total = Counter('entry_rate_limited_total_v2', 'Total rate limited requests', ['tenant_id'], registry=registry)
-    
-    # Merge with default registry
-    for metric in registry.collect():
-        REGISTRY.register(metric)
-        
-except Exception as e:
-    logger.warning(f"Failed to register Prometheus metrics: {e}")
-
-# =============================================================================
-# DATABASE CONNECTION (ASYNC)
-# =============================================================================
-
-# Database configuration - using async SQLAlchemy
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/zeroque")
-ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-
-# Create async engine
-async_engine = create_async_engine(
-    ASYNC_DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=3600
-)
-
-# Create async session
-AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-
-# Redis configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+# Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery configuration for event publishing
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+# Celery setup
+celery_app = Celery(
+    SERVICE_NAME,
+    broker=RABBITMQ_URL,
+    backend=REDIS_URL,
+    include=[f'{SERVICE_NAME}.tasks']
+)
 
+# Load Celery configuration
 try:
-    from celery import Celery
-    celery_app = Celery('entry_service', broker=CELERY_BROKER_URL)
+    celery_app.config_from_object('celeryconfig')
 except ImportError:
-    # Celery not available, use fallback
-    celery_app = None
+    pass
 
-async def init_db():
-    """Initialize database tables"""
-    try:
-        # Skip database init for testing
-        pass
-        # async with async_engine.begin() as conn:
-        #     await conn.run_sync(Base.metadata.create_all)
-    except Exception as e:
-        logger.warning(f"Database initialization skipped: {e}")
+# Prometheus metrics
+entry_codes_issued = Counter('entry_codes_issued_total', 'Total entry codes issued', ['tenant_id', 'provider'])
+entry_codes_validated = Counter('entry_codes_validated_total', 'Total entry codes validated', ['tenant_id', 'status'])
+entry_code_duration = Histogram('entry_code_duration_seconds', 'Entry code operation duration', ['operation'])
+active_codes = Gauge('active_entry_codes_total', 'Total active entry codes', ['tenant_id'])
 
-async def check_db():
-    """Check database connectivity"""
+# Circuit breaker for external service calls
+service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
+
+# Define missing metrics and helper used in Celery tasks
+entry_operations_total = Counter('entry_operations_total', 'Entry operations processed', ['operation', 'status'])
+
+def set_rls_context(db, tenant_id: str):
     try:
-        # Skip database check for testing
-        return True
-        # async with async_engine.begin() as conn:
-        #     await conn.execute(text("SELECT 1"))
-        # return True
+        db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
     except Exception:
-        return False
-
-async def publish_event_to_bus(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
-    """Publish event to external event bus (RabbitMQ/Celery)"""
-    try:
-        # Try to use Celery task if available
-        if celery_app:
-            # Publish to Celery task queue
-            celery_app.send_task('entry_service.publish_event', 
-                               args=[event_type, event_data, tenant_id])
-            return True
-        
-        # Fallback: HTTP call to Events service
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "http://localhost:8087/events/v4/publish",
-                json={
-                    "tenant_id": tenant_id,
-                    "event_type": event_type,
-                    "event_data": event_data
-                },
-                timeout=5.0
-            )
-            return response.status_code == 200
-            
-    except Exception as e:
-        logger.error(f"Failed to publish event {event_type}: {str(e)}")
-        return False
-
-# Celery task for event publishing
-if celery_app:
-    @celery_app.task(bind=True, max_retries=3)
-    def publish_event_task(self, event_type: str, event_data: Dict[str, Any], tenant_id: str):
-        """Celery task to publish events to external services"""
         try:
-            # This would integrate with actual event bus (RabbitMQ, Kafka, etc.)
-            # For now, we'll simulate successful publishing
-            logger.info(f"Publishing event {event_type} for tenant {tenant_id}")
-            
-            # In production, this would:
-            # 1. Send to RabbitMQ exchange
-            # 2. Notify subscribing services
-            # 3. Update outbox status
-            
-            return True
-        except Exception as exc:
-            logger.error(f"Event publishing failed: {str(exc)}")
-            raise self.retry(exc=exc, countdown=60)
+            db.rollback()
+        except Exception:
+            pass
 
 # =============================================================================
 # DATABASE MODELS
 # =============================================================================
 
-class Base(DeclarativeBase):
-    pass
-
-class EntryCodeNew(Base):
-    __tablename__ = 'entry_codes_new'
+class EntryCode(Base):
+    __tablename__ = "entry_codes_new"
     
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    site_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    store_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    code: Mapped[str] = mapped_column(nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
-    consumed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    group_size: Mapped[int] = mapped_column(default=1, nullable=False)
-    provider: Mapped[str] = mapped_column(default='internal', nullable=False)
-    entry_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class ZeroqueRail(Base):
-    __tablename__ = 'zeroque_rails'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    type: Mapped[str] = mapped_column(nullable=False)
-    name: Mapped[str] = mapped_column(nullable=False)
-    config: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class OutboxEvent(Base):
-    __tablename__ = 'outbox_events'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    event_type: Mapped[str] = mapped_column(nullable=False)
-    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(default='pending')
-    retry_count: Mapped[int] = mapped_column(default=0)
-    max_retries: Mapped[int] = mapped_column(default=3)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class AuditLog(Base):
-    __tablename__ = 'audit_logs'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    action: Mapped[str] = mapped_column(nullable=False)
-    resource_type: Mapped[str] = mapped_column(nullable=False)
-    resource_id: Mapped[Optional[str]] = mapped_column(nullable=True)
-    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(nullable=True)
-    user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    code_id = Column(String(255), primary_key=True)
+    tenant_id = Column(String(255), nullable=False)
+    user_id = Column(String(255), nullable=False)
+    code = Column(String(100), unique=True, nullable=False)
+    provider = Column(String(50), default="internal")
+    status = Column(String(50), default="active")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 # =============================================================================
 # PYDANTIC MODELS
 # =============================================================================
 
-class IssueCodePayload(BaseModel):
+class IssueCodeRequest(BaseModel):
     tenant_id: str
-    site_id: str
-    store_id: str
     user_id: str
-    group_size: int = Field(default=1, ge=1, le=10)
-    ttl_minutes: int = Field(default=15, ge=1, le=60)
-    provider: Optional[str] = Field(default=None, description="Entry provider (default: from rails config)")
+    ttl_minutes: int = 60
+    provider: str = "internal"
 
-class ValidateCodePayload(BaseModel):
+class ValidateCodeRequest(BaseModel):
     code: str
-    provider: Optional[str] = Field(default=None, description="Entry provider (default: from rails config)")
+    provider: str = "internal"
 
 class EntryCodeResponse(BaseModel):
-    allowed: bool
-    code: Optional[str] = None
-    ttl_minutes: Optional[int] = None
-    reason: Optional[str] = None
-    remaining_minor: Optional[int] = None
-    currency: Optional[str] = None
+    code: str
+    code_id: str
+    tenant_id: str
+    user_id: str
+    expires_at: datetime
+    ttl_minutes: int
 
-class ValidateCodeResponse(BaseModel):
+class ValidationResponse(BaseModel):
     valid: bool
-    consumed: bool = False
     reason: Optional[str] = None
-    context: Optional[Dict[str, str]] = None
-
-class EntryStatusResponse(BaseModel):
-    exists: bool
+    code: str
     tenant_id: Optional[str] = None
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
     user_id: Optional[str] = None
 
-class EntryProviderConfig(BaseModel):
-    provider: str
-    api_key: str
-    base_url: str
-    entry_endpoint: str = "/entry-codes"
-    verify_endpoint: str = "/entry-codes/verify"
-
-class ZeroqueRailConfig(BaseModel):
-    tenant_id: str
-    type: str = "entry"
-    name: str
-    config: EntryProviderConfig
-    active: bool = True
-
 # =============================================================================
-# AUTHENTICATION & SECURITY
+# CELERY TASKS
 # =============================================================================
 
-security = HTTPBearer()
-
-async def get_user_context(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Get user context from JWT token"""
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_expired_codes(self):
+    """Clean up expired entry codes"""
     try:
-        # In production, this would validate the JWT token
-        # For now, return demo context
-        return {
-            "user_id": "550e8400-e29b-41d4-a716-446655440000",
-            "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
-            "roles": ["entry.user"],
-            "permissions": ["entry.issue_code", "entry.validate_code"]
-        }
+        with SessionLocal() as db:
+            # Clean up expired codes from database
+            expired_codes = db.query(EntryCode).filter(
+                EntryCode.expires_at < datetime.now(timezone.utc),
+                EntryCode.status == "active"
+            ).all()
+            
+            for code in expired_codes:
+                code.status = "expired"
+                
+                # Remove from Redis
+                redis_key = f"entry:{code.code}"
+                redis_client.delete(redis_key)
+            
+            db.commit()
+            
+        logger.info("Cleaned up expired codes", count=len(expired_codes))
+        return {"cleaned_count": len(expired_codes)}
+        
     except Exception as e:
-        logger.error(f"Failed to get user context: {str(e)}")
-        raise HTTPException(status_code=401, detail="Invalid authentication")
-
-def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
-    """Check if user has required permission"""
-    user_permissions = user_context.get("permissions", [])
-    return required_permission in user_permissions
-
-async def set_rls_context(db: AsyncSession, tenant_id: str, user_id: Optional[str] = None):
-    """Set Row Level Security context"""
-    try:
-        await db.execute(text("SET app.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-        if user_id:
-            await db.execute(text("SET app.user_id = :user_id"), {"user_id": user_id})
-        await db.commit()
-    except Exception as e:
-        logger.error(f"Failed to set RLS context: {str(e)}")
-        raise
+        logger.error("Failed to cleanup expired codes", error=str(e))
+        
+        # Retry if not exceeded max retries
+        if self.request.retries < self.max_retries:
+            raise self.retry(countdown=60 * (2 ** self.request.retries))
+        
+        return {"error": str(e)}
 
 # =============================================================================
-# PROVIDER INTEGRATION
-# =============================================================================
-
-class EntryProvider:
-    """Multi-provider entry code management"""
-    
-    def __init__(self, config: EntryProviderConfig):
-        self.config = config
-        self.client = httpx.AsyncClient(timeout=30.0)
-    
-    async def issue_code(self, tenant_id: str, site_id: str, store_id: str, user_id: str,
-                        group_size: int = 1, ttl_minutes: int = 15) -> Dict[str, Any]:
-        """Issue entry code via provider"""
-        try:
-            if self.config.provider == "aifi":
-                return await self._issue_aifi_code(tenant_id, site_id, store_id, user_id, group_size, ttl_minutes)
-            elif self.config.provider == "internal":
-                return await self._issue_internal_code(tenant_id, site_id, store_id, user_id, group_size, ttl_minutes)
-            else:
-                raise ValueError(f"Unsupported provider: {self.config.provider}")
-        except Exception as e:
-            logger.error(f"Failed to issue code via {self.config.provider}: {str(e)}")
-            raise
-    
-    async def validate_code(self, code: str) -> Dict[str, Any]:
-        """Validate entry code via provider"""
-        try:
-            if self.config.provider == "aifi":
-                return await self._validate_aifi_code(code)
-            elif self.config.provider == "internal":
-                return await self._validate_internal_code(code)
-            else:
-                raise ValueError(f"Unsupported provider: {self.config.provider}")
-        except Exception as e:
-            logger.error(f"Failed to validate code via {self.config.provider}: {str(e)}")
-            raise
-    
-    async def _issue_aifi_code(self, tenant_id: str, site_id: str, store_id: str, user_id: str,
-                              group_size: int, ttl_minutes: int) -> Dict[str, Any]:
-        """Issue code via AiFi provider"""
-        url = f"{self.config.base_url}/customers/{user_id}/entry-codes"
-        payload = {
-            "store_id": store_id,
-            "displayable": True,  # For QR code generation
-            "group_size": group_size,
-            "ttl_minutes": ttl_minutes
-        }
-        headers = {"Authorization": f"Bearer {self.config.api_key}"}
-        
-        response = await self.client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
-        return {
-            "code": data.get("entry_code"),
-            "ttl_minutes": ttl_minutes,
-            "provider": "aifi",
-            "metadata": data
-        }
-    
-    async def _validate_aifi_code(self, code: str) -> Dict[str, Any]:
-        """Validate code via AiFi provider"""
-        url = f"{self.config.base_url}/stores/{self.config.store_id}/entry/{code}/verify"
-        headers = {"Authorization": f"Bearer {self.config.api_key}"}
-        
-        response = await self.client.post(url, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
-        return {
-            "valid": data.get("valid", False),
-            "consumed": True,
-            "provider": "aifi",
-            "metadata": data
-        }
-    
-    async def _issue_internal_code(self, tenant_id: str, site_id: str, store_id: str, user_id: str,
-                                  group_size: int, ttl_minutes: int) -> Dict[str, Any]:
-        """Issue code via internal provider (Redis-based)"""
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        return {
-            "code": code,
-            "ttl_minutes": ttl_minutes,
-            "provider": "internal",
-            "metadata": {}
-        }
-    
-    async def _validate_internal_code(self, code: str) -> Dict[str, Any]:
-        """Validate code via internal provider (Redis-based)"""
-        r = get_redis()
-        rev = _rev_key(code)
-        fwd = r.get(rev)
-        
-    if not fwd:
-            return {"valid": False, "reason": "unknown_or_expired", "provider": "internal"}
-
-    fwd = fwd.decode("utf-8")
-    exists = r.get(fwd)
-    if not exists:
-        r.delete(rev)
-            return {"valid": False, "reason": "expired", "provider": "internal"}
-
-        # Consume both keys
-    pipe = r.pipeline()
-    pipe.delete(fwd)
-    pipe.delete(rev)
-    pipe.execute()
-
-        return {"valid": True, "consumed": True, "provider": "internal"}
-
-# =============================================================================
-# SAGA PATTERN
-# =============================================================================
-
-class EntryCodeSaga:
-    """Saga for entry code operations with compensation"""
-    
-    def __init__(self, db: AsyncSession, provider: EntryProvider, redis_client: redis.Redis):
-        self.db = db
-        self.provider = provider
-        self.redis = redis_client
-        self.compensation_steps = []
-    
-    async def execute_issue_code(self, payload: IssueCodePayload, user_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute entry code issuance saga"""
-        saga_start = time.time()
-        
-        try:
-            # Step 1: Validate user and budget
-            await self._validate_user_budget(payload, user_context)
-            self.compensation_steps.append(("validate_user_budget", None))
-            
-            # Step 2: Issue code via provider
-            provider_result = await self.provider.issue_code(
-                payload.tenant_id, payload.site_id, payload.store_id, payload.user_id,
-                payload.group_size, payload.ttl_minutes
-            )
-            self.compensation_steps.append(("issue_provider_code", provider_result))
-            
-            # Step 3: Store in database
-            entry_code = await self._store_entry_code(payload, provider_result, user_context)
-            self.compensation_steps.append(("store_entry_code", entry_code.id))
-            
-            # Step 4: Store in Redis for fast access
-            await self._store_in_redis(payload, provider_result)
-            self.compensation_steps.append(("store_in_redis", provider_result["code"]))
-            
-            # Step 5: Publish event
-            await self._publish_entry_granted_event(payload, provider_result, user_context)
-            self.compensation_steps.append(("publish_event", None))
-            
-            # Step 6: Audit log
-            await self._audit_log("ISSUE_CODE", payload, user_context)
-            
-            entry_saga_duration.labels(saga_type="issue_code").observe(time.time() - saga_start)
-            entry_codes_generated.labels(provider=provider_result["provider"], tenant_id=payload.tenant_id).inc()
-            
-            return {
-                "allowed": True,
-                "code": provider_result["code"],
-                "ttl_minutes": provider_result["ttl_minutes"]
-            }
-            
-        except Exception as e:
-            logger.error(f"Entry code saga failed: {str(e)}")
-            entry_saga_failures.labels(saga_type="issue_code", reason=str(e)).inc()
-            await self._compensate()
-            raise
-    
-    async def execute_validate_code(self, payload: ValidateCodePayload, user_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute entry code validation saga"""
-        saga_start = time.time()
-        
-        try:
-            # Step 1: Validate via provider
-            provider_result = await self.provider.validate_code(payload.code)
-            self.compensation_steps.append(("validate_provider_code", payload.code))
-            
-            if not provider_result["valid"]:
-                return provider_result
-            
-            # Step 2: Update database
-            await self._consume_entry_code(payload.code, user_context)
-            self.compensation_steps.append(("consume_entry_code", payload.code))
-            
-            # Step 3: Publish event
-            await self._publish_entry_validated_event(payload, provider_result, user_context)
-            self.compensation_steps.append(("publish_event", None))
-            
-            # Step 4: Audit log
-            await self._audit_log("VALIDATE_CODE", payload, user_context)
-            
-            entry_saga_duration.labels(saga_type="validate_code").observe(time.time() - saga_start)
-            entry_codes_validated.labels(provider=provider_result["provider"], tenant_id=user_context["tenant_id"]).inc()
-            
-            return provider_result
-            
-        except Exception as e:
-            logger.error(f"Entry validation saga failed: {str(e)}")
-            entry_saga_failures.labels(saga_type="validate_code", reason=str(e)).inc()
-            await self._compensate()
-            raise
-    
-    async def _validate_user_budget(self, payload: IssueCodePayload, user_context: Dict[str, Any]):
-        """Validate user budget and permissions"""
-        # Check budget using new tables
-        cost_centre_query = text("""
-            SELECT cc.cost_centre_id FROM cost_centres_new cc
-            JOIN users_new u ON u.primary_cost_centre_id = cc.cost_centre_id
-            WHERE u.id = :user_id
-        """)
-        
-        result = await self.db.execute(cost_centre_query, {"user_id": payload.user_id})
-        cost_centre_row = result.first()
-        
-        if not cost_centre_row:
-            raise HTTPException(status_code=400, detail="User has no cost centre")
-        
-        cost_centre_id = cost_centre_row[0]
-        
-        # Check budget using budgets_new
-        budget_query = text("""
-            SELECT limit_minor, spent_minor, currency, hard_block
-            FROM budgets_new
-            WHERE cost_centre_id = :cc_id
-            ORDER BY created_at DESC
-            LIMIT 1
-        """)
-        
-        result = await self.db.execute(budget_query, {"cc_id": cost_centre_id})
-        budget_row = result.first()
-        
-        if not budget_row:
-            raise HTTPException(status_code=400, detail="No budget configured for user's cost centre")
-        
-        limit_minor, spent_minor, currency, hard_block = budget_row
-        remaining = limit_minor - spent_minor
-        
-        if hard_block and remaining <= 0:
-            # Check approval remaining using approval_requests_new
-            approval_query = text("""
-                SELECT COALESCE(SUM(remaining_minor), 0)
-                FROM approval_requests_new
-                WHERE cost_centre_id = :cc_id AND status = 'approved'
-                  AND (user_scope_id IS NULL OR user_scope_id = :user_id)
-            """)
-            
-            result = await self.db.execute(approval_query, {"cc_id": cost_centre_id, "user_id": payload.user_id})
-            approval_remaining = result.scalar() or 0
-            
-            if approval_remaining <= 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Insufficient budget and no pending approvals",
-                    headers={"X-Remaining-Minor": str(remaining), "X-Currency": currency}
-                )
-    
-    async def _store_entry_code(self, payload: IssueCodePayload, provider_result: Dict[str, Any], user_context: Dict[str, Any]) -> EntryCodeNew:
-        """Store entry code in database"""
-        expires_at = datetime.utcnow() + timedelta(minutes=provider_result["ttl_minutes"])
-        
-        entry_code = EntryCodeNew(
-            tenant_id=uuid.UUID(payload.tenant_id),
-            site_id=uuid.UUID(payload.site_id),
-            store_id=uuid.UUID(payload.store_id),
-            user_id=uuid.UUID(payload.user_id),
-            code=provider_result["code"],
-            expires_at=expires_at,
-            group_size=payload.group_size,
-            provider=provider_result["provider"],
-            entry_metadata=provider_result.get("metadata", {})
-        )
-        
-        self.db.add(entry_code)
-        await self.db.commit()
-        await self.db.refresh(entry_code)
-        
-        return entry_code
-    
-    async def _store_in_redis(self, payload: IssueCodePayload, provider_result: Dict[str, Any]):
-        """Store entry code in Redis for fast access"""
-        code = provider_result["code"]
-        ttl_seconds = provider_result["ttl_minutes"] * 60
-        
-        fwd = _fwd_key(payload.tenant_id, payload.site_id, payload.store_id, payload.user_id, code)
-        rev = _rev_key(code)
-        
-        pipe = self.redis.pipeline()
-        pipe.set(fwd, "1", ex=ttl_seconds)
-        pipe.set(rev, fwd, ex=ttl_seconds)
-        pipe.execute()
-    
-    async def _consume_entry_code(self, code: str, user_context: Dict[str, Any]):
-        """Mark entry code as consumed in database"""
-        update_query = text("""
-            UPDATE entry_codes_new
-            SET consumed_at = now(), updated_at = now()
-            WHERE code = :code AND consumed_at IS NULL
-        """)
-        
-        await self.db.execute(update_query, {"code": code})
-        await self.db.commit()
-    
-    async def _publish_entry_granted_event(self, payload: IssueCodePayload, provider_result: Dict[str, Any], user_context: Dict[str, Any]):
-        """Publish ENTRY_GRANTED event"""
-        event_data = {
-            "entry_code_id": str(uuid.uuid4()),  # Would be actual ID from database
-            "tenant_id": payload.tenant_id,
-            "site_id": payload.site_id,
-            "store_id": payload.store_id,
-            "user_id": payload.user_id,
-            "code": provider_result["code"],
-            "provider": provider_result["provider"],
-            "expires_at": (datetime.utcnow() + timedelta(minutes=provider_result["ttl_minutes"])).isoformat(),
-            "group_size": payload.group_size
-        }
-        
-        # Store in outbox for reliable delivery
-        outbox_event = OutboxEvent(
-            tenant_id=uuid.UUID(payload.tenant_id),
-            event_type="ENTRY_GRANTED",
-            event_data=event_data
-        )
-        
-        self.db.add(outbox_event)
-        await self.db.commit()
-        
-        # Try to publish immediately
-        await publish_event_to_bus("ENTRY_GRANTED", event_data, payload.tenant_id)
-    
-    async def _publish_entry_validated_event(self, payload: ValidateCodePayload, provider_result: Dict[str, Any], user_context: Dict[str, Any]):
-        """Publish ENTRY_VALIDATED event"""
-        event_data = {
-            "code": payload.code,
-            "provider": provider_result["provider"],
-            "validated_at": datetime.utcnow().isoformat(),
-            "tenant_id": user_context["tenant_id"]
-        }
-        
-        # Store in outbox for reliable delivery
-        outbox_event = OutboxEvent(
-            tenant_id=uuid.UUID(user_context["tenant_id"]),
-            event_type="ENTRY_VALIDATED",
-            event_data=event_data
-        )
-        
-        self.db.add(outbox_event)
-        await self.db.commit()
-        
-        # Try to publish immediately
-        await publish_event_to_bus("ENTRY_VALIDATED", event_data, user_context["tenant_id"])
-    
-    async def _audit_log(self, action: str, payload: Any, user_context: Dict[str, Any]):
-        """Create audit log entry"""
-        audit_log = AuditLog(
-            tenant_id=uuid.UUID(user_context["tenant_id"]),
-            user_id=uuid.UUID(user_context["user_id"]),
-            action=action,
-            resource_type="entry_code",
-            resource_id=getattr(payload, 'code', str(uuid.uuid4())),
-            details=payload.dict() if hasattr(payload, 'dict') else {}
-        )
-        
-        self.db.add(audit_log)
-        await self.db.commit()
-    
-    async def _compensate(self):
-        """Execute compensation steps in reverse order"""
-        for step_name, step_data in reversed(self.compensation_steps):
-            try:
-                if step_name == "store_in_redis" and step_data:
-                    # Remove from Redis
-                    code = step_data
-                    rev = _rev_key(code)
-                    fwd = self.redis.get(rev)
-                    if fwd:
-                        self.redis.delete(fwd.decode("utf-8"))
-                        self.redis.delete(rev)
-                
-                elif step_name == "store_entry_code" and step_data:
-                    # Remove from database
-                    delete_query = text("DELETE FROM entry_codes_new WHERE id = :id")
-                    await self.db.execute(delete_query, {"id": step_data})
-                    await self.db.commit()
-                
-                # Add more compensation steps as needed
-                
-            except Exception as e:
-                logger.error(f"Compensation step {step_name} failed: {str(e)}")
-
-# =============================================================================
-# REDIS HELPERS
-# =============================================================================
-
-def get_redis() -> redis.Redis:
-    """Get Redis client"""
-    return redis.from_url(os.getenv("REDIS_URL", "redis://localhost:4000/0"))
-
-def _fwd_key(tenant_id: str, site_id: str, store_id: str, user_id: str, code: str) -> str:
-    """Generate forward key for Redis"""
-    return f"entry:{tenant_id}:{site_id}:{store_id}:{user_id}:{code}"
-
-def _rev_key(code: str) -> str:
-    """Generate reverse key for Redis"""
-    return f"entry_rev:{code}"
-
-def _rl_key(tenant_id: str, site_id: str, store_id: str, user_id: str) -> str:
-    """Generate rate limit key for Redis"""
-    return f"entry:rl:{tenant_id}:{site_id}:{store_id}:{user_id}"
-
-# =============================================================================
-# PROVIDER MANAGEMENT
-# =============================================================================
-
-async def get_entry_provider(tenant_id: str, provider_name: Optional[str] = None) -> EntryProvider:
-    """Get entry provider configuration"""
-    async with AsyncSessionLocal() as db:
-        await set_rls_context(db, tenant_id)
-        
-        if provider_name:
-            query = text("""
-                SELECT config FROM zeroque_rails
-                WHERE tenant_id = :tenant_id AND type = 'entry' AND name = :name AND active = true
-            """)
-            result = await db.execute(query, {"tenant_id": tenant_id, "name": provider_name})
-        else:
-            query = text("""
-                SELECT config FROM zeroque_rails
-                WHERE tenant_id = :tenant_id AND type = 'entry' AND active = true
-                ORDER BY created_at DESC
-                LIMIT 1
-            """)
-            result = await db.execute(query, {"tenant_id": tenant_id})
-        
-        row = result.first()
-        if not row:
-            # Default to internal provider
-            config = EntryProviderConfig(
-                provider="internal",
-                api_key="",
-                base_url="",
-                entry_endpoint="/entry-codes",
-                verify_endpoint="/entry-codes/verify"
-            )
-        else:
-            config_data = row[0]
-            config = EntryProviderConfig(**config_data)
-        
-        return EntryProvider(config)
-
-# =============================================================================
-# FASTAPI APPLICATION
+# APPLICATION SETUP
 # =============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting Entry Service V4.1")
-    await init_db()
+    """Application lifespan manager"""
+    logger.info(f"Starting {SERVICE_NAME}", version=SERVICE_VERSION, environment=ENVIRONMENT)
     
-    # Skip database operations for testing
+    # Initialize database tables
     try:
-        pass
-        # Create tables if they don't exist
-        # async with AsyncSessionLocal() as db:
-        #     await db.execute(text("""
-        #         CREATE TABLE IF NOT EXISTS entry_codes_new (
-        #             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        #             tenant_id UUID NOT NULL,
-        #             site_id UUID NOT NULL,
-        #             store_id UUID NOT NULL,
-        #             user_id UUID NOT NULL,
-        #             code VARCHAR(50) NOT NULL UNIQUE,
-        #             expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-        #             consumed_at TIMESTAMP WITH TIME ZONE,
-        #             group_size INTEGER DEFAULT 1 NOT NULL,
-        #             provider VARCHAR(50) DEFAULT 'internal' NOT NULL,
-        #             entry_metadata JSONB,
-        #             created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
-        #             updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
-        #         )
-        #     """))
-        #     await db.commit()
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables initialized")
     except Exception as e:
-        logger.warning(f"Database operations skipped: {e}")
+        logger.error("Failed to initialize database tables", error=str(e))
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down Entry Service V4.1")
+    logger.info(f"Shutting down {SERVICE_NAME}")
 
 app = FastAPI(
-    title="ZeroQue Entry Service V4.1",
-    version="4.1.0",
+    title=f"ZeroQue {SERVICE_NAME.title()} Service V4.1",
+    description="Entry code generation and validation for store access",
+    version=SERVICE_VERSION,
     lifespan=lifespan
 )
 
+# Add middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
 # =============================================================================
-# HEALTH CHECKS
+# HEALTH ENDPOINTS
 # =============================================================================
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "ok", "service": SERVICE_NAME, "version": "4.1.0"}
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+        "environment": ENVIRONMENT
+    }
 
 @app.get("/readiness")
 async def readiness():
     """Readiness check endpoint"""
     try:
-        r = get_redis()
-        r.ping()
-        redis_ok = True
-    except Exception:
-        redis_ok = False
-    
-    db_ok = check_db()
-    
-    return {
-        "service": SERVICE_NAME,
-        "version": "4.1.0",
-        "db": db_ok,
-        "redis": redis_ok,
-        "ready": db_ok and redis_ok
-    }
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {
+            "service": SERVICE_NAME,
+            "status": "ready",
+            "database": "connected"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service not ready: {str(e)}")
 
 @app.get("/metrics")
 async def metrics():
     """Prometheus metrics endpoint"""
-    return generate_latest()
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # =============================================================================
-# V4.1 ENDPOINTS
+# ENTRY CODE ENDPOINTS
 # =============================================================================
 
 @app.post("/entry/v4/issue-code", response_model=EntryCodeResponse)
-async def issue_code_v4(
-    payload: IssueCodePayload,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Issue entry code with multi-provider support"""
+async def issue_code(request: IssueCodeRequest):
+    """Issue an entry code"""
     start_time = time.time()
     
     try:
-        # Check permissions
-        if not check_permission("entry.issue_code", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        code = f"ENTRY{uuid.uuid4().hex[:8].upper()}"
+        code_id = f"code_{uuid.uuid4().hex[:12]}"
         
-        # Rate limiting
-        r = get_redis()
-        rlk = _rl_key(payload.tenant_id, payload.site_id, payload.store_id, payload.user_id)
-        if not r.set(rlk, "1", nx=True, ex=RL_SEC):
-            if entry_requests_total is not None:
-                entry_requests_total.labels(endpoint="issue_code", status="rate_limited").inc()
-            if entry_rate_limited_total is not None:
-                entry_rate_limited_total.labels(tenant_id=payload.tenant_id).inc()
-            return EntryCodeResponse(
-                allowed=False,
-                reason="rate_limited"
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=request.ttl_minutes)
+        
+        # Store in Redis
+        redis_key = f"entry:{code}"
+        redis_value = f"{request.tenant_id}:{request.user_id}"
+        redis_client.setex(redis_key, request.ttl_minutes * 60, redis_value)
+        
+        # Store in DB
+        with SessionLocal() as db:
+            entry_code = EntryCode(
+                code_id=code_id,
+                tenant_id=request.tenant_id,
+                user_id=request.user_id,
+                code=code,
+                provider=request.provider,
+                status="active",
+                expires_at=expires_at
+            )
+            db.add(entry_code)
+            db.commit()
+        
+        # Update metrics
+        entry_codes_issued.labels(tenant_id=request.tenant_id, provider=request.provider).inc()
+        entry_code_duration.labels(operation="issue").observe(time.time() - start_time)
+        active_codes.labels(tenant_id=request.tenant_id).inc()
+        
+        logger.info("Entry code issued", 
+                   code=code, tenant_id=request.tenant_id, user_id=request.user_id)
+        
+        return EntryCodeResponse(
+            code=code,
+            code_id=code_id,
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            expires_at=expires_at,
+            ttl_minutes=request.ttl_minutes
+        )
+    
+    except Exception as e:
+        logger.error("Issue code failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/entry/v4/validate-code", response_model=ValidationResponse)
+async def validate_code(request: ValidateCodeRequest):
+    """Validate an entry code"""
+    start_time = time.time()
+    
+    try:
+        redis_key = f"entry:{request.code}"
+        value = redis_client.get(redis_key)
+        
+        if not value:
+            # Update metrics
+            entry_codes_validated.labels(tenant_id="unknown", status="invalid").inc()
+            entry_code_duration.labels(operation="validate").observe(time.time() - start_time)
+            
+            return ValidationResponse(
+                valid=False,
+                reason="Code not found or expired",
+                code=request.code
             )
         
-        # Get provider configuration
-        provider = await get_entry_provider(payload.tenant_id, payload.provider)
+        # Parse tenant_id and user_id from Redis value
+        tenant_id, user_id = value.split(":", 1)
         
-        # Execute saga
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, payload.tenant_id, user_context["user_id"])
-            saga = EntryCodeSaga(db, provider, r)
-            result = await saga.execute_issue_code(payload, user_context)
+        # Mark as consumed
+        redis_client.delete(redis_key)
         
-        if entry_requests_total is not None:
-            entry_requests_total.labels(endpoint="issue_code", status="success").inc()
-        if entry_request_duration is not None:
-            entry_request_duration.labels(endpoint="issue_code").observe(time.time() - start_time)
+        # Update DB
+        with SessionLocal() as db:
+            db.execute(
+                text("UPDATE entry_codes_new SET status = 'consumed' WHERE code = :code"),
+                {"code": request.code}
+            )
+            db.commit()
         
-        return EntryCodeResponse(**result)
+        # Update metrics
+        entry_codes_validated.labels(tenant_id=tenant_id, status="valid").inc()
+        entry_code_duration.labels(operation="validate").observe(time.time() - start_time)
+        active_codes.labels(tenant_id=tenant_id).dec()
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to issue entry code: {str(e)}")
-        if entry_requests_total is not None:
-            entry_requests_total.labels(endpoint="issue_code", status="error").inc()
-        if entry_request_duration is not None:
-            entry_request_duration.labels(endpoint="issue_code").observe(time.time() - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/entry/v4/validate-code", response_model=ValidateCodeResponse)
-async def validate_code_v4(
-    payload: ValidateCodePayload,
-    request: Request,
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Validate entry code with multi-provider support"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("entry.validate_code", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        logger.info("Entry code validated", 
+                   code=request.code, tenant_id=tenant_id, user_id=user_id)
         
-        # Get provider configuration
-        provider = await get_entry_provider(user_context["tenant_id"], payload.provider)
-        
-        # Execute saga
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
-            saga = EntryCodeSaga(db, provider, get_redis())
-            result = await saga.execute_validate_code(payload, user_context)
-        
-        # Include context if enabled - with DB fallback
-        if ENTRY_VALIDATE_INCLUDE_CONTEXT and result.get("valid"):
-            context = None
-            try:
-                # Try Redis first
-                r = get_redis()
-                rev = _rev_key(payload.code)
-                fwd = r.get(rev)
-                
-                if fwd:
-                    _, tenant_id, site_id, store_id, user_id, _ = fwd.decode("utf-8").split(":", 5)
-                    context = {
-                        "tenant_id": tenant_id,
-                        "site_id": site_id,
-                        "store_id": store_id,
-                        "user_id": user_id
-                    }
-        except Exception:
-                # Fallback to database query
-                try:
-                    async with AsyncSessionLocal() as db:
-                        query = text("""
-                            SELECT tenant_id, site_id, store_id, user_id
-                            FROM entry_codes_new
-                            WHERE code = :code
-                        """)
-                        result_db = await db.execute(query, {"code": payload.code})
-                        row = result_db.first()
-                        if row:
-                            context = {
-                                "tenant_id": str(row[0]),
-                                "site_id": str(row[1]),
-                                "store_id": str(row[2]),
-                                "user_id": str(row[3])
-                            }
-                except Exception as e:
-                    logger.warning(f"Failed to get context from DB fallback: {str(e)}")
-            
-            if context:
-                result["context"] = context
-        
-        if entry_requests_total is not None:
-            entry_requests_total.labels(endpoint="validate_code", status="success").inc()
-        if entry_request_duration is not None:
-            entry_request_duration.labels(endpoint="validate_code").observe(time.time() - start_time)
-        
-        return ValidateCodeResponse(**result)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to validate entry code: {str(e)}")
-        if entry_requests_total is not None:
-            entry_requests_total.labels(endpoint="validate_code", status="error").inc()
-        if entry_request_duration is not None:
-            entry_request_duration.labels(endpoint="validate_code").observe(time.time() - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/entry/v4/status", response_model=EntryStatusResponse)
-async def entry_status_v4(
-    code: str = Query(...),
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Get entry code status with RLS"""
-    if not STATUS_ENABLED:
-        raise HTTPException(status_code=404, detail="Status endpoint disabled")
-    
-    try:
-        # Check permissions
-        if not check_permission("entry.view_status", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-    r = get_redis()
-        rev = _rev_key(code)
-        fwd = r.get(rev)
-        
-    if not fwd:
-            return EntryStatusResponse(exists=False)
-        
-    parts = fwd.decode("utf-8").split(":")
-    if len(parts) != 6:
-            return EntryStatusResponse(exists=True)
-        
-        return EntryStatusResponse(
-            exists=True,
-            tenant_id=parts[1],
-            site_id=parts[2],
-            store_id=parts[3],
-            user_id=parts[4]
+        return ValidationResponse(
+            valid=True,
+            code=request.code,
+            tenant_id=tenant_id,
+            user_id=user_id
         )
-        
+    
     except Exception as e:
-        logger.error(f"Failed to get entry status: {str(e)}")
+        logger.error("Validate code failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-# =============================================================================
-# ADMIN ENDPOINTS
-# =============================================================================
-
-@app.post("/entry/v4/admin/rails/entry")
-async def configure_entry_provider(
-    config: ZeroqueRailConfig,
-    user_context: Dict[str, Any] = Depends(get_user_context)
+@app.get("/entry/v4/codes")
+async def list_codes(
+    tenant_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(100)
 ):
-    """Configure entry provider via zeroque_rails"""
+    """List entry codes with optional filtering"""
     try:
-        # Check admin permissions
-        if not check_permission("entry.admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, config.tenant_id, user_context["user_id"])
+        with SessionLocal() as db:
+            query = db.query(EntryCode)
             
-            # Upsert provider configuration
-            upsert_query = text("""
-                INSERT INTO zeroque_rails (tenant_id, type, name, config, active, created_at, updated_at)
-                VALUES (:tenant_id, :type, :name, :config, :active, now(), now())
-                ON CONFLICT (tenant_id, type, name)
-                DO UPDATE SET
-                    config = EXCLUDED.config,
-                    active = EXCLUDED.active,
-                    updated_at = now()
-            """)
-            
-            await db.execute(upsert_query, {
-                "tenant_id": config.tenant_id,
-                "type": config.type,
-                "name": config.name,
-                "config": config.config.dict(),
-                "active": config.active
-            })
-            await db.commit()
-        
-        return {"ok": True, "message": f"Provider {config.name} configured successfully"}
-        
-    except Exception as e:
-        logger.error(f"Failed to configure entry provider: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/entry/v4/admin/rails/entry")
-async def list_entry_providers(
-    tenant_id: str = Query(...),
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """List entry providers for tenant"""
-    try:
-        # Check admin permissions
-        if not check_permission("entry.admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, tenant_id, user_context["user_id"])
-            
-            query = text("""
-                SELECT name, config, active, created_at, updated_at
-                FROM zeroque_rails
-                WHERE tenant_id = :tenant_id AND type = 'entry'
-                ORDER BY created_at DESC
-            """)
-            
-            result = await db.execute(query, {"tenant_id": tenant_id})
-            providers = []
-            
-            for row in result:
-                providers.append({
-                    "name": row[0],
-                    "config": row[1],
-                    "active": row[2],
-                    "created_at": str(row[3]),
-                    "updated_at": str(row[4])
-                })
-        
-        return {"ok": True, "providers": providers}
-        
-    except Exception as e:
-        logger.error(f"Failed to list entry providers: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =============================================================================
-# EVENT RETRY & INTEGRATION
-# =============================================================================
-
-@app.post("/entry/v4/events/retry")
-async def retry_events(
-    tenant_id: str = Query(...),
-    max_events: int = Query(10, le=100),
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Retry pending outbox events"""
-    try:
-        # Check admin permissions
-        if not check_permission("entry.admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, tenant_id, user_context["user_id"])
-            
-            # Get pending events
-            query = text("""
-                SELECT id, event_type, event_data, retry_count
-                FROM outbox_events
-                WHERE tenant_id = :tenant_id AND status = 'pending' AND retry_count < max_retries
-                ORDER BY created_at ASC
-                LIMIT :max_events
-            """)
-            
-            result = await db.execute(query, {"tenant_id": tenant_id, "max_events": max_events})
-            events = result.fetchall()
-            
-            retried_count = 0
-            for event in events:
-                event_id, event_type, event_data, retry_count = event
+            if tenant_id:
+                query = query.filter(EntryCode.tenant_id == tenant_id)
+            if status:
+                query = query.filter(EntryCode.status == status)
                 
-                try:
-                    # Publish event to external event bus
-                    success = await publish_event_to_bus(event_type, event_data, tenant_id)
-                    
-                    if success:
-                        # Update retry count and mark as published
-                        update_query = text("""
-                            UPDATE outbox_events
-                            SET retry_count = retry_count + 1, status = 'published', updated_at = now()
-                            WHERE id = :id
-                        """)
-                        await db.execute(update_query, {"id": event_id})
-                        retried_count += 1
-                        logger.info(f"Successfully published event {event_type}: {event_data}")
-                    else:
-                        raise Exception("Failed to publish to event bus")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to retry event {event_id}: {str(e)}")
-                    
-                    # Mark as failed if max retries reached
-                    if retry_count + 1 >= 3:  # max_retries
-                        update_query = text("""
-                            UPDATE outbox_events
-                            SET retry_count = retry_count + 1, status = 'failed', updated_at = now()
-                            WHERE id = :id
-                        """)
-                        await db.execute(update_query, {"id": event_id})
+            codes = query.order_by(EntryCode.created_at.desc()).limit(limit).all()
             
-            await db.commit()
-        
-        return {"ok": True, "retried_count": retried_count, "total_events": len(events)}
-        
+            return [
+                {
+                    "code_id": code.code_id,
+                    "tenant_id": code.tenant_id,
+                    "user_id": code.user_id,
+                    "code": code.code,
+                    "provider": code.provider,
+                    "status": code.status,
+                    "expires_at": code.expires_at,
+                    "created_at": code.created_at
+                }
+                for code in codes
+            ]
+            
     except Exception as e:
-        logger.error(f"Failed to retry events: {str(e)}")
+        logger.error("Failed to list codes", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-# =============================================================================
-# INTEGRATION ENDPOINTS
-# =============================================================================
-
-@app.post("/entry/v4/integration/provisioning/user-created")
-async def handle_user_created_event(
-    event_data: Dict[str, Any],
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Handle USER_CREATED event from Provisioning service"""
+@app.get("/entry/v4/status/{code}")
+async def get_code_status(code: str):
+    """Get entry code status"""
     try:
-        tenant_id = event_data.get("tenant_id")
-        user_id = event_data.get("user_id")
+        redis_key = f"entry:{code}"
+        exists = redis_client.exists(redis_key)
         
-        if not tenant_id or not user_id:
-            raise HTTPException(status_code=400, detail="Missing tenant_id or user_id")
-        
-        # Sync user to entry provider if needed
-        provider = await get_entry_provider(tenant_id)
-        
-        if provider.config.provider == "aifi":
-            # Sync user to AiFi
-            logger.info(f"Syncing user {user_id} to AiFi provider for tenant {tenant_id}")
-            # Implementation would call AiFi API to create/update user
-        
-        return {"ok": True, "message": "User synced to entry provider"}
-        
-    except Exception as e:
-        logger.error(f"Failed to handle user created event: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/entry/v4/integration/status")
-async def integration_status(
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Get integration status for connected services"""
-    try:
-        # Check permissions
-        if not check_permission("entry.view_status", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        if exists:
+            value = redis_client.get(redis_key)
+            ttl = redis_client.ttl(redis_key)
+            tenant_id, user_id = value.split(":")
             
-            # Get pending events count
-            events_query = text("""
-                SELECT COUNT(*) FROM outbox_events
-                WHERE tenant_id = :tenant_id AND status = 'pending'
-            """)
-            pending_events = await db.execute(events_query, {"tenant_id": user_context["tenant_id"]})
-            pending_count = pending_events.scalar() or 0
-            
-            # Get active providers
-            providers_query = text("""
-                SELECT name, active FROM zeroque_rails
-                WHERE tenant_id = :tenant_id AND type = 'entry'
-            """)
-            providers_result = await db.execute(providers_query, {"tenant_id": user_context["tenant_id"]})
-            providers = [{"name": row[0], "active": row[1]} for row in providers_result]
-        
-    return {
-            "ok": True,
-            "service": SERVICE_NAME,
-            "version": "4.1.0",
-            "integrations": {
-                "provisioning": {"connected": True, "events_handled": ["USER_CREATED"]},
-                "access": {"connected": True, "events_published": ["ENTRY_GRANTED"]},
-                "orders": {"connected": True, "events_published": ["ENTRY_VALIDATED"]},
-                "notifications": {"connected": True, "events_published": ["ENTRY_GRANTED"]}
-            },
-            "status": {
-                "pending_events": pending_count,
-                "active_providers": len([p for p in providers if p["active"]]),
-                "total_providers": len(providers)
+            return {
+                "exists": True,
+                "code": code,
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "ttl_seconds": ttl,
+                "status": "active"
             }
-        }
+        else:
+            # Check DB
+            with SessionLocal() as db:
+                result = db.execute(
+                    text("SELECT tenant_id, user_id, status FROM entry_codes_new WHERE code = :code"),
+                    {"code": code}
+                ).first()
+                
+                if result:
+                    return {
+                        "exists": True,
+                        "code": code,
+                        "tenant_id": result[0],
+                        "user_id": result[1],
+                        "status": result[2]
+                    }
         
+        return {"exists": False, "code": code}
+    
     except Exception as e:
-        logger.error(f"Failed to get integration status: {str(e)}")
+        logger.error("Status check failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 # =============================================================================
-# LEGACY ENDPOINTS (DEPRECATED)
+# CELERY TASKS
 # =============================================================================
 
-@app.post("/entry/issue-code", deprecated=True)
-async def issue_code_legacy(
-    payload: IssueCodePayload,
-    request: Request,
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Legacy endpoint - redirects to V4"""
-    logger.warning(f"Legacy endpoint /entry/issue-code called, redirecting to V4")
-    return await issue_code_v4(payload, request, BackgroundTasks(), user_context)
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_expired_entry_codes(self):
+    """Clean up expired entry codes"""
+    try:
+        with SessionLocal() as db:
+            # Clean up expired codes from database
+            result = db.execute(text("""
+                DELETE FROM entry_codes_new 
+                WHERE expires_at < NOW() AND status = 'active'
+            """))
+            
+            db.commit()
+            
+            # Clean up expired codes from Redis
+            expired_keys = []
+            for key in redis_client.scan_iter(match="entry_code:*"):
+                ttl = redis_client.ttl(key)
+                if ttl == -1:  # Key exists but no TTL set
+                    redis_client.delete(key)
+                    expired_keys.append(key)
+                elif ttl == -2:  # Key doesn't exist
+                    expired_keys.append(key)
+            
+            logger.info(f"Cleaned up {result.rowcount} expired entry codes from DB and {len(expired_keys)} from Redis")
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup expired entry codes: {e}")
+        raise self.retry(exc=e, countdown=300)
 
-@app.post("/entry/validate-code", deprecated=True)
-async def validate_code_legacy(
-    payload: ValidateCodePayload,
-    request: Request,
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Legacy endpoint - redirects to V4"""
-    logger.warning(f"Legacy endpoint /entry/validate-code called, redirecting to V4")
-    return await validate_code_v4(payload, request, user_context)
+@celery_app.task(bind=True, max_retries=3)
+def process_entry_granted(self, tenant_id: str, user_id: str, code: str):
+    """Process entry granted event"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process entry granted logic here
+            logger.info(f"Processing entry granted for tenant {tenant_id}, user {user_id}, code {code}")
+            
+            # Update metrics
+            entry_operations_total.labels(operation="granted", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process entry granted: {e}")
+        entry_operations_total.labels(operation="granted", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
 
-@app.get("/entry/status", deprecated=True)
-async def entry_status_legacy(
-    code: str = Query(...),
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
-    """Legacy endpoint - redirects to V4"""
-    logger.warning(f"Legacy endpoint /entry/status called, redirecting to V4")
-    return await entry_status_v4(code, user_context)
+@celery_app.task(bind=True, max_retries=3)
+def process_entry_denied(self, tenant_id: str, user_id: str, code: str, reason: str):
+    """Process entry denied event"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process entry denied logic here
+            logger.info(f"Processing entry denied for tenant {tenant_id}, user {user_id}, code {code}, reason {reason}")
+            
+            # Update metrics
+            entry_operations_total.labels(operation="denied", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process entry denied: {e}")
+        entry_operations_total.labels(operation="denied", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
 
 # =============================================================================
-# MAIN
+# MAIN EXECUTION
 # =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION}")
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8218")))
     uvicorn.run(
-        "services.entry.main:app",
+        "main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8084")),
-        reload=os.getenv("ENVIRONMENT") == "development"
+        port=port,
+        reload=ENVIRONMENT == "development"
     )

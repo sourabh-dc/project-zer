@@ -1,0 +1,196 @@
+{
+  "rabbit_version": "3.12.0",
+  "rabbitmq_version": "3.12.0",
+  "product_name": "RabbitMQ",
+  "product_version": "3.12.0",
+  "users": [
+    {
+      "name": "zeroque",
+      "password_hash": "$2b$10$N9qo8uLOickgx2ZMRZoMye.IjdQwCzOQj5Y1eF3q9F3q9F3q9F3q9",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    },
+    {
+      "name": "zeroque_services",
+      "password_hash": "$2b$10$N9qo8uLOickgx2ZMRZoMye.IjdQwCzOQj5Y1eF3q9F3q9F3q9F3q9",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "management"
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/zeroque"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "zeroque",
+      "vhost": "/zeroque",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "zeroque_services",
+      "vhost": "/zeroque",
+      "configure": "zeroque_events.*",
+      "write": "zeroque_events.*",
+      "read": "zeroque_events.*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "zeroque_events",
+      "vhost": "/zeroque",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "zeroque_dlx",
+      "vhost": "/zeroque",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "orders.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "identity.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "ledger.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "payments.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "approvals.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "notifications.events",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 3600000,
+        "x-max-length": 10000,
+        "x-dead-letter-exchange": "zeroque_dlx"
+      }
+    },
+    {
+      "name": "dead_letter_queue",
+      "vhost": "/zeroque",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "orders.events",
+      "destination_type": "queue",
+      "routing_key": "order.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "identity.events",
+      "destination_type": "queue",
+      "routing_key": "user.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "ledger.events",
+      "destination_type": "queue",
+      "routing_key": "ledger.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "payments.events",
+      "destination_type": "queue",
+      "routing_key": "payment.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "approvals.events",
+      "destination_type": "queue",
+      "routing_key": "approval.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_events",
+      "vhost": "/zeroque",
+      "destination": "notifications.events",
+      "destination_type": "queue",
+      "routing_key": "notification.*",
+      "arguments": {}
+    },
+    {
+      "source": "zeroque_dlx",
+      "vhost": "/zeroque",
+      "destination": "dead_letter_queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}
+
+

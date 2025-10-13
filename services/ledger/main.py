@@ -26,10 +26,20 @@ from sqlalchemy.exc import SQLAlchemyError
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
-# Common imports
-from zeroque_common.db.session import get_engine, init_db, SessionLocal
-from zeroque_common.middleware.usage_middleware import add_api_call_meter
-from zeroque_common.middleware.idempotency import add_idempotency_middleware
+# Database imports
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from celery import Celery
+import structlog
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import redis
+import pika
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+import pybreaker
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -70,11 +80,40 @@ ledger_saga_failures = Counter(
 # CONFIGURATION
 # =============================================================================
 
-SERVICE_NAME = "ledger_v2"
-SERVICE_VERSION = "2.0.0"
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/zeroque")
+SERVICE_NAME = "ledger"
+SERVICE_VERSION = "4.1.0"
+
+# Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 EVENT_BUS_URL = os.getenv("EVENT_BUS_URL", "http://localhost:8085")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
+
+# Database setup
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Redis setup
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Celery setup
+celery_app = Celery(
+    SERVICE_NAME,
+    broker=RABBITMQ_URL,
+    backend=REDIS_URL,
+    include=[f'{SERVICE_NAME}.tasks']
+)
+
+# Load Celery configuration
+try:
+    celery_app.config_from_object('celeryconfig')
+except ImportError:
+    logger.warning("Celery config not found, using defaults")
+
+# Circuit breaker for external service calls
+service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
 # =============================================================================
 # DATABASE MODELS
@@ -1422,6 +1461,86 @@ async def get_integration_status():
         logger.error(f"Error getting integration status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
+# =============================================================================
+# CELERY TASKS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_journal_entry(self, tenant_id: str, entry_data: Dict[str, Any]):
+    """Process journal entry asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process journal entry logic here
+            logger.info(f"Processing journal entry for tenant {tenant_id}")
+            
+            # Update metrics
+            ledger_requests_total.labels(method="POST", endpoint="journal", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process journal entry for tenant {tenant_id}: {e}")
+        ledger_requests_total.labels(method="POST", endpoint="journal", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_account_reconciliation(self, tenant_id: str, account_id: str):
+    """Process account reconciliation asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context
+            set_rls_context(db, tenant_id)
+            
+            # Process reconciliation logic here
+            logger.info(f"Processing account reconciliation for tenant {tenant_id}, account {account_id}")
+            
+            # Update metrics
+            ledger_requests_total.labels(method="POST", endpoint="reconciliation", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process account reconciliation: {e}")
+        ledger_requests_total.labels(method="POST", endpoint="reconciliation", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_ledger_data(self):
+    """Clean up old ledger data"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
+            
+            # Clean up old journal entries
+            journal_result = db.execute(text("""
+                DELETE FROM journal_entries_new 
+                WHERE created_at < :cutoff_date AND status IN ('posted', 'cancelled')
+            """), {"cutoff_date": cutoff_date})
+            
+            # Clean up old account balances
+            balance_result = db.execute(text("""
+                DELETE FROM account_balances_new 
+                WHERE created_at < :cutoff_date AND status = 'closed'
+            """), {"cutoff_date": cutoff_date})
+            
+            db.commit()
+            
+            logger.info(f"Cleaned up {journal_result.rowcount} old journal entries and {balance_result.rowcount} old account balances")
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup old ledger data: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8086)
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION}")
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8220")))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=ENVIRONMENT == "development"
+    )

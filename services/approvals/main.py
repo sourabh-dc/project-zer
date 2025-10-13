@@ -1,34 +1,80 @@
-# services/approvals/main.py - ZeroQue Approvals Service V2
-# Step-by-step implementation with database integration
+# services/approvals/main.py - ZeroQue Approvals Service V4.1
+# Production-ready approvals service with Celery, RabbitMQ, and comprehensive features
 
-from fastapi import FastAPI, HTTPException, Body, Query
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Integer, BigInteger, Text, func, UUID, text, ForeignKey
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
-import logging, os, uuid, json, asyncio, hashlib, secrets, time
+import os
+import uuid
+import time
+import json
+import asyncio
 from datetime import datetime, timezone, timedelta
-from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
-import httpx
-from fastapi import HTTPException, Depends, Header, Query, Request, Response
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-import jwt
-from pydantic import BaseModel, Field, validator
-import redis
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func, BigInteger
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from celery import Celery
 import structlog
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+import redis
+import pika
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+import pybreaker
+import jwt
 
-# Production Configuration
+# =============================================================================
+# CONFIGURATION & LOGGING
+# =============================================================================
+
+SERVICE_NAME = "approvals"
+SERVICE_VERSION = "4.1.0"
+
+# Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", "3600"))  # 1 hour
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-SERVICE_NAME = "approvals-service"
-SERVICE_VERSION = "2.0.0"
+REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", "300"))
+
+# Database setup
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Redis setup
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Celery setup
+celery_app = Celery(
+    SERVICE_NAME,
+    broker=RABBITMQ_URL,
+    backend=REDIS_URL,
+    include=[f'{SERVICE_NAME}.tasks']
+)
+
+# Load Celery configuration
+try:
+    celery_app.config_from_object('celeryconfig')
+except ImportError:
+    pass
+
+# Prometheus metrics
+approval_requests_total = Counter('approval_requests_total', 'Total approval requests', ['operation', 'status'])
+approval_request_duration = Histogram('approval_request_duration_seconds', 'Approval request duration', ['operation'])
+active_approvals = Gauge('active_approvals_total', 'Total active approvals', ['tenant_id'])
+
+# Circuit breaker for external service calls
+service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
 # Configure structured logging
 structlog.configure(
@@ -50,6 +96,8 @@ structlog.configure(
 )
 
 log = structlog.get_logger()
+# Alias to avoid NameError where 'logger' is used below
+logger = log
 
 # Clear registry to avoid duplicate metrics on reload
 try:
@@ -201,7 +249,7 @@ class RateLimitExceeded(Exception):
     pass
 
 # Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5000/zeroque_dev")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -1995,8 +2043,74 @@ async def get_integration_status():
         logger.error(f"Error getting integration status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
-# Main execution
+# =============================================================================
+# CELERY TASKS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_approval_request(self, approval_id: str):
+    """Process approval request asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Get approval request
+            approval = db.execute(text("""
+                SELECT * FROM approval_requests_new WHERE id = :id
+            """), {"id": approval_id}).fetchone()
+            
+            if not approval:
+                raise ValueError(f"Approval request {approval_id} not found")
+            
+            # Process approval logic here
+            logger.info(f"Processing approval request {approval_id}")
+            
+            # Update status
+            db.execute(text("""
+                UPDATE approval_requests_new 
+                SET status = 'processed', updated_at = NOW()
+                WHERE id = :id
+            """), {"id": approval_id})
+            
+            db.commit()
+            
+            # Update metrics
+            approval_requests_total.labels(operation="process", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process approval request {approval_id}: {e}")
+        approval_requests_total.labels(operation="process", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_approvals(self):
+    """Clean up old approval requests"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+            
+            result = db.execute(text("""
+                DELETE FROM approval_requests_new 
+                WHERE created_at < :cutoff_date AND status IN ('approved', 'rejected')
+            """), {"cutoff_date": cutoff_date})
+            
+            db.commit()
+            
+            logger.info(f"Cleaned up {result.rowcount} old approval requests")
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup old approvals: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
     import uvicorn
-    print("Starting Approvals Service V2...")
-    uvicorn.run(app, host="0.0.0.0", port=8213)
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION}")
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8213")))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=ENVIRONMENT == "development"
+    )

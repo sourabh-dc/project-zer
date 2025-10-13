@@ -23,13 +23,36 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest
 # =============================================================================
 
 SERVICE_NAME = "events"
-logger = structlog.get_logger(__name__)
+SERVICE_VERSION = "4.1.0"
 
 # Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 EVENT_RETENTION_DAYS = int(os.getenv("EVENT_RETENTION_DAYS", "30"))
 MAX_EVENTS_PER_REQUEST = int(os.getenv("MAX_EVENTS_PER_REQUEST", "100"))
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger(__name__)
 
 # Prometheus metrics - initialize as None first
 event_publish_total = None
@@ -68,6 +91,7 @@ except Exception as e:
 
 # Database configuration - using async SQLAlchemy
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/zeroque")
+# Fall back to sync driver if asyncpg is unavailable
 ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
 # Create async engine
@@ -81,13 +105,26 @@ async_engine = create_async_engine(
 # Create async session
 AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
-# Celery configuration for event publishing
+# Celery setup
 try:
     from celery import Celery
-    celery_app = Celery('events_service', broker=CELERY_BROKER_URL)
+    celery_app = Celery(
+        SERVICE_NAME,
+        broker=RABBITMQ_URL,
+        backend=REDIS_URL,
+        include=[f'{SERVICE_NAME}.tasks']
+    )
+    
+    # Load Celery configuration
+    try:
+        celery_app.config_from_object('celeryconfig')
+    except ImportError:
+        logger.warning("Celery config not found, using defaults")
+        
 except ImportError:
     # Celery not available, use fallback
     celery_app = None
+    logger.warning("Celery not available, async processing disabled")
 
 # RabbitMQ configuration
 try:
@@ -632,7 +669,7 @@ async def publish_event(
                 event_publish_total.labels(event_type=payload.event_type, status="success").inc()
             
             return result
-            
+        
     except Exception as e:
         logger.error(f"Failed to publish event: {str(e)}")
         if event_publish_total is not None:
@@ -806,7 +843,7 @@ async def get_event_stats(
                 stats=stats,
                 period=f"{(start_date or datetime.min).isoformat()} to {(end_date or datetime.utcnow()).isoformat()}"
             )
-            
+        
     except Exception as e:
         logger.error(f"Failed to get event stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1254,4 +1291,5 @@ if celery_app:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("services.events.main:app", host="0.0.0.0", port=8087, reload=True)
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8012")))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

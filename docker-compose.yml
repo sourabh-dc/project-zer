@@ -1,432 +1,673 @@
-version: "3.9"
+version: "3.8"
 
 services:
   # ===== Infrastructure Services =====
-  postgres:
-    image: postgres:15
-    container_name: zeroque_pg
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: zeroque
-      POSTGRES_PASSWORD: zeroque
-      POSTGRES_DB: zeroque_dev
+
+  # Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: zeroque-rabbitmq
     ports:
-      - "5000:5432"
+      - "5672:5672" # AMQP port
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: zeroque
+      RABBITMQ_DEFAULT_PASS: zeroque_prod_2024
+      RABBITMQ_DEFAULT_VHOST: /zeroque
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zeroque"]
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
       timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Production Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: zeroque-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: zeroque_prod
+      POSTGRES_USER: zeroque
+      POSTGRES_PASSWORD: zeroque_prod_2024_secure
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeroque -d zeroque_prod"]
+      interval: 30s
+      timeout: 10s
       retries: 5
 
+  # Redis for Caching
   redis:
-    image: redis:7
-    container_name: zeroque_redis
-    restart: unless-stopped
+    image: redis:7-alpine
+    container_name: zeroque-redis
     ports:
-      - "4000:6379"
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
 
-  # ===== Microservices =====
-  provisioning:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: provisioning
-    container_name: zeroque_provisioning
-    restart: unless-stopped
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: zeroque-prometheus
     ports:
-      - "8201:8201"
-    environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8201
-      - V2=true
-      - USE_V2_SCHEMA=true
-      - MULTI_TENANT_ENABLED=true
-      - VENDOR_MARKETPLACE_ENABLED=true
-    command:
-      [
-        "uvicorn",
-        "services.provisioning.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8201",
-      ]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8201/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  catalog:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: catalog
-    container_name: zeroque_catalog
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - zeroque-network
     restart: unless-stopped
-    ports:
-      - "8202:8202"
-    environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8202
     command:
-      [
-        "uvicorn",
-        "services.catalog.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8202",
-      ]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8202/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
 
-  entry:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: entry
-    container_name: zeroque_entry
+  grafana:
+    image: grafana/grafana:latest
+    container_name: zeroque-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: zeroque_admin_2024
+      GF_USERS_ALLOW_SIGN_UP: false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - zeroque-network
     restart: unless-stopped
-    ports:
-      - "8204:8204"
-    environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8204
-    command:
-      [
-        "uvicorn",
-        "services.entry.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8204",
-      ]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8204/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
-  identity:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: identity
-    container_name: zeroque_identity
-    restart: unless-stopped
-    ports:
-      - "8210:8210"
-    environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8210
-    command:
-      [
-        "uvicorn",
-        "services.identity.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8210",
-      ]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8210/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+  # Load Balancer (disabled for local compose; service configs not present)
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: zeroque-nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf
+  #     - ./config/nginx/ssl:/etc/nginx/ssl
+  #     - ./logs/nginx:/var/log/nginx
+  #   networks:
+  #     - zeroque-network
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - rabbitmq
+  #     - postgres
+  #     - redis
 
+  # ===== Core Microservices =====
+
+  # Orders Service
   orders:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: orders
-    container_name: zeroque_orders
-    restart: unless-stopped
+    container_name: zeroque-orders
     ports:
-      - "8203:8203"
+      - "8080:8080"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8203
-      - V2=true
-      - USE_V2_SCHEMA=true
-      - MULTI_TENANT_ENABLED=true
-      - VENDOR_MARKETPLACE_ENABLED=true
-      - PAYMENTS_BASE=http://localhost:8216
-      - PRICING_BASE=http://pricing:8209
-      - INVENTORY_BASE=http://localhost:8202
-    command:
-      [
-        "uvicorn",
-        "services.orders.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8203",
-      ]
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/
+      - PORT=8080
+      - SERVICE_NAME=orders
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      pricing:
+      rabbitmq:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8203/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    command: ["python", "-m", "services.orders.main"]
 
-  billing:
+  # Identity Service
+  identity:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: billing
-    container_name: zeroque_billing
-    restart: unless-stopped
+    container_name: zeroque-identity
     ports:
-      - "8083:8083"
+      - "8085:8085"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8083
-      - ENVIRONMENT=production
-    command:
-      [
-        "uvicorn",
-        "services.billing.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8083",
-      ]
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8085
+      - SERVICE_NAME=identity
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.identity.main"]
 
+  # Ledger Service
+  ledger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-ledger
+    ports:
+      - "8086:8086"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8086
+      - SERVICE_NAME=ledger
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.ledger.main"]
+
+  # Payments Service
+  payments:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-payments
+    ports:
+      - "8087:8087"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8087
+      - SERVICE_NAME=payments
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.payments.main"]
+
+  # Events Service
+  events:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-events
+    ports:
+      - "8088:8088"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8088
+      - SERVICE_NAME=events
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.events.main"]
+
+  # CV Gateway Service
+  cv-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-cv-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8000
+      - SERVICE_NAME=cv-gateway
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.cv_gateway.main"]
+
+  # CV Connector Service
+  cv-connector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-cv-connector
+    ports:
+      - "8100:8100"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8100
+      - SERVICE_NAME=cv-connector
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.cv_connector.main"]
+
+  # Approvals Service
   approvals:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: approvals
-    container_name: zeroque_approvals
-    restart: unless-stopped
+    container_name: zeroque-approvals
     ports:
       - "8213:8213"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
       - PORT=8213
-      - ENVIRONMENT=production
-    command:
-      [
-        "uvicorn",
-        "services.approvals.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8213",
-      ]
+      - SERVICE_NAME=approvals
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8213/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.approvals.main"]
 
+  # Entitlements Service
   entitlements:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: entitlements
-    container_name: zeroque_entitlements
-    restart: unless-stopped
+    container_name: zeroque-entitlements
     ports:
-      - "8215:8215"
+      - "8211:8211"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8215
-      - ENVIRONMENT=production
-    command:
-      [
-        "uvicorn",
-        "services.entitlements.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8215",
-      ]
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8211
+      - SERVICE_NAME=entitlements
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8215/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.entitlements.main"]
 
+  # Subscriptions Service
   subscriptions:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: subscriptions
-    container_name: zeroque_subscriptions
-    restart: unless-stopped
+    container_name: zeroque-subscriptions
     ports:
-      - "8216:8216"
+      - "8212:8212"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8216
-      - ENVIRONMENT=production
-    command:
-      [
-        "uvicorn",
-        "services.subscriptions.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8216",
-      ]
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8212
+      - SERVICE_NAME=subscriptions
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8216/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.subscriptions.main"]
 
-  pricing:
+  # Notifications Service
+  notifications:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: pricing
-    container_name: zeroque_pricing
-    restart: unless-stopped
+    container_name: zeroque-notifications
     ports:
-      - "8209:8209"
+      - "8300:8300"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://zeroque:zeroque@postgres:5432/zeroque_dev
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
-      - PORT=8209
-      - V2=true
-      - USE_V2_SCHEMA=true
-      - MULTI_TENANT_ENABLED=true
-      - VENDOR_MARKETPLACE_ENABLED=true
-    command:
-      [
-        "uvicorn",
-        "services.pricing.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8209",
-      ]
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8300
+      - SERVICE_NAME=notifications
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8209/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.notifications.main"]
 
-  # ===== Demo Application V2 =====
-  streamlit-demo-v2:
+  # Reports Service
+  reports:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: streamlit
-    container_name: zeroque_streamlit_v2
-    restart: unless-stopped
+    container_name: zeroque-reports
     ports:
-      - "8501:8501"
+      - "8400:8400"
     environment:
-      - PROVISIONING_BASE=http://provisioning:8201
-      - ORDERS_BASE=http://orders:8203
-      - PRICING_BASE=http://pricing:8209
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8400
+      - SERVICE_NAME=reports
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.reports.main"]
+
+  # Usage Service
+  usage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-usage
+    ports:
+      - "8200:8200"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8200
+      - SERVICE_NAME=usage
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.usage.main"]
+
+  # Observability Service
+  observability:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-observability
+    ports:
+      - "8600:8600"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8600
+      - SERVICE_NAME=observability
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.observability.main"]
+
+  # Service Registry
+  service-registry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-service-registry
+    ports:
+      - "8500:8500"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8500
+      - SERVICE_NAME=service-registry
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.service_registry.main"]
+
+  # Provisioning Service (for E2E testing)
+  provisioning:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-provisioning
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/
+      - SERVICE_PORT=8000
+      - SERVICE_NAME=provisioning
+      - ALLOW_DEMO=true
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    command: ["python", "-m", "services.provisioning.main"]
+
+  # Monitoring Service
+  monitoring:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-monitoring
+    ports:
+      - "8700:8700"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8700
+      - SERVICE_NAME=monitoring
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.monitoring.main"]
+
+  # ===== Celery Workers =====
+
+  # Event Processing Worker
+  celery-events:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-celery-events
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
     command:
       [
-        "streamlit",
-        "run",
-        "demo/streamlit_e2e_v2.py",
-        "--server.port",
-        "8501",
-        "--server.address",
-        "0.0.0.0",
+        "celery",
+        "-A",
+        "services.events.main:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=4",
+        "--queues=events",
       ]
+    networks:
+      - zeroque-network
+    restart: unless-stopped
     depends_on:
-      provisioning:
+      postgres:
         condition: service_healthy
-      orders:
+      redis:
         condition: service_healthy
-      pricing:
+      rabbitmq:
+        condition: service_healthy
+
+  # Order Processing Worker
+  celery-orders:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-celery-orders
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+    command:
+      [
+        "celery",
+        "-A",
+        "services.orders.main:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=4",
+        "--queues=orders",
+      ]
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Notification Worker
+  celery-notifications:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-celery-notifications
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+    command:
+      [
+        "celery",
+        "-A",
+        "services.notifications.main:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=2",
+        "--queues=notifications",
+      ]
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
 volumes:
-  pgdata:
+  rabbitmq_data:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  zeroque-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

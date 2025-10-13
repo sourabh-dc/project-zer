@@ -1,0 +1,446 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zeroque-ingress
+  namespace: zeroque
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+    - hosts:
+        - api.zeroque.com
+        - provisioning.zeroque.com
+        - orders.zeroque.com
+        - payments.zeroque.com
+        - pricing.zeroque.com
+        - billing.zeroque.com
+        - notifications.zeroque.com
+        - catalog.zeroque.com
+        - subscriptions.zeroque.com
+        - entitlements.zeroque.com
+        - ledger.zeroque.com
+        - monitoring.zeroque.com
+        - observability.zeroque.com
+        - reports.zeroque.com
+        - usage.zeroque.com
+        - identity.zeroque.com
+        - approvals.zeroque.com
+        - cv-connector.zeroque.com
+        - cv-gateway.zeroque.com
+        - entry.zeroque.com
+        - events.zeroque.com
+        - service-registry.zeroque.com
+      secretName: zeroque-tls-secret
+  rules:
+    # Provisioning Service
+    - host: provisioning.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: provisioning-service
+                port:
+                  number: 8000
+
+    # Orders Service
+    - host: orders.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orders-service
+                port:
+                  number: 8224
+
+    # Payments Service
+    - host: payments.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: payments-service
+                port:
+                  number: 8225
+
+    # Pricing Service
+    - host: pricing.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pricing-service
+                port:
+                  number: 8226
+
+    # Billing Service
+    - host: billing.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service
+                port:
+                  number: 8214
+
+    # Notifications Service
+    - host: notifications.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: notifications-service
+                port:
+                  number: 8222
+
+    # Catalog Service
+    - host: catalog.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-service
+                port:
+                  number: 8215
+
+    # Subscriptions Service
+    - host: subscriptions.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: subscriptions-service
+                port:
+                  number: 8010
+
+    # Entitlements Service
+    - host: entitlements.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: entitlements-service
+                port:
+                  number: 8011
+
+    # Ledger Service
+    - host: ledger.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-service
+                port:
+                  number: 8220
+
+    # Monitoring Service
+    - host: monitoring.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-service
+                port:
+                  number: 8221
+
+    # Observability Service
+    - host: observability.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: observability-service
+                port:
+                  number: 8223
+
+    # Reports Service
+    - host: reports.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: reports-service
+                port:
+                  number: 8227
+
+    # Usage Service
+    - host: usage.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: usage-service
+                port:
+                  number: 8218
+
+    # Identity Service
+    - host: identity.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: identity-service
+                port:
+                  number: 8219
+
+    # Approvals Service
+    - host: approvals.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: approvals-service
+                port:
+                  number: 8213
+
+    # CV Connector Service
+    - host: cv-connector.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cv-connector-service
+                port:
+                  number: 8216
+
+    # CV Gateway Service
+    - host: cv-gateway.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cv-gateway-service
+                port:
+                  number: 8217
+
+    # Entry Service
+    - host: entry.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: entry-service
+                port:
+                  number: 8218
+
+    # Events Service
+    - host: events.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: events-service
+                port:
+                  number: 8212
+
+    # Service Registry
+    - host: service-registry.zeroque.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: service-registry-service
+                port:
+                  number: 8211
+
+    # API Gateway (if using)
+    - host: api.zeroque.com
+      http:
+        paths:
+          - path: /provisioning
+            pathType: Prefix
+            backend:
+              service:
+                name: provisioning-service
+                port:
+                  number: 8000
+          - path: /orders
+            pathType: Prefix
+            backend:
+              service:
+                name: orders-service
+                port:
+                  number: 8224
+          - path: /payments
+            pathType: Prefix
+            backend:
+              service:
+                name: payments-service
+                port:
+                  number: 8225
+          - path: /pricing
+            pathType: Prefix
+            backend:
+              service:
+                name: pricing-service
+                port:
+                  number: 8226
+          - path: /billing
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service
+                port:
+                  number: 8214
+          - path: /notifications
+            pathType: Prefix
+            backend:
+              service:
+                name: notifications-service
+                port:
+                  number: 8222
+          - path: /catalog
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-service
+                port:
+                  number: 8215
+          - path: /subscriptions
+            pathType: Prefix
+            backend:
+              service:
+                name: subscriptions-service
+                port:
+                  number: 8010
+          - path: /entitlements
+            pathType: Prefix
+            backend:
+              service:
+                name: entitlements-service
+                port:
+                  number: 8011
+          - path: /ledger
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-service
+                port:
+                  number: 8220
+          - path: /monitoring
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-service
+                port:
+                  number: 8221
+          - path: /observability
+            pathType: Prefix
+            backend:
+              service:
+                name: observability-service
+                port:
+                  number: 8223
+          - path: /reports
+            pathType: Prefix
+            backend:
+              service:
+                name: reports-service
+                port:
+                  number: 8227
+          - path: /usage
+            pathType: Prefix
+            backend:
+              service:
+                name: usage-service
+                port:
+                  number: 8218
+          - path: /identity
+            pathType: Prefix
+            backend:
+              service:
+                name: identity-service
+                port:
+                  number: 8219
+          - path: /approvals
+            pathType: Prefix
+            backend:
+              service:
+                name: approvals-service
+                port:
+                  number: 8213
+          - path: /cv-connector
+            pathType: Prefix
+            backend:
+              service:
+                name: cv-connector-service
+                port:
+                  number: 8216
+          - path: /cv-gateway
+            pathType: Prefix
+            backend:
+              service:
+                name: cv-gateway-service
+                port:
+                  number: 8217
+          - path: /entry
+            pathType: Prefix
+            backend:
+              service:
+                name: entry-service
+                port:
+                  number: 8218
+          - path: /events
+            pathType: Prefix
+            backend:
+              service:
+                name: events-service
+                port:
+                  number: 8212
+          - path: /service-registry
+            pathType: Prefix
+            backend:
+              service:
+                name: service-registry-service
+                port:
+                  number: 8211
+

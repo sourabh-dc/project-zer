@@ -1,0 +1,326 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: zeroque-monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'zeroque-production'
+        environment: 'production'
+
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager-service:9093
+
+    scrape_configs:
+      # Prometheus itself
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # ZeroQue Services
+      - job_name: 'zeroque-services'
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - zeroque
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: '.*-service'
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: 'metrics'
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_service_name]
+            target_label: service
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # Kubernetes API Server
+      - job_name: 'kubernetes-apiserver'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      # Kubernetes Nodes
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # Kubernetes Pods
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+
+      # PostgreSQL
+      - job_name: 'postgresql'
+        static_configs:
+          - targets: ['postgresql-service:5432']
+
+      # Redis
+      - job_name: 'redis'
+        static_configs:
+          - targets: ['redis-service:6379']
+
+      # RabbitMQ
+      - job_name: 'rabbitmq'
+        static_configs:
+          - targets: ['rabbitmq-service:15692']
+
+      # Node Exporter
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: 'node-exporter'
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: 'http-metrics'
+
+      # cAdvisor
+      - job_name: 'cadvisor'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: zeroque-monitoring
+data:
+  zeroque-alerts.yml: |
+    groups:
+      - name: zeroque-services
+        rules:
+          # Service Down Alert
+          - alert: ZeroQueServiceDown
+            expr: up{job="zeroque-services"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "ZeroQue service {{ $labels.service }} is down"
+              description: "ZeroQue service {{ $labels.service }} in namespace {{ $labels.namespace }} has been down for more than 1 minute."
+          
+          # High Error Rate
+          - alert: ZeroQueHighErrorRate
+            expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High error rate for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has error rate above 10% for more than 2 minutes."
+          
+          # High Response Time
+          - alert: ZeroQueHighResponseTime
+            expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+            for: 3m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High response time for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has 95th percentile response time above 1 second for more than 3 minutes."
+          
+          # High Memory Usage
+          - alert: ZeroQueHighMemoryUsage
+            expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High memory usage for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has memory usage above 80% for more than 5 minutes."
+          
+          # High CPU Usage
+          - alert: ZeroQueHighCPUUsage
+            expr: (rate(container_cpu_usage_seconds_total[5m]) / container_spec_cpu_quota) > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU usage for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has CPU usage above 80% for more than 5 minutes."
+          
+          # Database Connection Issues
+          - alert: ZeroQueDatabaseConnectionIssues
+            expr: increase(database_connection_errors_total[5m]) > 10
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Database connection issues for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has more than 10 database connection errors in the last 5 minutes."
+          
+          # RabbitMQ Connection Issues
+          - alert: ZeroQueRabbitMQConnectionIssues
+            expr: increase(rabbitmq_connection_errors_total[5m]) > 5
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "RabbitMQ connection issues for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has more than 5 RabbitMQ connection errors in the last 5 minutes."
+          
+          # Redis Connection Issues
+          - alert: ZeroQueRedisConnectionIssues
+            expr: increase(redis_connection_errors_total[5m]) > 5
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Redis connection issues for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has more than 5 Redis connection errors in the last 5 minutes."
+          
+          # Celery Task Failures
+          - alert: ZeroQueCeleryTaskFailures
+            expr: increase(celery_task_failures_total[5m]) > 10
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High Celery task failure rate for ZeroQue service {{ $labels.service }}"
+              description: "ZeroQue service {{ $labels.service }} has more than 10 Celery task failures in the last 5 minutes."
+          
+          # Circuit Breaker Open
+          - alert: ZeroQueCircuitBreakerOpen
+            expr: circuit_breaker_state == 1
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "Circuit breaker open for ZeroQue service {{ $labels.service }}"
+              description: "Circuit breaker is open for ZeroQue service {{ $labels.service }} for more than 30 seconds."
+      
+      - name: kubernetes-cluster
+        rules:
+          # Node Down
+          - alert: KubernetesNodeDown
+            expr: up{job="kubernetes-nodes"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Kubernetes node {{ $labels.instance }} is down"
+              description: "Kubernetes node {{ $labels.instance }} has been down for more than 1 minute."
+          
+          # Pod CrashLoopBackOff
+          - alert: KubernetesPodCrashLoopBackOff
+            expr: kube_pod_status_phase{phase="Running"} == 0 and kube_pod_status_phase{phase="Failed"} == 1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.pod }} is in CrashLoopBackOff"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in CrashLoopBackOff for more than 5 minutes."
+          
+          # High Pod Restart Rate
+          - alert: KubernetesHighPodRestartRate
+            expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High restart rate for pod {{ $labels.pod }}"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restart rate above 0.1 per second for more than 5 minutes."
+      
+      - name: infrastructure
+        rules:
+          # Disk Space Low
+          - alert: DiskSpaceLow
+            expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Disk space low on node {{ $labels.instance }}"
+              description: "Disk space is below 10% on node {{ $labels.instance }} for more than 5 minutes."
+          
+          # Memory Pressure
+          - alert: MemoryPressure
+            expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Memory pressure on node {{ $labels.instance }}"
+              description: "Available memory is below 10% on node {{ $labels.instance }} for more than 5 minutes."
+          
+          # CPU Pressure
+          - alert: CPUPressure
+            expr: (1 - rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "CPU pressure on node {{ $labels.instance }}"
+              description: "CPU usage is above 90% on node {{ $labels.instance }} for more than 5 minutes."
+

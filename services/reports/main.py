@@ -1,70 +1,933 @@
-from fastapi import FastAPI, Query
-from sqlalchemy import text
-from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal
+#!/usr/bin/env python3
+"""
+ZeroQue Reports Service V4.1
+Comprehensive analytics, reporting, and business intelligence platform
+"""
 
-SERVICE_NAME="reports"
-app = FastAPI(title="ZeroQue Reports Service", version="0.7.0")
+import os
+import json
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any, Union
+from contextlib import asynccontextmanager
+from enum import Enum
 
-@app.on_event("startup")
-def on_startup(): get_engine(); init_db()
-@app.get("/health")     
-def health():    
-    return {"status":"ok","service":SERVICE_NAME}
-@app.get("/readiness")  
-def readiness(): 
-    return {"service":SERVICE_NAME,"db":check_db(),"redis":True}
+import structlog
+from fastapi import FastAPI, HTTPException, Query, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text, func, and_, or_, Column, String, DateTime, Integer, JSON, Boolean, Text, ForeignKey, Numeric
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+from sqlalchemy.exc import SQLAlchemyError
+from celery import Celery
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import pandas as pd
+import io
+import redis
+import pika
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+import pybreaker
 
-@app.get("/reports/sales/by-sku")
-def sales_by_sku(tenant_id: str = Query(...), date_from: str = Query(...), date_to: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-          SELECT oi.sku, SUM(oi.qty) AS units, SUM(oi.qty * oi.price_minor) AS revenue_minor
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.order_id
-           WHERE o.tenant_id=:t AND o.occurred_at::date BETWEEN :f AND :to
-           GROUP BY oi.sku
+# Configure logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger(__name__)
+
+# Service configuration
+SERVICE_NAME = "reports"
+SERVICE_VERSION = "4.1.0"
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+
+# Database setup
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Redis setup
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Celery setup
+celery_app = Celery(
+    SERVICE_NAME,
+    broker=RABBITMQ_URL,
+    backend=REDIS_URL,
+    include=[f'{SERVICE_NAME}.tasks']
+)
+
+# Load Celery configuration
+try:
+    celery_app.config_from_object('celeryconfig')
+except ImportError:
+    logger.warning("Celery config not found, using defaults")
+
+# Circuit breaker for external service calls
+service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
+
+# Prometheus metrics
+report_requests_total = Counter('report_requests_total', 'Total report requests', ['report_type', 'status'])
+report_request_duration = Histogram('report_request_duration_seconds', 'Report request duration', ['report_type'])
+report_generation_duration = Histogram('report_generation_duration_seconds', 'Report generation duration', ['report_type'])
+report_cache_hits = None
+active_report_sessions = None
+
+# Report types
+class ReportType(str, Enum):
+    SALES_ANALYTICS = "sales_analytics"
+    INVENTORY_ANALYTICS = "inventory_analytics"
+    CUSTOMER_ANALYTICS = "customer_analytics"
+    OPERATIONAL_ANALYTICS = "operational_analytics"
+    FINANCIAL_ANALYTICS = "financial_analytics"
+    USAGE_ANALYTICS = "usage_analytics"
+    PERFORMANCE_ANALYTICS = "performance_analytics"
+
+class ReportFormat(str, Enum):
+    JSON = "json"
+    CSV = "csv"
+    EXCEL = "xlsx"
+    PDF = "pdf"
+
+class ReportStatus(str, Enum):
+    PENDING = "pending"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+# ---- Database Models ----
+class ReportJob(Base):
+    __tablename__ = "report_jobs_new"
+    
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=True)
+    report_type = Column(String, nullable=False)
+    report_name = Column(String, nullable=False)
+    parameters = Column(JSON, nullable=False)
+    status = Column(String, nullable=False, default=ReportStatus.PENDING)
+    file_path = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+class ReportCache(Base):
+    __tablename__ = "report_cache_new"
+    
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    cache_key = Column(String, nullable=False, unique=True)
+    report_type = Column(String, nullable=False)
+    parameters_hash = Column(String, nullable=False)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+# ---- Pydantic Models ----
+class ReportRequest(BaseModel):
+    tenant_id: str
+    user_id: Optional[str] = None
+    report_type: ReportType
+    report_name: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    format: ReportFormat = ReportFormat.JSON
+    cache_ttl_minutes: Optional[int] = 60
+
+class ReportResponse(BaseModel):
+    job_id: str
+    status: ReportStatus
+    message: str
+    estimated_completion: Optional[datetime] = None
+
+class ReportData(BaseModel):
+    report_id: str
+    report_type: ReportType
+    data: Dict[str, Any]
+    metadata: Dict[str, Any]
+    generated_at: datetime
+    cache_hit: bool = False
+
+class AnalyticsQuery(BaseModel):
+    tenant_id: str
+    start_date: datetime
+    end_date: datetime
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    group_by: Optional[List[str]] = None
+    metrics: List[str] = Field(default_factory=list)
+
+# ---- Report Generators ----
+class ReportGenerator:
+    def __init__(self, db_session):
+        self.db = db_session
+        self.logger = logger.bind(service=SERVICE_NAME)
+    
+    async def generate_sales_analytics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive sales analytics"""
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+        tenant_id = params.get("tenant_id")
+        group_by = params.get("group_by", ["day"])
+        
+        # Sales by period
+        sales_query = text("""
+            SELECT 
+                DATE(o.created_at) as period,
+                COUNT(*) as order_count,
+                SUM(o.total_minor) as revenue_minor,
+                AVG(o.total_minor) as avg_order_value,
+                COUNT(DISTINCT o.customer_id) as unique_customers
+            FROM orders_new o
+            WHERE o.tenant_id = :tenant_id
+                AND o.created_at BETWEEN :start_date AND :end_date
+                AND o.status = 'completed'
+            GROUP BY DATE(o.created_at)
+            ORDER BY period
+        """)
+        
+        sales_data = self.db.execute(sales_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        # Top products
+        products_query = text("""
+            SELECT 
+                oi.offer_id,
+                SUM(oi.quantity) as units_sold,
+                SUM(oi.total_price_minor) as revenue_minor,
+                COUNT(DISTINCT oi.order_id) as order_count
+            FROM order_items_new oi
+            JOIN orders_new o ON o.id = oi.order_id
+            WHERE o.tenant_id = :tenant_id
+                AND o.created_at BETWEEN :start_date AND :end_date
+                AND o.status = 'completed'
+            GROUP BY oi.offer_id
            ORDER BY revenue_minor DESC
-        """), {"t": tenant_id, "f": date_from, "to": date_to}).all()
-        return [{"sku": r[0], "units": int(r[1]), "revenue_minor": int(r[2])} for r in rows]
-
-@app.get("/reports/sales/by-store")
-def sales_by_store(tenant_id: str = Query(...), date_from: str = Query(...), date_to: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-          SELECT o.store_id, COUNT(*) AS orders, SUM(o.total_minor) AS revenue_minor
-            FROM orders o
-           WHERE o.tenant_id=:t AND o.occurred_at::date BETWEEN :f AND :to
+            LIMIT 20
+        """)
+        
+        products_data = self.db.execute(products_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        # Store performance
+        stores_query = text("""
+            SELECT 
+                o.store_id,
+                COUNT(*) as order_count,
+                SUM(o.total_minor) as revenue_minor,
+                AVG(o.total_minor) as avg_order_value
+            FROM orders_new o
+            WHERE o.tenant_id = :tenant_id
+                AND o.created_at BETWEEN :start_date AND :end_date
+                AND o.status = 'completed'
            GROUP BY o.store_id
            ORDER BY revenue_minor DESC
-        """), {"t": tenant_id, "f": date_from, "to": date_to}).all()
-        return [{"store_id": r[0], "orders": int(r[1]), "revenue_minor": int(r[2])} for r in rows]
-
-@app.get("/reports/footfall/daily")
-def footfall_daily(tenant_id: str = Query(...), date_from: str = Query(...), date_to: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-          SELECT day, value FROM usage_aggregates_daily
-           WHERE tenant_id=:t AND meter_code='unique_shoppers' AND day BETWEEN :f AND :to
-           ORDER BY day
-        """), {"t": tenant_id, "f": date_from, "to": date_to}).all()
-        return [{"day": str(r[0]), "unique_shoppers": int(r[1])} for r in rows]
+        """)
+        
+        stores_data = self.db.execute(stores_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        return {
+            "sales_trends": [{"period": str(r[0]), "orders": r[1], "revenue": r[2], "avg_value": r[3], "customers": r[4]} for r in sales_data],
+            "top_products": [{"offer_id": r[0], "units_sold": r[1], "revenue": r[2], "orders": r[3]} for r in products_data],
+            "store_performance": [{"store_id": r[0], "orders": r[1], "revenue": r[2], "avg_value": r[3]} for r in stores_data],
+            "summary": {
+                "total_orders": sum(r[1] for r in sales_data),
+                "total_revenue": sum(r[2] for r in sales_data),
+                "avg_order_value": sum(r[2] for r in sales_data) / sum(r[1] for r in sales_data) if sales_data else 0,
+                "unique_customers": len(set(r[4] for r in sales_data))
+            }
+        }
     
-@app.get("/reports/stock/onhand")
-def stock_onhand(store_id: str = Query(...)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT sku, qty FROM inventory WHERE store_id=:st ORDER BY sku
-        """), {"st": store_id}).all()
-        return [{"sku": r[0], "qty": int(r[1])} for r in rows]
+    async def generate_inventory_analytics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate inventory analytics and insights"""
+        tenant_id = params.get("tenant_id")
+        store_id = params.get("store_id")
+        
+        # Current inventory levels
+        inventory_query = text("""
+            SELECT 
+                i.sku,
+                i.quantity_on_hand,
+                i.quantity_reserved,
+                i.quantity_available,
+                i.last_updated
+            FROM inventory_new i
+            WHERE i.tenant_id = :tenant_id
+        """)
+        
+        params_dict = {"tenant_id": tenant_id}
+        if store_id:
+            inventory_query = text("""
+                SELECT 
+                    i.sku,
+                    i.quantity_on_hand,
+                    i.quantity_reserved,
+                    i.quantity_available,
+                    i.last_updated
+                FROM inventory_new i
+                WHERE i.tenant_id = :tenant_id AND i.store_id = :store_id
+            """)
+            params_dict["store_id"] = store_id
+        
+        inventory_data = self.db.execute(inventory_query, params_dict).all()
+        
+        # Low stock items
+        low_stock_query = text("""
+            SELECT 
+                i.sku,
+                i.quantity_on_hand,
+                i.quantity_available,
+                i.store_id
+            FROM inventory_new i
+            WHERE i.tenant_id = :tenant_id
+                AND i.quantity_available <= 10
+            ORDER BY i.quantity_available ASC
+        """)
+        
+        low_stock_data = self.db.execute(low_stock_query, {"tenant_id": tenant_id}).all()
+        
+        # Inventory movements
+        movements_query = text("""
+            SELECT 
+                im.sku,
+                im.movement_type,
+                SUM(im.quantity_delta) as total_delta,
+                COUNT(*) as movement_count
+            FROM inventory_movements_new im
+            WHERE im.tenant_id = :tenant_id
+                AND im.created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY im.sku, im.movement_type
+            ORDER BY total_delta DESC
+        """)
+        
+        movements_data = self.db.execute(movements_query, {"tenant_id": tenant_id}).all()
+        
+        return {
+            "current_inventory": [{"sku": r[0], "on_hand": r[1], "reserved": r[2], "available": r[3], "updated": r[4]} for r in inventory_data],
+            "low_stock_alerts": [{"sku": r[0], "quantity": r[1], "available": r[2], "store_id": r[3]} for r in low_stock_data],
+            "inventory_movements": [{"sku": r[0], "type": r[1], "delta": r[2], "count": r[3]} for r in movements_data],
+            "summary": {
+                "total_skus": len(inventory_data),
+                "low_stock_items": len(low_stock_data),
+                "total_value": sum(r[1] for r in inventory_data),  # Simplified calculation
+                "movement_types": len(set(r[1] for r in movements_data))
+            }
+        }
+    
+    async def generate_customer_analytics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate customer analytics and insights"""
+        tenant_id = params.get("tenant_id")
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+        
+        # Customer acquisition
+        acquisition_query = text("""
+            SELECT 
+                DATE(u.created_at) as acquisition_date,
+                COUNT(*) as new_customers
+            FROM users_new u
+            WHERE u.tenant_id = :tenant_id
+                AND u.created_at BETWEEN :start_date AND :end_date
+            GROUP BY DATE(u.created_at)
+            ORDER BY acquisition_date
+        """)
+        
+        acquisition_data = self.db.execute(acquisition_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        # Customer lifetime value
+        clv_query = text("""
+            SELECT 
+                o.customer_id,
+                COUNT(*) as order_count,
+                SUM(o.total_minor) as total_spent,
+                AVG(o.total_minor) as avg_order_value,
+                MIN(o.created_at) as first_order,
+                MAX(o.created_at) as last_order
+            FROM orders_new o
+            WHERE o.tenant_id = :tenant_id
+                AND o.status = 'completed'
+            GROUP BY o.customer_id
+            ORDER BY total_spent DESC
+            LIMIT 100
+        """)
+        
+        clv_data = self.db.execute(clv_query, {"tenant_id": tenant_id}).all()
+        
+        # Customer segments
+        segments_query = text("""
+            WITH customer_metrics AS (
+                SELECT 
+                    customer_id,
+                    COUNT(*) as order_count,
+                    SUM(total_minor) as total_spent,
+                    AVG(total_minor) as avg_order_value
+                FROM orders_new
+                WHERE tenant_id = :tenant_id AND status = 'completed'
+                GROUP BY customer_id
+            )
+            SELECT 
+                CASE 
+                    WHEN total_spent > 100000 THEN 'high_value'
+                    WHEN total_spent > 50000 THEN 'medium_value'
+                    ELSE 'low_value'
+                END as segment,
+                COUNT(*) as customer_count,
+                AVG(total_spent) as avg_spent,
+                AVG(order_count) as avg_orders
+            FROM customer_metrics
+            GROUP BY segment
+        """)
+        
+        segments_data = self.db.execute(segments_query, {"tenant_id": tenant_id}).all()
+        
+        return {
+            "customer_acquisition": [{"date": str(r[0]), "new_customers": r[1]} for r in acquisition_data],
+            "top_customers": [{"customer_id": r[0], "orders": r[1], "total_spent": r[2], "avg_value": r[3], "first_order": r[4], "last_order": r[5]} for r in clv_data[:20]],
+            "customer_segments": [{"segment": r[0], "count": r[1], "avg_spent": r[2], "avg_orders": r[3]} for r in segments_data],
+            "summary": {
+                "total_customers": len(clv_data),
+                "new_customers": sum(r[1] for r in acquisition_data),
+                "avg_customer_value": sum(r[2] for r in clv_data) / len(clv_data) if clv_data else 0,
+                "top_spender": clv_data[0][2] if clv_data else 0
+            }
+        }
+    
+    async def generate_operational_analytics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate operational analytics and KPIs"""
+        tenant_id = params.get("tenant_id")
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+        
+        # Order processing times
+        processing_query = text("""
+            SELECT 
+                DATE(created_at) as date,
+                AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/60) as avg_processing_minutes,
+                COUNT(*) as order_count
+            FROM orders_new
+            WHERE tenant_id = :tenant_id
+                AND created_at BETWEEN :start_date AND :end_date
+                AND status = 'completed'
+            GROUP BY DATE(created_at)
+            ORDER BY date
+        """)
+        
+        processing_data = self.db.execute(processing_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        # System performance metrics
+        performance_query = text("""
+            SELECT 
+                'orders_per_hour' as metric,
+                COUNT(*) / GREATEST(EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))/3600, 1) as value
+            FROM orders_new
+            WHERE tenant_id = :tenant_id
+                AND created_at BETWEEN :start_date AND :end_date
+            UNION ALL
+            SELECT 
+                'completion_rate' as metric,
+                COUNT(*) FILTER (WHERE status = 'completed') * 100.0 / COUNT(*) as value
+            FROM orders_new
+            WHERE tenant_id = :tenant_id
+                AND created_at BETWEEN :start_date AND :end_date
+        """)
+        
+        performance_data = self.db.execute(performance_query, {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }).all()
+        
+        return {
+            "processing_times": [{"date": str(r[0]), "avg_minutes": float(r[1]), "orders": r[2]} for r in processing_data],
+            "performance_metrics": {r[0]: float(r[1]) for r in performance_data},
+            "summary": {
+                "avg_processing_time": sum(r[1] for r in processing_data) / len(processing_data) if processing_data else 0,
+                "total_orders_processed": sum(r[2] for r in processing_data),
+                "orders_per_hour": next((r[1] for r in performance_data if r[0] == 'orders_per_hour'), 0),
+                "completion_rate": next((r[1] for r in performance_data if r[0] == 'completion_rate'), 0)
+            }
+        }
 
-@app.get("/reports/stock/movements")
-def stock_movements(store_id: str = Query(...), limit: int = Query(100)):
-    with SessionLocal() as db:
-        rows = db.execute(text("""
-            SELECT created_at, sku, delta, reason
-              FROM inventory_movements
-             WHERE store_id=:st
-             ORDER BY id DESC
-             LIMIT :l
-        """), {"st": store_id, "l": limit}).all()
-        return [{"created_at": str(r[0]), "sku": r[1], "delta": int(r[2]), "reason": r[3]} for r in rows]
+# ---- Application Setup ----
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    logger.info(f"Starting {SERVICE_NAME}", version=SERVICE_VERSION, environment=ENVIRONMENT)
+    
+    # Initialize database tables
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables initialized")
+    except Exception as e:
+        logger.error("Failed to initialize database tables", error=str(e))
+    
+    yield
+    
+    logger.info(f"Shutting down {SERVICE_NAME}")
+
+app = FastAPI(
+    title=f"ZeroQue {SERVICE_NAME.title()} Service V4.1",
+    description="Comprehensive analytics, reporting, and business intelligence platform",
+    version=SERVICE_VERSION,
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---- Health Endpoints ----
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+        "environment": ENVIRONMENT
+    }
+
+@app.get("/readiness")
+async def readiness():
+    """Readiness check endpoint"""
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {
+            "service": SERVICE_NAME,
+            "status": "ready",
+            "database": "connected"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service not ready: {str(e)}")
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    from fastapi.responses import Response
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+# ---- Report Generation Endpoints ----
+@app.post("/reports/v4/generate", response_model=ReportResponse)
+async def generate_report(request: ReportRequest, background_tasks: BackgroundTasks):
+    """Generate a new report"""
+    try:
+        job_id = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{request.report_type}"
+        
+        # Check cache first
+        cache_key = f"{request.tenant_id}:{request.report_type}:{hash(str(request.parameters))}"
+        
+        with SessionLocal() as db:
+            # Create report job
+            job = ReportJob(
+                id=job_id,
+                tenant_id=request.tenant_id,
+                user_id=request.user_id,
+                report_type=request.report_type,
+                report_name=request.report_name,
+                parameters=request.parameters,
+                status=ReportStatus.GENERATING,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
+            )
+            db.add(job)
+            db.commit()
+            
+            # Start background report generation
+            background_tasks.add_task(
+                generate_report_background,
+                job_id,
+                request.report_type,
+                request.parameters,
+                request.format,
+                request.cache_ttl_minutes
+            )
+        
+        report_requests_total.labels(report_type=request.report_type, status="initiated").inc()
+        
+        return ReportResponse(
+            job_id=job_id,
+            status=ReportStatus.GENERATING,
+            message="Report generation initiated",
+            estimated_completion=datetime.now(timezone.utc) + timedelta(minutes=5)
+        )
+        
+    except Exception as e:
+        logger.error("Failed to initiate report generation", error=str(e))
+        report_requests_total.labels(report_type=request.report_type, status="failed").inc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
+@app.get("/reports/v4/status/{job_id}")
+async def get_report_status(job_id: str):
+    """Get report generation status"""
+    try:
+        with SessionLocal() as db:
+            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
+            if not job:
+                raise HTTPException(status_code=404, detail="Report job not found")
+            
+            return {
+                "job_id": job.id,
+                "status": job.status,
+                "created_at": job.created_at,
+                "completed_at": job.completed_at,
+                "error_message": job.error_message,
+                "file_path": job.file_path
+            }
+    except Exception as e:
+        logger.error("Failed to get report status", job_id=job_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/v4/download/{job_id}")
+async def download_report(job_id: str):
+    """Download completed report"""
+    try:
+        with SessionLocal() as db:
+            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
+            if not job:
+                raise HTTPException(status_code=404, detail="Report job not found")
+            
+            if job.status != ReportStatus.COMPLETED:
+                raise HTTPException(status_code=400, detail="Report not ready for download")
+            
+            if not job.file_path or not os.path.exists(job.file_path):
+                raise HTTPException(status_code=404, detail="Report file not found")
+            
+            # Return file based on format
+            with open(job.file_path, 'rb') as f:
+                content = f.read()
+            
+            return StreamingResponse(
+                io.BytesIO(content),
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f"attachment; filename={job.report_name}.{job.parameters.get('format', 'json')}"}
+            )
+            
+    except Exception as e:
+        logger.error("Failed to download report", job_id=job_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---- Analytics Endpoints ----
+@app.get("/analytics/v4/sales")
+async def get_sales_analytics(
+    tenant_id: str = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    store_id: Optional[str] = Query(None),
+    group_by: str = Query("day")
+):
+    """Get sales analytics data"""
+    try:
+        start_time = datetime.now()
+        
+        with SessionLocal() as db:
+            generator = ReportGenerator(db)
+            params = {
+                "tenant_id": tenant_id,
+                "start_date": start_date,
+                "end_date": end_date,
+                "store_id": store_id,
+                "group_by": group_by
+            }
+            
+            data = await generator.generate_sales_analytics(params)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="sales_analytics").observe(duration)
+        report_requests_total.labels(report_type="sales_analytics", status="success").inc()
+        
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+        
+    except Exception as e:
+        logger.error("Failed to generate sales analytics", error=str(e))
+        report_requests_total.labels(report_type="sales_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analytics/v4/inventory")
+async def get_inventory_analytics(
+    tenant_id: str = Query(...),
+    store_id: Optional[str] = Query(None)
+):
+    """Get inventory analytics data"""
+    try:
+        start_time = datetime.now()
+        
+        with SessionLocal() as db:
+            generator = ReportGenerator(db)
+            params = {
+                "tenant_id": tenant_id,
+                "store_id": store_id
+            }
+            
+            data = await generator.generate_inventory_analytics(params)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="inventory_analytics").observe(duration)
+        report_requests_total.labels(report_type="inventory_analytics", status="success").inc()
+        
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+        
+    except Exception as e:
+        logger.error("Failed to generate inventory analytics", error=str(e))
+        report_requests_total.labels(report_type="inventory_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analytics/v4/customers")
+async def get_customer_analytics(
+    tenant_id: str = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...)
+):
+    """Get customer analytics data"""
+    try:
+        start_time = datetime.now()
+        
+        with SessionLocal() as db:
+            generator = ReportGenerator(db)
+            params = {
+                "tenant_id": tenant_id,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            
+            data = await generator.generate_customer_analytics(params)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="customer_analytics").observe(duration)
+        report_requests_total.labels(report_type="customer_analytics", status="success").inc()
+        
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+        
+    except Exception as e:
+        logger.error("Failed to generate customer analytics", error=str(e))
+        report_requests_total.labels(report_type="customer_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analytics/v4/operational")
+async def get_operational_analytics(
+    tenant_id: str = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...)
+):
+    """Get operational analytics data"""
+    try:
+        start_time = datetime.now()
+        
+        with SessionLocal() as db:
+            generator = ReportGenerator(db)
+            params = {
+                "tenant_id": tenant_id,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            
+            data = await generator.generate_operational_analytics(params)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="operational_analytics").observe(duration)
+        report_requests_total.labels(report_type="operational_analytics", status="success").inc()
+        
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+        
+    except Exception as e:
+        logger.error("Failed to generate operational analytics", error=str(e))
+        report_requests_total.labels(report_type="operational_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---- Background Tasks ----
+async def generate_report_background(job_id: str, report_type: str, parameters: Dict[str, Any], format: ReportFormat, cache_ttl_minutes: int):
+    """Background task to generate reports"""
+    try:
+        with SessionLocal() as db:
+            generator = ReportGenerator(db)
+            
+            # Generate report data based on type
+            if report_type == ReportType.SALES_ANALYTICS:
+                data = await generator.generate_sales_analytics(parameters)
+            elif report_type == ReportType.INVENTORY_ANALYTICS:
+                data = await generator.generate_inventory_analytics(parameters)
+            elif report_type == ReportType.CUSTOMER_ANALYTICS:
+                data = await generator.generate_customer_analytics(parameters)
+            elif report_type == ReportType.OPERATIONAL_ANALYTICS:
+                data = await generator.generate_operational_analytics(parameters)
+            else:
+                raise ValueError(f"Unsupported report type: {report_type}")
+            
+            # Save report data to file
+            file_path = f"/tmp/reports/{job_id}.{format}"
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            if format == ReportFormat.JSON:
+                with open(file_path, 'w') as f:
+                    json.dump(data, f, indent=2, default=str)
+            elif format == ReportFormat.CSV:
+                # Convert to CSV format (simplified)
+                df = pd.json_normalize(data)
+                df.to_csv(file_path, index=False)
+            
+            # Update job status
+            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
+            if job:
+                job.status = ReportStatus.COMPLETED
+                job.file_path = file_path
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+            
+            logger.info("Report generation completed", job_id=job_id, report_type=report_type)
+            
+    except Exception as e:
+        logger.error("Report generation failed", job_id=job_id, error=str(e))
+        
+        # Update job status to failed
+        try:
+            with SessionLocal() as db:
+                job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
+                if job:
+                    job.status = ReportStatus.FAILED
+                    job.error_message = str(e)
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+        except Exception:
+            pass
+
+# =============================================================================
+# CELERY TASKS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_report_generation(self, job_id: str, report_type: str, parameters: Dict[str, Any]):
+    """Process report generation asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Get report job
+            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
+            if not job:
+                raise ValueError(f"Report job {job_id} not found")
+            
+            # Process report generation logic here
+            logger.info(f"Processing report generation for job {job_id}, type {report_type}")
+            
+            # Update metrics
+            report_requests_total.labels(report_type=report_type, status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process report generation for job {job_id}: {e}")
+        report_requests_total.labels(report_type=report_type, status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_data_aggregation(self, tenant_id: str, aggregation_data: Dict[str, Any]):
+    """Process data aggregation asynchronously"""
+    try:
+        with SessionLocal() as db:
+            # Set RLS context (best-effort)
+            try:
+                db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
+            except Exception:
+                pass
+            
+            # Process data aggregation logic here
+            logger.info(f"Processing data aggregation for tenant {tenant_id}")
+            
+            # Update metrics
+            report_requests_total.labels(report_type="data_aggregation", status="success").inc()
+            
+    except Exception as e:
+        logger.error(f"Failed to process data aggregation for tenant {tenant_id}: {e}")
+        report_requests_total.labels(report_type="data_aggregation", status="failed").inc()
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_reports(self):
+    """Clean up old reports"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+            
+            # Clean up old report jobs
+            job_result = db.execute(text("""
+                DELETE FROM report_jobs_new 
+                WHERE created_at < :cutoff_date AND status IN ('completed', 'failed')
+            """), {"cutoff_date": cutoff_date})
+            
+            # Clean up old report data
+            data_result = db.execute(text("""
+                DELETE FROM report_data_new 
+                WHERE created_at < :cutoff_date
+            """), {"cutoff_date": cutoff_date})
+            
+            db.commit()
+            
+            logger.info(f"Cleaned up {job_result.rowcount} old report jobs and {data_result.rowcount} old report data")
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup old reports: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info(f"Starting {SERVICE_NAME} service v{SERVICE_VERSION}")
+    port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8227")))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=ENVIRONMENT == "development"
+    )

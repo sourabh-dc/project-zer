@@ -1,402 +1,452 @@
-# services/subscriptions/main.py
-from fastapi import FastAPI, Body, Query, HTTPException, Path, Request, Header
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-import logging, os, json, time, uuid
+# services/subscriptions/main.py - ZeroQue Subscriptions Service v4.1 (Production-Ready)
+import os
+import uuid
+import json
+import logging
+import time
 from datetime import datetime, timedelta
-import stripe as stripe_sdk
-from fastapi.responses import PlainTextResponse
+from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 
-# Try to import common models, fallback to local definitions
-try:
-    from zeroque_common.db.session import get_engine, init_db, check_db, SessionLocal
-    from zeroque_common.models.subscriptions import (
-        SubscriptionPlan, Feature, PlanFeature, TenantSubscription, SiteBillingAccount
-    )
-    COMMON_MODELS_AVAILABLE = True
-except ImportError:
-    # Fallback local models for development
-    from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, ForeignKey, DateTime, func, Text, JSON
-    from sqlalchemy.ext.declarative import declarative_base
-    from sqlalchemy.orm import sessionmaker
-    
-    Base = declarative_base()
-    
-    class SubscriptionPlan(Base):
-        __tablename__ = "subscription_plans"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        code = Column(String(50), unique=True, index=True)
-        name = Column(String(100))
-        description = Column(Text, nullable=True)
-        price_yearly_minor = Column(BigInteger)
-        currency = Column(String(3), default="GBP")
-        active = Column(Boolean, default=True)
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-        updated_at = Column(DateTime(timezone=True), nullable=True)
-    
-    class Feature(Base):
-        __tablename__ = "features"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        code = Column(String(50), unique=True, index=True)
-        name = Column(String(100))
-        description = Column(Text, nullable=True)
-        category = Column(String(50))
-        active = Column(Boolean, default=True)
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    class PlanFeature(Base):
-        __tablename__ = "plan_features"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        plan_code = Column(String(50), ForeignKey("subscription_plans.code"))
-        feature_code = Column(String(50), ForeignKey("features.code"))
-        enabled = Column(Boolean, default=True)
-        limits = Column(JSON)
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    class TenantSubscription(Base):
-        __tablename__ = "tenant_subscriptions"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        tenant_id = Column(String(100), unique=True, index=True)
-        plan_code = Column(String(50), ForeignKey("subscription_plans.code"))
-        payment_method = Column(String(20))
-        status = Column(String(50), default="active")
-        external_id = Column(String(100), index=True)
-        current_period_start = Column(DateTime(timezone=True))
-        current_period_end = Column(DateTime(timezone=True))
-        trial_end = Column(DateTime(timezone=True))
-        canceled_at = Column(DateTime(timezone=True))
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-        updated_at = Column(DateTime(timezone=True))
-    
-    class SiteBillingAccount(Base):
-        __tablename__ = "site_billing_accounts"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        tenant_id = Column(String(100), index=True)
-        site_id = Column(String(100), index=True)
-        payment_method = Column(String(20))
-        external_id = Column(String(100), index=True)
-        active = Column(Boolean, default=True)
-        account_metadata = Column(JSON)
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-        updated_at = Column(DateTime(timezone=True))
-    
-    def get_engine():
-        return create_engine(os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5000/zeroque_dev"))
-    
-    def init_db():
-        engine = get_engine()
-        Base.metadata.create_all(bind=engine)
-    
-    def check_db():
-        try:
-            engine = get_engine()
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            return True
-        except Exception:
-            return False
-    
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
-    COMMON_MODELS_AVAILABLE = False
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text, Column, String, Integer, BigInteger, Boolean, DateTime, func, JSON, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as SQLUUID
+from sqlalchemy.orm import Session, sessionmaker, declarative_base
+from sqlalchemy.exc import IntegrityError
+import pika
+from celery import Celery
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
+import httpx
+from tenacity import retry, stop_after_attempt, wait_fixed
+import pybreaker
+import jwt
+import redis
+import structlog
 
+# Config
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
+JWT_ALGORITHM = "HS256"
 SERVICE_NAME = "subscriptions"
-app = FastAPI(title="ZeroQue Tenant Subscriptions Service", version="2.0.0")
+SERVICE_VERSION = "4.1.0"
+SUBSCRIPTION_CLEANUP_DAYS = 365
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 
-# Logging setup
-log = logging.getLogger(SERVICE_NAME)
-if not log.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
-    log.addHandler(handler)
-log.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+# Logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+)
+logger = structlog.get_logger(SERVICE_NAME)
 
-# Custom Exceptions
-class SubscriptionValidationError(Exception):
-    """Raised when subscription validation fails"""
-    pass
+# DB
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-class SubscriptionNotFoundError(Exception):
-    """Raised when subscription resource is not found"""
-    pass
+# Redis
+redis_client = None
 
-class SubscriptionDuplicateError(Exception):
-    """Raised when duplicate subscription resource is created"""
-    pass
+# Celery
+celery_app = Celery(SERVICE_NAME, broker=RABBITMQ_URL, backend=REDIS_URL)
+celery_app.conf.update(task_serializer='json', accept_content=['json'], timezone='UTC', enable_utc=True)
 
-class BillingAccountError(Exception):
-    """Raised when billing account operations fail"""
-    pass
+# Metrics
+sub_requests_total = Counter('sub_requests_total', 'Requests', ['endpoint', 'status'])
+sub_request_duration = Histogram('sub_request_duration_seconds', 'Duration', ['endpoint'])
+saga_total = Counter('sub_saga_total', 'Sagas', ['type', 'status'])
+saga_duration = Histogram('sub_saga_duration_seconds', 'Saga duration', ['type'])
 
-class PaymentProcessingError(Exception):
-    """Raised when payment processing fails"""
-    pass
+# Circuit Breaker
+circuit_breaker = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
 
-# Exception Handlers
-@app.exception_handler(SubscriptionValidationError)
-async def subscription_validation_exception_handler(request: Request, exc: SubscriptionValidationError):
-    raise HTTPException(status_code=400, detail=str(exc))
+# Models
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    price_yearly_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), default="GBP", nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-@app.exception_handler(SubscriptionNotFoundError)
-async def subscription_not_found_exception_handler(request: Request, exc: SubscriptionNotFoundError):
-    raise HTTPException(status_code=404, detail=str(exc))
+class Feature(Base):
+    __tablename__ = "features"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String(50), nullable=True)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-@app.exception_handler(SubscriptionDuplicateError)
-async def subscription_duplicate_exception_handler(request: Request, exc: SubscriptionDuplicateError):
-    raise HTTPException(status_code=409, detail=str(exc))
+class PlanFeature(Base):
+    __tablename__ = "plan_features"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
+    feature_code = Column(String(50), ForeignKey("features.code"), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    limits = Column(JSON, nullable=True)  # e.g., {"rate_limit": 1000} or {"tier": "basic"}
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-@app.exception_handler(BillingAccountError)
-async def billing_account_exception_handler(request: Request, exc: BillingAccountError):
-    raise HTTPException(status_code=400, detail=str(exc))
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), unique=True, index=True, nullable=False)
+    plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
+    payment_method = Column(String(20), nullable=False)
+    status = Column(String(50), default="active", nullable=False)
+    external_id = Column(String(100), index=True, nullable=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+    trial_end = Column(DateTime(timezone=True), nullable=True)
+    canceled_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-@app.exception_handler(PaymentProcessingError)
-async def payment_processing_exception_handler(request: Request, exc: PaymentProcessingError):
-    raise HTTPException(status_code=500, detail=str(exc))
+class SiteBillingAccount(Base):
+    __tablename__ = "site_billing_accounts"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), index=True, nullable=False)
+    site_id = Column(SQLUUID(as_uuid=True), index=True, nullable=False)
+    payment_method = Column(String(20), nullable=False)
+    external_id = Column(String(100), index=True, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    account_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-# Validation Helpers
-def validate_uuid(uuid_string: str, field_name: str) -> str:
-    """Validate UUID format"""
-    try:
-        uuid.UUID(uuid_string)
-        return uuid_string
-    except ValueError:
-        raise SubscriptionValidationError(f"Invalid {field_name} format: {uuid_string}")
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(100), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False, index=True)
+    aggregate_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    event_data = Column(JSON, nullable=False)
+    status = Column(String(50), default="pending", nullable=False)
+    retry_count = Column(Integer, default=0, nullable=False)
+    max_retries = Column(Integer, default=3, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-def set_rls_context(db, tenant_id: Optional[str] = None, user_id: Optional[str] = None):
-    """Set Row Level Security context for database session"""
-    try:
-        if tenant_id:
-            db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-        if user_id:
-            db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
-        
-        # Enable RLS for the session
-        db.execute(text("SET row_security = on"))
-        
-    except Exception as e:
-        log.warning(f"Failed to set RLS context: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to set security context")
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=False)
+    resource_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    details = Column(JSON, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# Create tables
+Base.metadata.create_all(bind=engine)
 
 # Pydantic Models
-class TenantSubscriptionV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
+class TenantSubscriptionPayload(BaseModel):
     plan_code: str = Field(..., description="Subscription plan code")
     payment_method: str = Field(..., description="Payment method: stripe, trade")
     external_id: Optional[str] = Field(None, description="External subscription ID")
-    current_period_start: Optional[datetime] = Field(None, description="Current period start")
-    current_period_end: Optional[datetime] = Field(None, description="Current period end")
-    trial_end: Optional[datetime] = Field(None, description="Trial end date")
+    current_period_start: Optional[datetime] = Field(None)
+    current_period_end: Optional[datetime] = Field(None)
+    trial_end: Optional[datetime] = Field(None)
 
-class CreateBillingAccountV2Payload(BaseModel):
-    tenant_id: str = Field(..., description="Tenant ID")
+class CreateBillingAccountPayload(BaseModel):
+    site_id: str = Field(..., description="Site ID")
     payment_method: str = Field(..., description="Payment method: stripe, trade")
     external_id: str = Field(..., description="External billing account ID")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    metadata: Optional[Dict[str, Any]] = Field(None)
 
-# Health Endpoints
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0", "enhanced": True}
+# Security
+security = HTTPBearer()
 
-@app.get("/readiness")
-def readiness():
-    return {"service": SERVICE_NAME, "db": check_db(), "redis": True}
-
-@app.on_event("startup")
-def on_startup():
-    get_engine()
-    init_db()
-    log.info("service_started")
-
-# Subscription Plans Management
-@app.get("/subscriptions/v2/plans")
-def list_plans_v2(active: Optional[bool] = Query(None)):
-    """
-    List available subscription plans with pricing.
-    """
+def get_user_context(authorization: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     try:
-    with SessionLocal() as db:
-            query = db.query(SubscriptionPlan)
-            
-            if active is not None:
-                query = query.filter(SubscriptionPlan.active == active)
-            
-            plans = query.order_by(SubscriptionPlan.price_yearly_minor).all()
-            
-            result = [{
-                "code": plan.code,
-                "name": plan.name,
-                "description": plan.description,
-                "price_yearly_minor": plan.price_yearly_minor,
-                "currency": plan.currency,
-                "active": plan.active
-            } for plan in plans]
-            
-            log.info("plans_listed count=%d active=%s", len(result), active)
-            return {"plans": result}
-            
-    except SQLAlchemyError as e:
-        log.error(f"Database error in list_plans: {str(e)}")
-        raise PaymentProcessingError(f"Database error: {str(e)}")
+        token = authorization.credentials
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        return {
+            "user_id": payload.get("user_id"),
+            "tenant_id": payload.get("tenant_id"),
+            "roles": payload.get("roles", []),
+            "permissions": payload.get("permissions", [])
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
     except Exception as e:
-        log.error(f"Unexpected error in list_plans: {str(e)}")
-        raise PaymentProcessingError(f"Internal error: {str(e)}")
+        logger.error(f"JWT validation error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
 
-@app.get("/subscriptions/v2/plans/{plan_code}/features")
-def list_plan_features_v2(plan_code: str = Path(...)):
-    """
-    List features included in a specific plan.
-    """
+def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
+    permissions = user_context.get("permissions", [])
+    if "*" in permissions:
+        return True
+    return required_permission in permissions
+
+def get_db(user_context: Dict[str, Any] = Depends(get_user_context)):
+    db = SessionLocal()
     try:
-    with SessionLocal() as db:
-            # Join PlanFeature with Feature to get feature details
-            features = db.query(PlanFeature, Feature).join(
-                Feature, PlanFeature.feature_code == Feature.code
-            ).filter(
-                PlanFeature.plan_code == plan_code,
-                Feature.active == True
-            ).order_by(Feature.category, Feature.name).all()
-            
-            result = [{
-                "feature_code": plan_feature.feature_code,
-                "name": feature.name,
-                "description": feature.description,
-                "category": feature.category,
-                "enabled": plan_feature.enabled,
-                "limits": plan_feature.limits
-            } for plan_feature, feature in features]
-            
-            log.info("plan_features_listed plan=%s count=%d", plan_code, len(result))
-            return {"plan_code": plan_code, "features": result}
-            
-    except SQLAlchemyError as e:
-        log.error(f"Database error in list_plan_features: {str(e)}")
-        raise PaymentProcessingError(f"Database error: {str(e)}")
+        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
+        yield db
+    finally:
+        db.close()
+
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str):
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({"event_type": event_type, "tenant_id": tenant_id, "timestamp": datetime.now().isoformat(), "data": event_data})
+        channel.basic_publish(exchange='zeroque_events', routing_key=event_type, body=message, properties=pika.BasicProperties(delivery_mode=2))
+        connection.close()
+        logger.info(f"Published {event_type}")
+        return True
     except Exception as e:
-        log.error(f"Unexpected error in list_plan_features: {str(e)}")
-        raise PaymentProcessingError(f"Internal error: {str(e)}")
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
 
-# Tenant Subscriptions Management
-@app.post("/subscriptions/v2/subscriptions")
-def create_subscription_v2(payload: TenantSubscriptionV2Payload = Body(...)):
-    """
-    Create a new tenant subscription.
-    """
+# Outbox Pattern
+def store_outbox_event(db: Session, event_type: str, tenant_id: str, aggregate_id: Optional[str] = None, event_data: Dict[str, Any] = {}):
+    outbox_event = OutboxEvent(
+        event_type=event_type,
+        tenant_id=tenant_id,
+        aggregate_id=aggregate_id or tenant_id,
+        event_data=event_data,
+        status="pending",
+        retry_count=0
+    )
+    db.add(outbox_event)
+    db.commit()
+    return str(outbox_event.id)
+
+@celery_app.task(bind=True, max_retries=3)
+def publish_outbox_events(self):
     try:
-        # Validate inputs
-        validate_uuid(payload.tenant_id, "tenant_id")
-        
         with SessionLocal() as db:
-            set_rls_context(db, payload.tenant_id)
+            events = db.query(OutboxEvent).filter(OutboxEvent.status == "pending", OutboxEvent.retry_count < 3).limit(100).all()
+            for event in events:
+                success = publish_to_rabbitmq(event.event_type, event.event_data, event.tenant_id)
+                if success:
+                    event.status = "published"
+                    event.published_at = datetime.now()
+                else:
+                    event.retry_count += 1
+                    if event.retry_count >= 3:
+                        event.status = "failed"
+                db.commit()
+    except Exception as e:
+        logger.error(f"Outbox publishing failed: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+# Audit Logging
+def audit_log(db: Session, tenant_id: str, user_id: Optional[str], action: str, resource_type: str, resource_id: Optional[str], details: Optional[Dict] = None, ip_address: Optional[str] = None, user_agent: Optional[str] = None):
+    audit_entry = AuditLog(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details=details,
+        ip_address=ip_address,
+        user_agent=user_agent
+    )
+    db.add(audit_entry)
+    db.commit()
+
+# Saga for Subscription Creation
+class SubscriptionSaga:
+    def __init__(self, db: Session):
+        self.db = db
+        self.subscription = None
+        self.outbox_id = None
+    
+    async def execute(self, tenant_id: str, payload: TenantSubscriptionPayload, user_context: Dict[str, Any]) -> Dict:
+        start_time = time.time()
+        try:
+            # Step 1: Validate
+            if self.db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first():
+                raise ValueError("Subscription exists")
             
-            # Check if tenant already has an active subscription
-            existing = db.query(TenantSubscription).filter(
-                TenantSubscription.tenant_id == payload.tenant_id,
-                TenantSubscription.status.in_(['active', 'trialing'])
-            ).first()
-        
-        if existing:
-                raise SubscriptionDuplicateError(f"Tenant already has an active subscription")
-            
-            # Create subscription
-            subscription = TenantSubscription(
-                tenant_id=payload.tenant_id,
+            # Step 2: Create subscription
+            self.subscription = TenantSubscription(
+                tenant_id=tenant_id,
                 plan_code=payload.plan_code,
                 payment_method=payload.payment_method,
-                status='active',
-                external_id=payload.external_id or f"sub_{payload.tenant_id}_{int(time.time())}",
-                current_period_start=payload.current_period_start,
-                current_period_end=payload.current_period_end,
+                status="active",
+                external_id=payload.external_id or f"sub_{tenant_id}_{int(time.time())}",
+                current_period_start=payload.current_period_start or datetime.now(),
+                current_period_end=payload.current_period_end or (datetime.now() + timedelta(days=365)),
                 trial_end=payload.trial_end
+            )
+            self.db.add(self.subscription)
+            self.db.commit()
+            self.db.refresh(self.subscription)
+            
+            # Step 3: Store outbox event
+            self.outbox_id = store_outbox_event(self.db, "PLAN_CREATED", tenant_id, str(self.subscription.id), {
+                "tenant_id": tenant_id,
+                "plan_code": payload.plan_code,
+                "subscription_id": str(self.subscription.id)
+            })
+            
+            # Step 4: Publish event
+            publish_outbox_events.delay()
+            
+            # Audit log
+            audit_log(self.db, tenant_id, user_context.get("user_id"), "CREATE", "subscription", str(self.subscription.id), payload.dict())
+            
+            saga_total.labels(type="subscription", status="success").inc()
+            saga_duration.labels(type="subscription").observe(time.time() - start_time)
+            
+            return {"subscription_id": str(self.subscription.id), "plan_code": payload.plan_code, "created": True}
+        
+        except Exception as e:
+            await self.compensate()
+            saga_total.labels(type="subscription", status="failed").inc()
+            raise
+    
+    async def compensate(self):
+        try:
+            if self.outbox_id:
+                self.db.execute(text("DELETE FROM outbox_events WHERE id = :id"), {"id": self.outbox_id})
+                self.db.commit()
+            
+            if self.subscription:
+                self.db.delete(self.subscription)
+                self.db.commit()
+        except Exception as e:
+            logger.error(f"Compensation failed: {e}")
+            self.db.rollback()
+
+# Celery Worker for TENANT_CREATED
+@celery_app.task(name='subscriptions.process_tenant_created')
+def process_tenant_created(event_data: Dict):
+    try:
+        tenant_id = event_data['tenant_id']
+        with SessionLocal() as db:
+            # Auto-create default subscription (e.g., Core plan)
+            subscription = TenantSubscription(
+                tenant_id=tenant_id,
+                plan_code="core",
+                payment_method="trade",
+                status="active",
+                external_id=f"sub_{tenant_id}_{int(time.time())}",
+                current_period_start=datetime.now(),
+                current_period_end=datetime.now() + timedelta(days=365)
             )
             db.add(subscription)
             db.commit()
-            
-            log.info("subscription_created tenant=%s plan=%s external_id=%s", 
-                    payload.tenant_id, payload.plan_code, subscription.external_id)
-        
-        return {
-                "subscription_id": subscription.id,
-                "tenant_id": payload.tenant_id,
-                "plan_code": payload.plan_code,
-                "external_id": subscription.external_id,
-                "status": "created"
-            }
-            
-    except (SubscriptionValidationError, SubscriptionNotFoundError, SubscriptionDuplicateError) as e:
-        raise e
-    except SQLAlchemyError as e:
-        log.error(f"Database error in create_subscription: {str(e)}")
-        raise PaymentProcessingError(f"Database error: {str(e)}")
+            logger.info(f"Auto-created Core subscription for tenant {tenant_id}")
+            # Publish PLAN_CREATED
+            store_outbox_event(db, "PLAN_CREATED", tenant_id, tenant_id, {"tenant_id": tenant_id, "plan_code": "core"})
+            publish_outbox_events.delay()
+        return {"status": "processed"}
     except Exception as e:
-        log.error(f"Unexpected error in create_subscription: {str(e)}")
-        raise PaymentProcessingError(f"Internal error: {str(e)}")
+        logger.error(f"Failed to process TENANT_CREATED: {e}")
+        raise
 
-@app.get("/subscriptions/v2/subscriptions/{tenant_id}")
-def get_subscription_v2(tenant_id: str = Path(...)):
-    """
-    Get tenant subscription details.
-    """
+@celery_app.task(name='subscriptions.cleanup_old_subscriptions')
+def cleanup_old_subscriptions():
     try:
-        # Validate inputs
-        validate_uuid(tenant_id, "tenant_id")
+        with SessionLocal() as db:
+            cutoff = datetime.now() - timedelta(days=SUBSCRIPTION_CLEANUP_DAYS)
+            deleted = db.execute(text("DELETE FROM tenant_subscriptions WHERE canceled_at < :cutoff AND status = 'canceled'"), {"cutoff": cutoff})
+            db.commit()
+            logger.info(f"Cleaned {deleted.rowcount} old subscriptions")
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+
+# App Lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting Subscriptions Service v4.1")
+    init_db()
+    Base.metadata.create_all(bind=engine)
+    yield
+    logger.info("Shutting down Subscriptions Service v4.1")
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "https://yourdomain.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+app = FastAPI(
+    title="ZeroQue Subscriptions Service",
+    version=SERVICE_VERSION,
+    lifespan=lifespan
+)
+
+# Health
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": SERVICE_NAME, "version": SERVICE_VERSION}
+
+# Endpoints
+@app.get("/subscriptions/v2/plans")
+def list_plans(active: Optional[bool] = Query(None)):
+    with SessionLocal() as db:
+        query = db.query(SubscriptionPlan)
+        if active is not None:
+            query = query.filter(SubscriptionPlan.active == active)
+        plans = query.all()
+        return [{"code": p.code, "name": p.name, "price_yearly_minor": p.price_yearly_minor} for p in plans]
+
+@app.get("/subscriptions/v2/plans/{plan_code}/features")
+def list_plan_features(plan_code: str):
+    with SessionLocal() as db:
+        features = db.query(PlanFeature, Feature).join(Feature).filter(PlanFeature.plan_code == plan_code).all()
+        return [{"feature_code": pf.feature_code, "limits": pf.limits or {}} for pf, f in features]
+
+@app.post("/subscriptions/v2/subscriptions")
+async def create_subscription(tenant_id: str = Body(...), payload: TenantSubscriptionPayload = Body(...), user_context: Dict = Depends(get_user_context)):
+    try:
+        if not check_permission("subscriptions.create", user_context):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
         
         with SessionLocal() as db:
-            set_rls_context(db, tenant_id)
+            set_rls_context(db, user_context["tenant_id"])
             
-            # Get subscription
-            subscription = db.query(TenantSubscription).filter(
-                TenantSubscription.tenant_id == tenant_id
-            ).first()
+            saga = SubscriptionSaga(db)
+            result = await saga.execute(tenant_id, payload, user_context)
             
-            if not subscription:
-                raise SubscriptionNotFoundError(f"No subscription found for tenant {tenant_id}")
-            
-            # Get plan details separately
-            plan = db.query(SubscriptionPlan).filter(
-                SubscriptionPlan.code == subscription.plan_code
-            ).first()
+            return result
         
-        return {
-                "subscription_id": subscription.id,
-                "tenant_id": tenant_id,
-                "plan_code": subscription.plan_code,
-                "plan_name": plan.name if plan else None,
-                "plan_description": plan.description if plan else None,
-                "payment_method": subscription.payment_method,
-                "status": subscription.status,
-                "external_id": subscription.external_id,
-                "current_period_start": subscription.current_period_start,
-                "current_period_end": subscription.current_period_end,
-                "trial_end": subscription.trial_end,
-                "created_at": subscription.created_at
-            }
-            
-    except (SubscriptionValidationError, SubscriptionNotFoundError) as e:
-        raise e
-    except SQLAlchemyError as e:
-        log.error(f"Database error in get_subscription: {str(e)}")
-        raise PaymentProcessingError(f"Database error: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        log.error(f"Unexpected error in get_subscription: {str(e)}")
-        raise PaymentProcessingError(f"Internal error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Legacy endpoints for backward compatibility (deprecated)
-@app.post("/subscriptions/sites/{tenant_id}/{site_id}/subscribe")
-def subscribe_site_legacy(
-    tenant_id: str = Path(...), 
-    site_id: str = Path(...), 
-    payload: dict = Body(...)
-):
-    """
-    Legacy endpoint for site subscriptions (deprecated - use tenant-level endpoints).
-    """
-    raise HTTPException(
-        status_code=410, 
-        detail="Site-level subscriptions are deprecated. Please use tenant-level subscription endpoints."
-    )
+@app.get("/subscriptions/v2/subscriptions/{tenant_id}")
+def get_subscription(tenant_id: str):
+    with SessionLocal() as db:
+        subscription = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first()
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        return {"plan_code": subscription.plan_code, "status": subscription.status}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8212)
+    uvicorn.run(app, host="0.0.0.0", port=8010)

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zeroque
+  labels:
+    name: zeroque
+    environment: production
+    version: "4.1"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zeroque-staging
+  labels:
+    name: zeroque-staging
+    environment: staging
+    version: "4.1"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zeroque-monitoring
+  labels:
+    name: zeroque-monitoring
+    environment: production
+    version: "4.1"
+
