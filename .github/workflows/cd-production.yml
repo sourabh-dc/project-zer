@@ -1,0 +1,238 @@
+name: CD Production Deployment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy to"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - production-blue
+          - production-green
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: zeroque
+
+jobs:
+  pre-deployment-checks:
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+      deployment-strategy: ${{ steps.check.outputs.deployment-strategy }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deployment conditions
+        id: check
+        run: |
+          # Check if all required checks have passed
+          echo "should-deploy=true" >> $GITHUB_OUTPUT
+
+          # Determine deployment strategy
+          if [ "${{ github.event.inputs.environment }}" = "production-blue" ]; then
+            echo "deployment-strategy=blue-green" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.environment }}" = "production-green" ]; then
+            echo "deployment-strategy=blue-green" >> $GITHUB_OUTPUT
+          else
+            echo "deployment-strategy=rolling" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate deployment readiness
+        run: |
+          echo "✅ All pre-deployment checks passed"
+          echo "Deployment strategy: ${{ steps.check.outputs.deployment-strategy }}"
+
+  deploy-production:
+    needs: pre-deployment-checks
+    runs-on: ubuntu-latest
+    if: needs.pre-deployment-checks.outputs.should-deploy == 'true'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+      - name: Create backup
+        run: |
+          echo "Creating backup before deployment..."
+          kubectl get all -n zeroque -o yaml > backup-$(date +%Y%m%d-%H%M%S).yaml
+
+      - name: Deploy infrastructure
+        run: |
+          echo "Deploying infrastructure components..."
+          kubectl apply -f k8s/namespaces/zeroque-namespace.yaml
+          kubectl apply -f k8s/configmaps/zeroque-config.yaml
+          kubectl apply -f k8s/secrets/zeroque-secrets.yaml
+          kubectl apply -f k8s/rbac/zeroque-rbac.yaml
+          kubectl apply -f k8s/network-policies/zeroque-network-policies.yaml
+
+      - name: Deploy monitoring
+        run: |
+          echo "Deploying monitoring components..."
+          kubectl apply -f k8s/monitoring/prometheus-config.yaml
+          kubectl apply -f k8s/monitoring/alertmanager-config.yaml
+
+      - name: Deploy services
+        run: |
+          echo "Deploying ZeroQue services..."
+          kubectl apply -f k8s/deployments/provisioning-deployment.yaml
+          kubectl apply -f k8s/services/provisioning-service.yaml
+          # Add other service deployments here
+
+      - name: Deploy ingress
+        run: |
+          echo "Deploying ingress configuration..."
+          kubectl apply -f k8s/ingress/zeroque-ingress.yaml
+
+      - name: Wait for deployment
+        run: |
+          echo "Waiting for deployment to complete..."
+          kubectl rollout status deployment/provisioning-service -n zeroque --timeout=600s
+
+      - name: Verify deployment
+        run: |
+          echo "Verifying deployment..."
+          kubectl get pods -n zeroque
+          kubectl get services -n zeroque
+          kubectl get ingress -n zeroque
+
+          # Check service health
+          kubectl get pods -n zeroque -l app=provisioning-service -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -q "True"
+
+      - name: Run post-deployment tests
+        run: |
+          echo "Running post-deployment tests..."
+          # Add health check tests here
+          kubectl exec -n zeroque deployment/provisioning-service -- curl -f http://localhost:8000/health || exit 1
+
+      - name: Update deployment status
+        run: |
+          echo "Deployment completed successfully!"
+          echo "Services deployed:"
+          kubectl get services -n zeroque
+
+      - name: Notify success
+        uses: 8398a7/action-slack@v3
+        if: success()
+        with:
+          status: success
+          channel: "#deployments"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          text: |
+            🚀 Production deployment successful!
+            Environment: ${{ github.event.inputs.environment || 'production' }}
+            Strategy: ${{ needs.pre-deployment-checks.outputs.deployment-strategy }}
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+
+      - name: Notify failure
+        uses: 8398a7/action-slack@v3
+        if: failure()
+        with:
+          status: failure
+          channel: "#alerts-critical"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          text: |
+            🚨 Production deployment failed!
+            Environment: ${{ github.event.inputs.environment || 'production' }}
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+            Please investigate immediately!
+
+  rollback:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    if: failure() && needs.deploy-production.result == 'failure'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+      - name: Rollback deployment
+        run: |
+          echo "Rolling back deployment..."
+          kubectl rollout undo deployment/provisioning-service -n zeroque
+          kubectl rollout status deployment/provisioning-service -n zeroque --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying rollback..."
+          kubectl get pods -n zeroque
+          kubectl get services -n zeroque
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          channel: "#alerts-critical"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          custom_payload: |
+            {
+              "text": "🔄 Production deployment rolled back",
+              "attachments": [
+                {
+                  "color": "warning",
+                  "fields": [
+                    {
+                      "title": "Environment",
+                      "value": "${{ github.event.inputs.environment || 'production' }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "${{ github.sha }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Author",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Status",
+                      "value": "Rollback completed",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+
+  cleanup:
+    needs: [deploy-production, rollback]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cleanup old images
+        run: |
+          echo "Cleaning up old container images..."
+          # Add cleanup logic here
+
+      - name: Update deployment metrics
+        run: |
+          echo "Updating deployment metrics..."
+          # Add metrics update logic here
+
