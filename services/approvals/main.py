@@ -254,6 +254,32 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# RabbitMQ Publishing
+def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
+    """Publish event directly to RabbitMQ"""
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
+        message = json.dumps({
+            "event_type": event_type,
+            "tenant_id": tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": event_data
+        })
+        channel.basic_publish(
+            exchange='zeroque_events',
+            routing_key=event_type,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        connection.close()
+        logger.info(f"Published {event_type} to RabbitMQ")
+        return True
+    except Exception as e:
+        logger.error(f"RabbitMQ publish failed: {e}")
+        return False
+
 # SQLAlchemy Models - Matching actual database schema
 class ApprovalChain(Base):
     """Approval Chain: Workflow templates for approval processes"""
@@ -341,8 +367,9 @@ class OutboxEvent(Base):
 class AuditLog(Base):
     """Audit Log: Security and access logging"""
     __tablename__ = "audit_logs"
-    
+
     log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     table_name = Column(String(100), nullable=False)
     record_id = Column(UUID(as_uuid=True), nullable=False)
     operation = Column(String(20), nullable=False)
@@ -508,6 +535,7 @@ async def log_audit_event(
         operation = operation_map.get(action, "INSERT")
         
         audit_log = AuditLog(
+            tenant_id=uuid.UUID(user_context.tenant_id),
             table_name=resource_type,
             record_id=uuid.uuid4() if not resource_id else uuid.UUID(resource_id),
             operation=operation,
@@ -569,32 +597,49 @@ async def validate_request_size(request_size: int) -> bool:
     """Validate request size is within limits"""
     return request_size <= MAX_REQUEST_SIZE_BYTES
 
-# Rate limiting (simplified in-memory implementation)
-rate_limit_store = {}
+# Rate limiting with Redis (production-ready)
+redis_client = None
 
 async def check_rate_limit(user_id: str) -> bool:
-    """Check if user has exceeded rate limit"""
+    """Check if user has exceeded rate limit using Redis"""
+    global redis_client
+
+    if redis_client is None:
+        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
     current_time = datetime.now()
     minute_key = current_time.replace(second=0, microsecond=0)
-    
-    if user_id not in rate_limit_store:
-        rate_limit_store[user_id] = {}
-    
-    user_requests = rate_limit_store[user_id]
-    
-    # Clean old entries
-    for time_key in list(user_requests.keys()):
-        if time_key < minute_key - timedelta(minutes=1):
-            del user_requests[time_key]
-    
-    # Check current minute
-    current_count = user_requests.get(minute_key, 0)
-    if current_count >= RATE_LIMIT_REQUESTS_PER_MINUTE:
-        return False
-    
-    # Increment counter
-    user_requests[minute_key] = current_count + 1
-    return True
+
+    try:
+        # Use Redis pipeline for atomic operations
+        pipe = redis_client.pipeline()
+
+        # Clean old entries (older than 1 minute)
+        cutoff_time = minute_key - timedelta(minutes=1)
+        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
+
+        # Remove old minute keys for this user
+        old_keys = redis_client.keys(f"rate_limit:{user_id}:*")
+        for key in old_keys:
+            if key < f"rate_limit:{user_id}:{cutoff_key}":
+                pipe.delete(key)
+
+        # Get current count
+        current_key = f"rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
+        pipe.incr(current_key)
+        pipe.expire(current_key, 60)  # Expire after 60 seconds
+
+        results = pipe.execute()
+        current_count = results[-2]  # The INCR result
+
+        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
+        return True  # Fail open for rate limiting
 
 # Phase 3: Event Publishing & Saga Functions
 
@@ -613,30 +658,26 @@ async def publish_event(event_type: str, event_data: Dict[str, Any], db_session)
         
         log.info(f"Event queued for publishing: {event_type} - {outbox_event.event_id}")
         
-        # Try to publish immediately (non-blocking)
+        # Try to publish immediately using RabbitMQ (non-blocking)
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(
-                    f"{EVENT_BUS_URL}/publish",
-                    json={
-                        "event_id": str(outbox_event.event_id),
-                        "event_type": event_type,
-                        "event_data": event_data,
-                        "source": "approvals-service",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                )
-                
-                if response.status_code == 200:
-                    outbox_event.status = 'published'
-                    outbox_event.processed_at = datetime.now(timezone.utc)
-                    log.info(f"Event published successfully: {event_type}")
-                    EVENTS_PUBLISHED.labels(event_type=event_type, status="success").inc()
-                    return True
-                else:
-                    log.warning(f"Event publishing failed: {response.status_code}")
-                    EVENTS_PUBLISHED.labels(event_type=event_type, status="failed").inc()
-                    
+            # Extract tenant_id from event_data if available
+            tenant_id = event_data.get("tenant_id", "unknown")
+
+            # Use synchronous RabbitMQ publishing in async context
+            import asyncio
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(None, publish_to_rabbitmq, event_type, event_data, tenant_id)
+
+            if success:
+                outbox_event.status = 'published'
+                outbox_event.processed_at = datetime.now(timezone.utc)
+                log.info(f"Event published successfully: {event_type}")
+                EVENTS_PUBLISHED.labels(event_type=event_type, status="success").inc()
+                return True
+            else:
+                log.warning(f"Event publishing failed to RabbitMQ")
+                EVENTS_PUBLISHED.labels(event_type=event_type, status="failed").inc()
+
         except Exception as e:
             log.warning(f"Event publishing failed, will retry: {str(e)}")
         
@@ -919,12 +960,20 @@ app = FastAPI(
     redoc_url="/redoc" if ENVIRONMENT != "production" else None
 )
 
-# Production Middleware
+# Production Middleware - Restrict CORS origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if ENVIRONMENT == "development" else ["https://*.zeroque.com"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",  # Streamlit apps
+        "http://localhost:8502",
+        "http://localhost:8503",
+        "http://localhost:8510",
+        "https://*.zeroque.com"
+    ] if ENVIRONMENT == "development" else ["https://*.zeroque.com", "https://zeroque.com"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -2098,6 +2147,102 @@ def cleanup_old_approvals(self):
             
     except Exception as e:
         logger.error(f"Failed to cleanup old approvals: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# EVENT CONSUMPTION WORKERS
+# =============================================================================
+
+@celery_app.task(bind=True, max_retries=3)
+def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
+    """Process TENANT_CREATED events"""
+    try:
+        logger.info(f"Processing TENANT_CREATED for tenant: {tenant_id}")
+
+        # Create default approval chains for new tenant
+        with SessionLocal() as db:
+            # Create default approval chains for common scenarios
+            default_chains = [
+                {
+                    "name": "Purchase Order Approval",
+                    "description": "Standard purchase order approval workflow",
+                    "chain_type": "purchase_order",
+                    "tenant_id": tenant_id
+                },
+                {
+                    "name": "Budget Approval",
+                    "description": "Budget increase approval workflow",
+                    "chain_type": "budget",
+                    "tenant_id": tenant_id
+                },
+                {
+                    "name": "Vendor Onboarding",
+                    "description": "New vendor approval workflow",
+                    "chain_type": "vendor_onboarding",
+                    "tenant_id": tenant_id
+                }
+            ]
+
+            for chain_data in default_chains:
+                chain = ApprovalChain(**chain_data)
+                db.add(chain)
+
+            db.commit()
+            logger.info(f"Created default approval chains for tenant: {tenant_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process TENANT_CREATED for {tenant_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
+    """Process ORDER_COMPLETED events"""
+    try:
+        logger.info(f"Processing ORDER_COMPLETED for order: {order_id}")
+
+        # Check if order requires approval based on amount or type
+        with SessionLocal() as db:
+            # This could trigger approval chains for high-value orders
+            order_amount = order_data.get("total_amount", 0)
+            tenant_id = order_data.get("tenant_id")
+
+            if order_amount > 10000:  # Example threshold
+                # Create approval request for high-value order
+                approval_request = ApprovalRequest(
+                    request_type="order_review",
+                    title=f"High-value order review: {order_id}",
+                    description=f"Order amount: ${order_amount}",
+                    requested_by=order_data.get("user_id", "system"),
+                    tenant_id=tenant_id,
+                    metadata={"order_id": order_id, "amount": order_amount}
+                )
+                db.add(approval_request)
+                db.commit()
+
+                logger.info(f"Created approval request for high-value order: {order_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process ORDER_COMPLETED for {order_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_old_outbox_events(self):
+    """Clean up old outbox events"""
+    try:
+        with SessionLocal() as db:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+            result = db.execute(text("""
+                DELETE FROM outbox_events
+                WHERE status = 'published' AND processed_at < :cutoff_date
+            """), {"cutoff_date": cutoff_date})
+
+            db.commit()
+
+            logger.info(f"Cleaned up {result.rowcount} old outbox events")
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup old outbox events: {e}")
         raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
