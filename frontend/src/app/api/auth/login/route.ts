@@ -20,8 +20,9 @@ export async function POST(req: NextRequest) {
     const csrf = crypto.randomUUID();
 
     const response = NextResponse.json({ ok: true, token_type: data.token_type, expires_at: data.expires_at });
-    response.cookies.set("auth_token", token, { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
-    response.cookies.set("csrf_token", csrf, { httpOnly: false, sameSite: "lax", secure: true, path: "/" });
+    const isProd = process.env.NODE_ENV === "production";
+    response.cookies.set("auth_token", token, { httpOnly: true, sameSite: "lax", secure: isProd, path: "/" });
+    response.cookies.set("csrf_token", csrf, { httpOnly: false, sameSite: "lax", secure: isProd, path: "/" });
     return response;
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
