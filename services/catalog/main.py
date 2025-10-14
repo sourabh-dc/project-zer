@@ -42,7 +42,7 @@ SERVICE_NAME = "catalog"
 SERVICE_VERSION = "2.0.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev_fresh")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -127,15 +127,16 @@ circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 # =============================================================================
 
 class ProductV2(Base):
-    """Product entity for V2 architecture"""
+    """Product entity for V2 architecture - Phase 3 Enhanced"""
     __tablename__ = "products_v2"
-    
+
     product_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), nullable=False)
     vendor_id = Column(UUID(as_uuid=True), nullable=False)
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     sku = Column(String(100), nullable=False)
+    barcode = Column(String(100), nullable=True)  # Phase 3: Barcode for CV linkage
     category_id = Column(UUID(as_uuid=True), nullable=True)
     brand = Column(String(100), nullable=True)
     base_price_minor = Column(Integer, nullable=False, default=0)
@@ -150,7 +151,7 @@ class ProductV2(Base):
 class ProductVariantV2(Base):
     """Product variant entity"""
     __tablename__ = "product_variants_v2"
-    
+
     variant_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey('products_v2.product_id'), nullable=False)
     name = Column(String(200), nullable=False)
@@ -158,6 +159,36 @@ class ProductVariantV2(Base):
     price_adjustment_minor = Column(Integer, nullable=False, default=0)
     attributes = Column(JSON, nullable=True)  # {"color": "red", "size": "L"}
     is_active = Column(Boolean, nullable=False, default=True)
+
+# Phase 3: Bundle/Kit Models
+class ProductBundleV2(Base):
+    """Product bundle/kit entity - Phase 3"""
+    __tablename__ = "product_bundles_v2"
+
+    bundle_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    bundle_sku = Column(String(100), nullable=False)
+    bundle_type = Column(String(50), nullable=False)  # "kit", "bundle", "package"
+    base_price_minor = Column(Integer, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class BundleComponentV2(Base):
+    """Bundle component mapping - Phase 3"""
+    __tablename__ = "bundle_components_v2"
+
+    component_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bundle_id = Column(UUID(as_uuid=True), ForeignKey('product_bundles_v2.bundle_id'), nullable=False)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products_v2.product_id'), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey('product_variants_v2.variant_id'), nullable=True)
+    quantity = Column(Integer, nullable=False, default=1)
+    price_override_minor = Column(Integer, nullable=True)  # Override price for this component
+    is_required = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
     metadata_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -207,11 +238,12 @@ class AuditLog(Base):
 # =============================================================================
 
 class ProductRequest(BaseModel):
-    """Product creation request"""
+    """Product creation request - Phase 3 Enhanced"""
     vendor_id: str
     name: str
     description: Optional[str] = None
     sku: str
+    barcode: Optional[str] = None  # Phase 3: Barcode for CV linkage
     category_id: Optional[str] = None
     brand: Optional[str] = None
     base_price_minor: int = 0
@@ -234,6 +266,27 @@ class CategoryRequest(BaseModel):
     name: str
     description: Optional[str] = None
     parent_category_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+# Phase 3: Bundle Models
+class BundleComponentRequest(BaseModel):
+    """Bundle component request"""
+    product_id: str
+    variant_id: Optional[str] = None
+    quantity: int = 1
+    price_override_minor: Optional[int] = None
+    is_required: bool = True
+    sort_order: int = 0
+
+class ProductBundleRequest(BaseModel):
+    """Product bundle creation request - Phase 3"""
+    name: str
+    description: Optional[str] = None
+    bundle_sku: str
+    bundle_type: str = "bundle"  # "kit", "bundle", "package"
+    base_price_minor: int = 0
+    currency: str = "GBP"
+    components: List[BundleComponentRequest]
     metadata: Optional[Dict[str, Any]] = None
 
 class ProductSearchRequest(BaseModel):
@@ -888,11 +941,237 @@ async def create_category(
         catalog_requests_total.labels(endpoint="create_category", status="fail").inc()
         raise HTTPException(status_code=500, detail=str(e))
         
-        return {"category_id": str(category_id), "created": True}
-        
     except Exception as e:
         logger.error("Failed to create category", error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# Phase 3: Bundle Endpoints
+@app.post("/bundles")
+async def create_bundle(
+    req: ProductBundleRequest,
+    db: SessionLocal = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Create a new product bundle/kit - Phase 3"""
+    start = time.time()
+    try:
+        catalog_requests_total.labels(endpoint="create_bundle", status="start").inc()
+
+        # Check permissions
+        if not check_permission("catalog.create", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Create bundle
+        bundle_id = uuid.uuid4()
+        bundle = ProductBundleV2(
+            bundle_id=bundle_id,
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            name=req.name,
+            description=req.description,
+            bundle_sku=req.bundle_sku,
+            bundle_type=req.bundle_type,
+            base_price_minor=req.base_price_minor,
+            currency=req.currency,
+            metadata_json=req.metadata
+        )
+
+        db.add(bundle)
+        db.commit()
+        db.refresh(bundle)
+
+        # Create bundle components
+        for i, component_req in enumerate(req.components):
+            component = BundleComponentV2(
+                bundle_id=bundle_id,
+                product_id=uuid.UUID(component_req.product_id),
+                variant_id=uuid.UUID(component_req.variant_id) if component_req.variant_id else None,
+                quantity=component_req.quantity,
+                price_override_minor=component_req.price_override_minor,
+                is_required=component_req.is_required,
+                sort_order=component_req.sort_order or i
+            )
+            db.add(component)
+
+        db.commit()
+
+        # Publish PRODUCT_CREATED event for bundle
+        event_data = {
+            "event_id": str(uuid.uuid4()),
+            "event_type": "BUNDLE_CREATED",
+            "tenant_id": uctx["tenant_id"],
+            "bundle_id": str(bundle_id),
+            "bundle_name": req.name,
+            "bundle_sku": req.bundle_sku,
+            "bundle_type": req.bundle_type,
+            "component_count": len(req.components),
+            "created_by": uctx["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Store event in outbox
+        await store_outbox_event(db, event_data, "catalog_events")
+
+        catalog_requests_total.labels(endpoint="create_bundle", status="ok").inc()
+        catalog_request_duration.labels(endpoint="create_bundle").observe(time.time() - start)
+
+        return {
+            "bundle_id": str(bundle_id),
+            "bundle_name": req.name,
+            "bundle_sku": req.bundle_sku,
+            "bundle_type": req.bundle_type,
+            "component_count": len(req.components),
+            "created_at": bundle.created_at.isoformat()
+        }
+
+    except Exception as e:
+        catalog_requests_total.labels(endpoint="create_bundle", status="fail").inc()
+        logger.error(f"Failed to create bundle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/bundles")
+async def list_bundles(
+    tenant_id: str = Query(...),
+    bundle_type: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db: SessionLocal = Depends(get_db_with_rls)
+):
+    """List bundles/kits - Phase 3"""
+    try:
+        query = db.query(ProductBundleV2).filter(
+            ProductBundleV2.tenant_id == uuid.UUID(tenant_id),
+            ProductBundleV2.is_active == True
+        )
+
+        if bundle_type:
+            query = query.filter(ProductBundleV2.bundle_type == bundle_type)
+
+        bundles = query.offset(offset).limit(limit).all()
+
+        return {
+            "bundles": [
+                {
+                    "bundle_id": str(bundle.bundle_id),
+                    "name": bundle.name,
+                    "bundle_sku": bundle.bundle_sku,
+                    "bundle_type": bundle.bundle_type,
+                    "base_price_minor": bundle.base_price_minor,
+                    "currency": bundle.currency,
+                    "created_at": bundle.created_at.isoformat()
+                }
+                for bundle in bundles
+            ],
+            "total": len(bundles),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list bundles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/bundles/{bundle_id}")
+async def get_bundle(
+    bundle_id: str,
+    db: SessionLocal = Depends(get_db_with_rls)
+):
+    """Get bundle details with components - Phase 3"""
+    try:
+        bundle = db.query(ProductBundleV2).filter(
+            ProductBundleV2.bundle_id == uuid.UUID(bundle_id)
+        ).first()
+
+        if not bundle:
+            raise HTTPException(status_code=404, detail="Bundle not found")
+
+        # Get components
+        components = db.query(BundleComponentV2).filter(
+            BundleComponentV2.bundle_id == uuid.UUID(bundle_id)
+        ).order_by(BundleComponentV2.sort_order).all()
+
+        return {
+            "bundle_id": str(bundle.bundle_id),
+            "name": bundle.name,
+            "description": bundle.description,
+            "bundle_sku": bundle.bundle_sku,
+            "bundle_type": bundle.bundle_type,
+            "base_price_minor": bundle.base_price_minor,
+            "currency": bundle.currency,
+            "is_active": bundle.is_active,
+            "components": [
+                {
+                    "component_id": str(component.component_id),
+                    "product_id": str(component.product_id),
+                    "variant_id": str(component.variant_id) if component.variant_id else None,
+                    "quantity": component.quantity,
+                    "price_override_minor": component.price_override_minor,
+                    "is_required": component.is_required,
+                    "sort_order": component.sort_order
+                }
+                for component in components
+            ],
+            "created_at": bundle.created_at.isoformat(),
+            "updated_at": bundle.updated_at.isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get bundle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Phase 3: Barcode Sync Endpoint
+@app.post("/products/{product_id}/barcode-sync")
+async def sync_product_barcode(
+    product_id: str,
+    db: SessionLocal = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Sync product barcode to CV Connector - Phase 3"""
+    try:
+        # Check permissions
+        if not check_permission("catalog.admin", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get product
+        product = db.query(ProductV2).filter(
+            ProductV2.product_id == uuid.UUID(product_id)
+        ).first()
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        if not product.barcode:
+            raise HTTPException(status_code=400, detail="Product has no barcode")
+
+        # Publish barcode sync event
+        event_data = {
+            "event_id": str(uuid.uuid4()),
+            "event_type": "BARCODE_SYNC",
+            "tenant_id": uctx["tenant_id"],
+            "product_id": product_id,
+            "barcode": product.barcode,
+            "product_name": product.name,
+            "sku": product.sku,
+            "created_by": uctx["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Store event in outbox for CV Connector consumption
+        await store_outbox_event(db, event_data, "catalog_events")
+
+        return {
+            "product_id": product_id,
+            "barcode": product.barcode,
+            "sync_status": "queued",
+            "message": "Barcode sync event published to CV Connector"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync barcode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search")
 async def search_products(

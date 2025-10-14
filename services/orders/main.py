@@ -350,6 +350,18 @@ def get_user_context(authorization: Optional[str] = None, x_api_key: Optional[st
     # TODO: Implement proper JWT/API key validation
     raise HTTPException(status_code=401, detail="Authentication required")
 
+
+def set_rls_context(db, tenant_id: str, user_id: Optional[str] = None):
+    """Set RLS context for database session"""
+    try:
+        db.rollback()
+        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
+        if user_id:
+            db.execute(text("SET app.current_user = :uid"), {"uid": user_id})
+    except Exception as e:
+        logger.warning(f"Failed to set RLS context: {e}")
+        db.rollback()
+
 def store_outbox(db, event_type, tenant_id, entity_id, event_data):
     """Store outbox event"""
     event_id = f"evt_{uuid.uuid4().hex[:12]}"

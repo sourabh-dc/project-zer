@@ -79,7 +79,7 @@ SERVICE_NAME = "payments"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://sourabhagrawa@localhost:5432/zeroque_dev_fresh")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -207,16 +207,83 @@ class PaymentRefund(Base):
 class PaymentAdjustment(Base):
     """Payment adjustments table"""
     __tablename__ = "payment_adjustments"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
     payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions_new.id'), nullable=False)
     adjustment_type = Column(String(50), nullable=False, comment='discount, fee, tax, etc.')
-    amount_minor = Column(BigInteger, nullable=False, comment='Adjustment amount in minor units')
+    adjustment_amount_minor = Column(BigInteger, nullable=False, comment='Adjustment amount in minor units')
+    adjustment_reason = Column(Text, nullable=True)
     currency = Column(String(3), nullable=False, default='GBP')
-    reason = Column(String(255), nullable=True, comment='Adjustment reason')
-    transaction_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    is_applied = Column(Boolean, nullable=False, default=False)
+    applied_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# Phase 5: Trade Account & Multi-Currency Models
+class TradeAccount(Base):
+    """Trade account for business customers - Phase 5"""
+    __tablename__ = "trade_accounts"
+
+    trade_account_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    account_number = Column(String(100), nullable=False, unique=True)
+    company_name = Column(String(200), nullable=False)
+    contact_email = Column(String(255), nullable=False)
+    credit_limit_minor = Column(BigInteger, nullable=False, default=0)
+    available_credit_minor = Column(BigInteger, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    payment_terms_days = Column(Integer, nullable=False, default=30)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class PaymentIntent(Base):
+    """Payment intent for transaction processing - Phase 5"""
+    __tablename__ = "payment_intents"
+
+    payment_intent_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    order_id = Column(UUID(as_uuid=True), nullable=True)
+    trade_account_id = Column(UUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
+    amount_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), nullable=False, default='GBP')
+    status = Column(String(20), nullable=False, default='pending')  # pending, processing, succeeded, failed, cancelled
+    provider = Column(String(50), nullable=False)  # stripe, adyen, paypal, etc.
+    provider_intent_id = Column(String(255), nullable=True)
+    payment_method = Column(String(50), nullable=True)  # card, bank_transfer, etc.
+    metadata = Column(JSONB, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    succeeded_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class CurrencyRate(Base):
+    """Currency exchange rates - Phase 5"""
+    __tablename__ = "currency_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(3), nullable=False)
+    target_currency = Column(String(3), nullable=False)
+    rate = Column(Numeric(15, 8), nullable=False)
+    source = Column(String(50), nullable=False, default='manual')  # manual, api, etc.
+    valid_from = Column(DateTime(timezone=True), nullable=False)
+    valid_to = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class PaymentWebhook(Base):
+    """Payment webhook events - Phase 5"""
+    __tablename__ = "payment_webhooks"
+
+    webhook_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    provider = Column(String(50), nullable=False)
+    event_type = Column(String(100), nullable=False)
+    event_data = Column(JSONB, nullable=False)
+    processed = Column(Boolean, nullable=False, default=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class AuditLog(Base):
     """Audit logs table"""
@@ -295,7 +362,63 @@ class RailRequest(BaseModel):
     type: str = Field(default="payment", description="Rail type")
     name: str = Field(..., description="Provider name (e.g., stripe, adyen)")
     config: Dict[str, Any] = Field(..., description="Provider configuration")
-    active: bool = Field(default=True, description="Whether the provider is active")
+
+# Phase 5: Trade Account & Multi-Currency Models
+class TradeAccountRequest(BaseModel):
+    """Trade account creation request - Phase 5"""
+    company_name: str = Field(..., description="Company name", max_length=200)
+    contact_email: str = Field(..., description="Contact email", max_length=255)
+    credit_limit_minor: int = Field(..., description="Credit limit in minor units", ge=0)
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    payment_terms_days: int = Field(30, description="Payment terms in days", ge=0)
+
+class TradeAccountResponse(BaseModel):
+    """Trade account response model - Phase 5"""
+    trade_account_id: str
+    account_number: str
+    company_name: str
+    contact_email: str
+    credit_limit_minor: int
+    available_credit_minor: int
+    currency: str
+    payment_terms_days: int
+    is_active: bool
+    created_at: datetime
+
+class PaymentIntentRequest(BaseModel):
+    """Payment intent creation request - Phase 5"""
+    order_id: Optional[str] = Field(None, description="Associated order ID")
+    trade_account_id: Optional[str] = Field(None, description="Trade account ID")
+    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    payment_method: str = Field("card", description="Payment method", regex="^(card|bank_transfer|wallet)$")
+    description: Optional[str] = Field(None, description="Payment description")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+class PaymentIntentResponse(BaseModel):
+    """Payment intent response model - Phase 5"""
+    payment_intent_id: str
+    client_secret: str
+    amount_minor: int
+    currency: str
+    status: str
+    provider: str
+    expires_at: Optional[datetime]
+
+class MultiCurrencyConversionRequest(BaseModel):
+    """Currency conversion request - Phase 5"""
+    from_currency: str = Field(..., description="Source currency", max_length=3)
+    to_currency: str = Field(..., description="Target currency", max_length=3)
+    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
+
+class MultiCurrencyConversionResponse(BaseModel):
+    """Currency conversion response - Phase 5"""
+    from_currency: str
+    to_currency: str
+    original_amount_minor: int
+    converted_amount_minor: int
+    exchange_rate: float
+    converted_at: datetime
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -370,19 +493,34 @@ class StripeProvider(BasePaymentProvider):
         stripe.api_key = self.api_key
         self.stripe = stripe
     
-    async def create_payment_intent(self, amount_minor: int, currency: str, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Create a Stripe payment intent"""
+    async def create_payment_intent(self, intent_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a Stripe payment intent - Phase 5"""
         try:
+            # Demo mode: return mock response
+            if ALLOW_DEMO:
+                return {
+                    "id": f"pi_demo_{uuid.uuid4().hex[:16]}",
+                    "client_secret": f"pi_demo_{uuid.uuid4().hex[:16]}_secret_{uuid.uuid4().hex[:16]}",
+                    "amount": intent_data.get("amount", 0),
+                    "currency": intent_data.get("currency", "gbp"),
+                    "status": "requires_payment_method",
+                    "metadata": intent_data.get("metadata", {})
+                }
+
+            # Production: Create real Stripe payment intent
             payment_intent = self.stripe.PaymentIntent.create(
-                amount=amount_minor,
-                currency=currency.lower(),
-                metadata=metadata or {}
+                amount=intent_data.get("amount", 0),
+                currency=intent_data.get("currency", "gbp").lower(),
+                payment_method_types=intent_data.get("payment_method_types", ["card"]),
+                metadata=intent_data.get("metadata", {})
             )
             return {
-                "ok": True,
-                "payment_intent_id": payment_intent.id,
+                "id": payment_intent.id,
                 "client_secret": payment_intent.client_secret,
-                "status": payment_intent.status
+                "amount": payment_intent.amount,
+                "currency": payment_intent.currency,
+                "status": payment_intent.status,
+                "metadata": payment_intent.metadata
             }
         except Exception as e:
             logger.error(f"Stripe payment intent creation failed: {str(e)}")
@@ -1248,6 +1386,263 @@ async def stripe_customers_legacy():
         "migrate_to": "/payments/v2/customers",
         "message": "This endpoint is deprecated. Please use /payments/v2/customers"
     }
+
+# Phase 5: Trade Account & Multi-Currency Endpoints
+@app.post("/trade-accounts", response_model=TradeAccountResponse)
+async def create_trade_account(
+    request: TradeAccountRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Create a new trade account - Phase 5"""
+    try:
+        payments_requests_total.labels(endpoint="create_trade_account", status="start").inc()
+
+        # Check permissions
+        if not check_permission("payments.create", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Generate account number
+        account_number = f"TA-{uuid.uuid4().hex[:8].upper()}"
+
+        trade_account = TradeAccount(
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            account_number=account_number,
+            company_name=request.company_name,
+            contact_email=request.contact_email,
+            credit_limit_minor=request.credit_limit_minor,
+            available_credit_minor=request.credit_limit_minor,
+            currency=request.currency,
+            payment_terms_days=request.payment_terms_days
+        )
+
+        db.add(trade_account)
+        db.commit()
+        db.refresh(trade_account)
+
+        payments_requests_total.labels(endpoint="create_trade_account", status="ok").inc()
+
+        return TradeAccountResponse(
+            trade_account_id=str(trade_account.trade_account_id),
+            account_number=trade_account.account_number,
+            company_name=trade_account.company_name,
+            contact_email=trade_account.contact_email,
+            credit_limit_minor=trade_account.credit_limit_minor,
+            available_credit_minor=trade_account.available_credit_minor,
+            currency=trade_account.currency,
+            payment_terms_days=trade_account.payment_terms_days,
+            is_active=trade_account.is_active,
+            created_at=trade_account.created_at
+        )
+
+    except Exception as e:
+        payments_requests_total.labels(endpoint="create_trade_account", status="fail").inc()
+        logger.error(f"Failed to create trade account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trade-accounts")
+async def list_trade_accounts(
+    tenant_id: str = Query(...),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db = Depends(get_db_with_rls)
+):
+    """List trade accounts - Phase 5"""
+    try:
+        query = db.query(TradeAccount).filter(
+            TradeAccount.tenant_id == uuid.UUID(tenant_id),
+            TradeAccount.is_active == True
+        )
+
+        accounts = query.offset(offset).limit(limit).all()
+
+        return {
+            "trade_accounts": [
+                TradeAccountResponse(
+                    trade_account_id=str(acc.trade_account_id),
+                    account_number=acc.account_number,
+                    company_name=acc.company_name,
+                    contact_email=acc.contact_email,
+                    credit_limit_minor=acc.credit_limit_minor,
+                    available_credit_minor=acc.available_credit_minor,
+                    currency=acc.currency,
+                    payment_terms_days=acc.payment_terms_days,
+                    is_active=acc.is_active,
+                    created_at=acc.created_at
+                )
+                for acc in accounts
+            ],
+            "total": len(accounts),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list trade accounts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/payment-intents", response_model=PaymentIntentResponse)
+async def create_payment_intent(
+    request: PaymentIntentRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Create a payment intent - Phase 5"""
+    try:
+        payments_requests_total.labels(endpoint="create_payment_intent", status="start").inc()
+
+        # Check permissions
+        if not check_permission("payments.create", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Check if trade account exists and has sufficient credit
+        if request.trade_account_id:
+            trade_account = db.query(TradeAccount).filter(
+                TradeAccount.trade_account_id == uuid.UUID(request.trade_account_id),
+                TradeAccount.tenant_id == uuid.UUID(uctx["tenant_id"]),
+                TradeAccount.is_active == True
+            ).first()
+
+            if not trade_account:
+                raise HTTPException(status_code=404, detail="Trade account not found")
+
+            if trade_account.available_credit_minor < request.amount_minor:
+                raise HTTPException(status_code=400, detail="Insufficient credit limit")
+
+        # Create payment intent
+        payment_intent = PaymentIntent(
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            order_id=uuid.UUID(request.order_id) if request.order_id else None,
+            trade_account_id=uuid.UUID(request.trade_account_id) if request.trade_account_id else None,
+            amount_minor=request.amount_minor,
+            currency=request.currency,
+            provider="stripe",  # Default to Stripe for Phase 5
+            payment_method=request.payment_method,
+            metadata=request.metadata,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hour expiry
+        )
+
+        db.add(payment_intent)
+        db.commit()
+        db.refresh(payment_intent)
+
+        # Create Stripe payment intent
+        stripe_provider = StripeProvider({"api_key": os.getenv("STRIPE_SECRET_KEY", "sk_test_demo")})
+
+        stripe_intent = await stripe_provider.create_payment_intent({
+            "amount": request.amount_minor,
+            "currency": request.currency.lower(),
+            "payment_method_types": [request.payment_method],
+            "metadata": {
+                "payment_intent_id": str(payment_intent.payment_intent_id),
+                "tenant_id": uctx["tenant_id"],
+                "user_id": uctx["user_id"]
+            }
+        })
+
+        # Update payment intent with provider details
+        payment_intent.provider_intent_id = stripe_intent.get("id")
+        payment_intent.status = "processing"
+        db.commit()
+
+        payments_requests_total.labels(endpoint="create_payment_intent", status="ok").inc()
+
+        return PaymentIntentResponse(
+            payment_intent_id=str(payment_intent.payment_intent_id),
+            client_secret=stripe_intent.get("client_secret"),
+            amount_minor=payment_intent.amount_minor,
+            currency=payment_intent.currency,
+            status=payment_intent.status,
+            provider=payment_intent.provider,
+            expires_at=payment_intent.expires_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        payments_requests_total.labels(endpoint="create_payment_intent", status="fail").inc()
+        logger.error(f"Failed to create payment intent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/currency/convert", response_model=MultiCurrencyConversionResponse)
+async def convert_currency(
+    request: MultiCurrencyConversionRequest,
+    db = Depends(get_db_with_rls)
+):
+    """Convert currency using stored exchange rates - Phase 5"""
+    try:
+        payments_requests_total.labels(endpoint="convert_currency", status="start").inc()
+
+        # Get current exchange rate
+        rate_record = db.query(CurrencyRate).filter(
+            CurrencyRate.base_currency == request.from_currency.upper(),
+            CurrencyRate.target_currency == request.to_currency.upper(),
+            CurrencyRate.is_active == True,
+            CurrencyRate.valid_from <= datetime.now(timezone.utc),
+            or_(CurrencyRate.valid_to.is_(None), CurrencyRate.valid_to >= datetime.now(timezone.utc))
+        ).order_by(CurrencyRate.created_at.desc()).first()
+
+        if not rate_record:
+            # Use fallback rate (1:1 for demo)
+            exchange_rate = 1.0
+        else:
+            exchange_rate = float(rate_record.rate)
+
+        converted_amount = int(request.amount_minor * exchange_rate)
+
+        payments_requests_total.labels(endpoint="convert_currency", status="ok").inc()
+
+        return MultiCurrencyConversionResponse(
+            from_currency=request.from_currency.upper(),
+            to_currency=request.to_currency.upper(),
+            original_amount_minor=request.amount_minor,
+            converted_amount_minor=converted_amount,
+            exchange_rate=exchange_rate,
+            converted_at=datetime.now(timezone.utc)
+        )
+
+    except Exception as e:
+        payments_requests_total.labels(endpoint="convert_currency", status="fail").inc()
+        logger.error(f"Failed to convert currency: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/payment-intents/{payment_intent_id}")
+async def get_payment_intent(
+    payment_intent_id: str,
+    db = Depends(get_db_with_rls)
+):
+    """Get payment intent details - Phase 5"""
+    try:
+        payment_intent = db.query(PaymentIntent).filter(
+            PaymentIntent.payment_intent_id == uuid.UUID(payment_intent_id)
+        ).first()
+
+        if not payment_intent:
+            raise HTTPException(status_code=404, detail="Payment intent not found")
+
+        return {
+            "payment_intent_id": str(payment_intent.payment_intent_id),
+            "order_id": str(payment_intent.order_id) if payment_intent.order_id else None,
+            "trade_account_id": str(payment_intent.trade_account_id) if payment_intent.trade_account_id else None,
+            "amount_minor": payment_intent.amount_minor,
+            "currency": payment_intent.currency,
+            "status": payment_intent.status,
+            "provider": payment_intent.provider,
+            "provider_intent_id": payment_intent.provider_intent_id,
+            "payment_method": payment_intent.payment_method,
+            "metadata": payment_intent.metadata,
+            "expires_at": payment_intent.expires_at.isoformat() if payment_intent.expires_at else None,
+            "succeeded_at": payment_intent.succeeded_at.isoformat() if payment_intent.succeeded_at else None,
+            "failed_at": payment_intent.failed_at.isoformat() if payment_intent.failed_at else None,
+            "created_at": payment_intent.created_at.isoformat(),
+            "updated_at": payment_intent.updated_at.isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get payment intent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stripe/payment-intent")
 async def stripe_payment_intent_legacy():

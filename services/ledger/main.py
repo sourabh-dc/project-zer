@@ -179,9 +179,9 @@ class OutboxEvent(Base):
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
 class AuditLog(Base):
-    """Audit trail for all operations"""
+    """Audit trail for all operations - Phase 7: Enhanced for compliance"""
     __tablename__ = "audit_logs"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), nullable=True)
     user_id = Column(UUID(as_uuid=True), nullable=True)
@@ -192,6 +192,12 @@ class AuditLog(Base):
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Phase 7: Enhanced audit fields for compliance
+    session_id = Column(String(100), nullable=True)
+    correlation_id = Column(String(100), nullable=True)
+    severity = Column(String(20), nullable=False, default="info")  # info, warning, error, critical
+    category = Column(String(50), nullable=False, default="system")  # system, security, business, compliance
+    retention_until = Column(DateTime(timezone=True), nullable=True)  # For data retention policies
 
 # =============================================================================
 # PYDANTIC MODELS
@@ -1680,6 +1686,136 @@ def cleanup_old_ledger_data(self):
     except Exception as e:
         logger.error(f"Failed to cleanup old ledger data: {e}")
         raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# PHASE 7: AUDIT LOG VIEWER ENDPOINTS (Pro/Enterprise Feature)
+# =============================================================================
+
+@app.get("/audit/v7/logs")
+async def get_audit_logs(
+    tenant_id: str = Query(...),
+    user_id: str = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    action: Optional[str] = Query(None),
+    resource_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """Get audit logs for tenant - Phase 7: Audit Log Viewer (Pro/Enterprise)"""
+    try:
+        # Check if user has audit log access permission
+        if not check_permission("audit.logs.view", {"tenant_id": tenant_id, "user_id": user_id}):
+            raise HTTPException(status_code=403, detail="Insufficient permissions - Audit logs require Pro or Enterprise plan")
+
+        with SessionLocal() as db:
+            query = db.query(AuditLog).filter(
+                AuditLog.tenant_id == uuid.UUID(tenant_id)
+            )
+
+            # Apply filters
+            if action:
+                query = query.filter(AuditLog.action == action)
+            if resource_type:
+                query = query.filter(AuditLog.resource_type == resource_type)
+            if severity:
+                query = query.filter(AuditLog.severity == severity)
+            if category:
+                query = query.filter(AuditLog.category == category)
+
+            # Date range filter
+            try:
+                start_datetime = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                end_datetime = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                query = query.filter(
+                    AuditLog.created_at >= start_datetime,
+                    AuditLog.created_at <= end_datetime
+                )
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format")
+
+            # Get total count for pagination
+            total = query.count()
+
+            # Apply pagination and ordering
+            logs = query.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
+
+            return {
+                "logs": [
+                    {
+                        "id": str(log.id),
+                        "action": log.action,
+                        "resource_type": log.resource_type,
+                        "resource_id": log.resource_id,
+                        "details": log.details,
+                        "user_id": str(log.user_id) if log.user_id else None,
+                        "ip_address": log.ip_address,
+                        "created_at": log.created_at.isoformat(),
+                        "severity": log.severity,
+                        "category": log.category,
+                        "session_id": log.session_id,
+                        "correlation_id": log.correlation_id
+                    }
+                    for log in logs
+                ],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "has_more": (offset + limit) < total
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get audit logs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/audit/v7/logs/{log_id}")
+async def get_audit_log_detail(
+    log_id: str,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Get detailed audit log entry - Phase 7"""
+    try:
+        # Check permissions
+        if not check_permission("audit.logs.view", {"tenant_id": tenant_id, "user_id": user_id}):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        with SessionLocal() as db:
+            log = db.query(AuditLog).filter(
+                AuditLog.id == uuid.UUID(log_id),
+                AuditLog.tenant_id == uuid.UUID(tenant_id)
+            ).first()
+
+            if not log:
+                raise HTTPException(status_code=404, detail="Audit log not found")
+
+            return {
+                "id": str(log.id),
+                "tenant_id": str(log.tenant_id),
+                "user_id": str(log.user_id) if log.user_id else None,
+                "action": log.action,
+                "resource_type": log.resource_type,
+                "resource_id": log.resource_id,
+                "details": log.details,
+                "ip_address": log.ip_address,
+                "user_agent": log.user_agent,
+                "created_at": log.created_at.isoformat(),
+                "session_id": log.session_id,
+                "correlation_id": log.correlation_id,
+                "severity": log.severity,
+                "category": log.category,
+                "retention_until": log.retention_until.isoformat() if log.retention_until else None
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get audit log detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # =============================================================================
 # MAIN EXECUTION

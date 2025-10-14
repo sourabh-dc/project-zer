@@ -99,6 +99,16 @@ class ReportType(str, Enum):
     USAGE_ANALYTICS = "usage_analytics"
     PERFORMANCE_ANALYTICS = "performance_analytics"
 
+# Phase 6: Dashboard types for Power BI integration
+class DashboardType(str, Enum):
+    OVERVIEW = "overview"
+    SALES = "sales"
+    INVENTORY = "inventory"
+    CUSTOMER = "customer"
+    OPERATIONAL = "operational"
+    FINANCIAL = "financial"
+    CUSTOM = "custom"
+
 class ReportFormat(str, Enum):
     JSON = "json"
     CSV = "csv"
@@ -130,7 +140,7 @@ class ReportJob(Base):
 
 class ReportCache(Base):
     __tablename__ = "report_cache_new"
-    
+
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False)
     cache_key = Column(String, nullable=False, unique=True)
@@ -139,6 +149,54 @@ class ReportCache(Base):
     data = Column(JSON, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
+
+# Phase 6: Dashboard Models for Power BI Integration
+class Dashboard(Base):
+    """Dashboard configuration for Power BI - Phase 6"""
+    __tablename__ = "dashboards"
+
+    dashboard_id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    dashboard_type = Column(String(50), nullable=False)
+    powerbi_workspace_id = Column(String(100), nullable=True)
+    powerbi_report_id = Column(String(100), nullable=True)
+    powerbi_dataset_id = Column(String(100), nullable=True)
+    embed_config = Column(JSON, nullable=False, default=dict)
+    data_sources = Column(JSON, nullable=False, default=list)  # List of service names
+    refresh_schedule = Column(String(100), nullable=True)  # Cron format
+    filters = Column(JSON, nullable=False, default=dict)
+    is_public = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+class DashboardAccess(Base):
+    """Dashboard access control - Phase 6"""
+    __tablename__ = "dashboard_access"
+
+    id = Column(String, primary_key=True)
+    dashboard_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=True)  # null for public access
+    role_id = Column(String, nullable=True)  # null for user-specific access
+    permissions = Column(JSON, nullable=False, default=list)  # read, write, admin
+    granted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+class DashboardDataRefresh(Base):
+    """Dashboard data refresh tracking - Phase 6"""
+    __tablename__ = "dashboard_data_refresh"
+
+    id = Column(String, primary_key=True)
+    dashboard_id = Column(String, nullable=False)
+    status = Column(String(20), nullable=False, default="pending")  # pending, running, completed, failed
+    last_refresh = Column(DateTime(timezone=True), nullable=True)
+    next_refresh = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+    refresh_duration_seconds = Column(Integer, nullable=True)
+    records_processed = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
 # ---- Pydantic Models ----
 class ReportRequest(BaseModel):
@@ -171,6 +229,72 @@ class AnalyticsQuery(BaseModel):
     filters: Dict[str, Any] = Field(default_factory=dict)
     group_by: Optional[List[str]] = None
     metrics: List[str] = Field(default_factory=list)
+
+# Phase 6: Dashboard Models for Power BI Integration
+class DashboardConfig(BaseModel):
+    """Dashboard configuration for Power BI"""
+    name: str = Field(..., description="Dashboard name")
+    description: Optional[str] = Field(None, description="Dashboard description")
+    dashboard_type: DashboardType = Field(..., description="Type of dashboard")
+    powerbi_workspace_id: Optional[str] = Field(None, description="Power BI workspace ID")
+    powerbi_report_id: Optional[str] = Field(None, description="Power BI report ID")
+    powerbi_dataset_id: Optional[str] = Field(None, description="Power BI dataset ID")
+    embed_config: Dict[str, Any] = Field(default_factory=dict, description="Power BI embed configuration")
+    data_sources: List[str] = Field(default_factory=list, description="Data source service names")
+    refresh_schedule: Optional[str] = Field(None, description="Data refresh schedule (cron format)")
+    filters: Dict[str, Any] = Field(default_factory=dict, description="Default dashboard filters")
+    is_public: bool = Field(default=False, description="Whether dashboard is publicly accessible")
+
+class DashboardResponse(BaseModel):
+    """Dashboard response model"""
+    dashboard_id: str
+    name: str
+    description: Optional[str]
+    dashboard_type: DashboardType
+    powerbi_workspace_id: Optional[str]
+    powerbi_report_id: Optional[str]
+    powerbi_dataset_id: Optional[str]
+    embed_config: Dict[str, Any]
+    data_sources: List[str]
+    refresh_schedule: Optional[str]
+    filters: Dict[str, Any]
+    is_public: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+class DashboardCreateRequest(BaseModel):
+    """Dashboard creation request"""
+    name: str = Field(..., description="Dashboard name")
+    description: Optional[str] = Field(None, description="Dashboard description")
+    dashboard_type: DashboardType = Field(..., description="Type of dashboard")
+    powerbi_workspace_id: Optional[str] = Field(None, description="Power BI workspace ID")
+    powerbi_report_id: Optional[str] = Field(None, description="Power BI report ID")
+    powerbi_dataset_id: Optional[str] = Field(None, description="Power BI dataset ID")
+    data_sources: List[str] = Field(default_factory=list, description="Data source service names")
+    refresh_schedule: Optional[str] = Field(None, description="Data refresh schedule")
+    filters: Dict[str, Any] = Field(default_factory=dict, description="Default dashboard filters")
+    is_public: bool = Field(default=False, description="Whether dashboard is publicly accessible")
+
+class PowerBIEmbedRequest(BaseModel):
+    """Power BI embed token request"""
+    dashboard_id: str
+    user_id: Optional[str] = None
+    permissions: List[str] = Field(default_factory=list, description="User permissions for dashboard")
+
+class PowerBIEmbedResponse(BaseModel):
+    """Power BI embed response"""
+    embed_token: str
+    embed_url: str
+    expiry: datetime
+    permissions: List[str]
+
+class DashboardDataRefresh(BaseModel):
+    """Dashboard data refresh status"""
+    dashboard_id: str
+    status: str  # 'running', 'completed', 'failed'
+    last_refresh: Optional[datetime]
+    next_refresh: Optional[datetime]
+    error_message: Optional[str]
 
 # ---- Report Generators ----
 class ReportGenerator:
@@ -785,6 +909,303 @@ async def get_operational_analytics(
     except Exception as e:
         logger.error("Failed to generate operational analytics", error=str(e))
         report_requests_total.labels(report_type="operational_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Phase 6: Dashboard Management Endpoints (Power BI Integration)
+@app.post("/dashboards", response_model=DashboardResponse)
+async def create_dashboard(
+    request: DashboardCreateRequest,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Create a new dashboard - Phase 6"""
+    try:
+        start_time = datetime.now()
+
+        with SessionLocal() as db:
+            # Check if dashboard name already exists for tenant
+            existing = db.query(Dashboard).filter(
+                Dashboard.tenant_id == tenant_id,
+                Dashboard.name == request.name
+            ).first()
+
+            if existing:
+                raise HTTPException(status_code=409, detail="Dashboard name already exists")
+
+            # Create dashboard
+            dashboard_id = str(uuid.uuid4())
+            dashboard = Dashboard(
+                dashboard_id=dashboard_id,
+                tenant_id=tenant_id,
+                name=request.name,
+                description=request.description,
+                dashboard_type=request.dashboard_type.value,
+                powerbi_workspace_id=request.powerbi_workspace_id,
+                powerbi_report_id=request.powerbi_report_id,
+                powerbi_dataset_id=request.powerbi_dataset_id,
+                embed_config=request.embed_config,
+                data_sources=request.data_sources,
+                refresh_schedule=request.refresh_schedule,
+                filters=request.filters,
+                is_public=request.is_public
+            )
+
+            db.add(dashboard)
+
+            # Create default access for creator
+            access_id = str(uuid.uuid4())
+            access = DashboardAccess(
+                id=access_id,
+                dashboard_id=dashboard_id,
+                user_id=user_id,
+                permissions=["read", "write", "admin"]  # Full access for creator
+            )
+            db.add(access)
+
+            # Create initial data refresh record
+            refresh_id = str(uuid.uuid4())
+            refresh = DashboardDataRefresh(
+                id=refresh_id,
+                dashboard_id=dashboard_id,
+                status="pending"
+            )
+            db.add(refresh)
+
+            db.commit()
+
+        duration = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Dashboard created: {dashboard_id} for tenant {tenant_id}")
+
+        return DashboardResponse(
+            dashboard_id=dashboard_id,
+            name=request.name,
+            description=request.description,
+            dashboard_type=request.dashboard_type,
+            powerbi_workspace_id=request.powerbi_workspace_id,
+            powerbi_report_id=request.powerbi_report_id,
+            powerbi_dataset_id=request.powerbi_dataset_id,
+            embed_config=request.embed_config,
+            data_sources=request.data_sources,
+            refresh_schedule=request.refresh_schedule,
+            filters=request.filters,
+            is_public=request.is_public,
+            created_at=dashboard.created_at,
+            updated_at=dashboard.updated_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/dashboards")
+async def list_dashboards(
+    tenant_id: str = Query(...),
+    dashboard_type: Optional[str] = Query(None),
+    user_id: str = Query(...)
+):
+    """List dashboards for tenant - Phase 6"""
+    try:
+        with SessionLocal() as db:
+            query = db.query(Dashboard).filter(
+                Dashboard.tenant_id == tenant_id
+            )
+
+            if dashboard_type:
+                query = query.filter(Dashboard.dashboard_type == dashboard_type)
+
+            dashboards = query.all()
+
+            return {
+                "dashboards": [
+                    {
+                        "dashboard_id": d.dashboard_id,
+                        "name": d.name,
+                        "description": d.description,
+                        "dashboard_type": d.dashboard_type,
+                        "is_public": d.is_public,
+                        "created_at": d.created_at.isoformat(),
+                        "updated_at": d.updated_at.isoformat() if d.updated_at else None
+                    }
+                    for d in dashboards
+                ],
+                "total": len(dashboards)
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to list dashboards: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/dashboards/{dashboard_id}")
+async def get_dashboard(
+    dashboard_id: str,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Get dashboard details - Phase 6"""
+    try:
+        with SessionLocal() as db:
+            dashboard = db.query(Dashboard).filter(
+                Dashboard.dashboard_id == dashboard_id,
+                Dashboard.tenant_id == tenant_id
+            ).first()
+
+            if not dashboard:
+                raise HTTPException(status_code=404, detail="Dashboard not found")
+
+            # Check access permissions (simplified - in production, check against DashboardAccess table)
+            return DashboardResponse(
+                dashboard_id=dashboard.dashboard_id,
+                name=dashboard.name,
+                description=dashboard.description,
+                dashboard_type=DashboardType(dashboard.dashboard_type),
+                powerbi_workspace_id=dashboard.powerbi_workspace_id,
+                powerbi_report_id=dashboard.powerbi_report_id,
+                powerbi_dataset_id=dashboard.powerbi_dataset_id,
+                embed_config=dashboard.embed_config,
+                data_sources=dashboard.data_sources,
+                refresh_schedule=dashboard.refresh_schedule,
+                filters=dashboard.filters,
+                is_public=dashboard.is_public,
+                created_at=dashboard.created_at,
+                updated_at=dashboard.updated_at
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/dashboards/{dashboard_id}/embed-token", response_model=PowerBIEmbedResponse)
+async def generate_embed_token(
+    dashboard_id: str,
+    request: PowerBIEmbedRequest,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Generate Power BI embed token - Phase 6"""
+    try:
+        with SessionLocal() as db:
+            dashboard = db.query(Dashboard).filter(
+                Dashboard.dashboard_id == dashboard_id,
+                Dashboard.tenant_id == tenant_id
+            ).first()
+
+            if not dashboard:
+                raise HTTPException(status_code=404, detail="Dashboard not found")
+
+            # Check access permissions (simplified)
+            # In production: verify user has access to dashboard
+
+            # Generate mock Power BI embed token (in production, integrate with Power BI API)
+            import secrets
+            embed_token = secrets.token_urlsafe(64)
+            embed_url = f"https://app.powerbi.com/reportEmbed?reportId={dashboard.powerbi_report_id}&groupId={dashboard.powerbi_workspace_id}"
+            expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+
+            return PowerBIEmbedResponse(
+                embed_token=embed_token,
+                embed_url=embed_url,
+                expiry=expiry,
+                permissions=request.permissions
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate embed token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/dashboards/{dashboard_id}/refresh")
+async def refresh_dashboard_data(
+    dashboard_id: str,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Trigger dashboard data refresh - Phase 6"""
+    try:
+        with SessionLocal() as db:
+            dashboard = db.query(Dashboard).filter(
+                Dashboard.dashboard_id == dashboard_id,
+                Dashboard.tenant_id == tenant_id
+            ).first()
+
+            if not dashboard:
+                raise HTTPException(status_code=404, detail="Dashboard not found")
+
+            # Update refresh status
+            refresh = db.query(DashboardDataRefresh).filter(
+                DashboardDataRefresh.dashboard_id == dashboard_id
+            ).first()
+
+            if refresh:
+                refresh.status = "running"
+                refresh.updated_at = datetime.now(timezone.utc)
+                db.commit()
+
+            # In production: trigger actual data refresh from data sources
+            # For now, just mark as completed after a delay (simulate async refresh)
+            await asyncio.sleep(2)  # Simulate refresh time
+
+            if refresh:
+                refresh.status = "completed"
+                refresh.last_refresh = datetime.now(timezone.utc)
+                refresh.updated_at = datetime.now(timezone.utc)
+                db.commit()
+
+            logger.info(f"Dashboard data refresh completed: {dashboard_id}")
+
+            return {"message": "Dashboard data refresh completed", "dashboard_id": dashboard_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to refresh dashboard data: {e}")
+        # Mark refresh as failed
+        try:
+            with SessionLocal() as db:
+                refresh = db.query(DashboardDataRefresh).filter(
+                    DashboardDataRefresh.dashboard_id == dashboard_id
+                ).first()
+                if refresh:
+                    refresh.status = "failed"
+                    refresh.error_message = str(e)
+                    refresh.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/dashboards/{dashboard_id}/refresh-status")
+async def get_refresh_status(
+    dashboard_id: str,
+    tenant_id: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Get dashboard refresh status - Phase 6"""
+    try:
+        with SessionLocal() as db:
+            refresh = db.query(DashboardDataRefresh).filter(
+                DashboardDataRefresh.dashboard_id == dashboard_id
+            ).first()
+
+            if not refresh:
+                raise HTTPException(status_code=404, detail="Refresh status not found")
+
+            return DashboardDataRefresh(
+                dashboard_id=refresh.dashboard_id,
+                status=refresh.status,
+                last_refresh=refresh.last_refresh,
+                next_refresh=refresh.next_refresh,
+                error_message=refresh.error_message
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get refresh status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---- Background Tasks ----

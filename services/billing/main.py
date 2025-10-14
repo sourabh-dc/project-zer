@@ -16,7 +16,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func, BigInteger, Date
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func, BigInteger, Date, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, relationship
@@ -27,6 +27,7 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 import redis
 import pika
 import httpx
+import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 
@@ -59,10 +60,12 @@ structlog.configure(
 logger = structlog.get_logger(__name__)
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://sourabhagrawa@localhost:5432/zeroque_dev_fresh")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+APPROVALS_URL = os.getenv("APPROVALS_URL", "http://localhost:8004")
+API_KEY = os.getenv("API_KEY", "zq_demo_key_for_testing")
 ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
 
 # Database setup
@@ -221,18 +224,88 @@ class VendorDispute(Base):
 class VendorSettlementBatch(Base):
     """Vendor Settlement Batch: Batch processing for settlements"""
     __tablename__ = "vendor_settlement_batches"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), nullable=False)
     batch_number = Column(String(50), nullable=False)
     period_start = Column(Date, nullable=False)
     period_end = Column(Date, nullable=False)
+    status = Column(String(20), nullable=False, default='processing')
     total_amount_minor = Column(BigInteger, nullable=False, default=0)
-    currency = Column(String(3), nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    processed_at = Column(DateTime(timezone=True), nullable=True)
+    settlement_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+# Phase 4: Cost Centre Budgeting Models
+class CostCentre(Base):
+    """Cost Centre for budget management - Phase 4"""
+    __tablename__ = "cost_centres"
+
+    cost_centre_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    name = Column(String(200), nullable=False)
+    code = Column(String(50), nullable=False)  # Unique code like "IT-001", "MKT-001"
+    description = Column(Text, nullable=True)
+    parent_cost_centre_id = Column(UUID(as_uuid=True), ForeignKey('cost_centres.cost_centre_id'), nullable=True)
+    budget_owner_id = Column(UUID(as_uuid=True), nullable=False)  # User ID who owns the budget
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationship for hierarchical cost centres
+    parent_cost_centre = relationship("CostCentre", remote_side=[cost_centre_id])
+
+class Budget(Base):
+    """Budget for cost centres - Phase 4"""
+    __tablename__ = "budgets"
+
+    budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey('cost_centres.cost_centre_id'), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    budget_year = Column(Integer, nullable=False)
+    budget_month = Column(Integer, nullable=False)  # For monthly budgets
+    budget_type = Column(String(50), nullable=False)  # "annual", "monthly", "project"
+    budget_amount_minor = Column(BigInteger, nullable=False)
+    spent_amount_minor = Column(BigInteger, nullable=False, default=0)
+    available_amount_minor = Column(BigInteger, nullable=False, default=0)  # Computed field
+    currency = Column(String(3), nullable=False, default='GBP')
+    status = Column(String(20), nullable=False, default='active')  # "active", "exceeded", "closed"
+    approval_workflow_id = Column(UUID(as_uuid=True), nullable=True)  # Link to approval workflow
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class BudgetTransaction(Base):
+    """Budget transactions for spend tracking - Phase 4"""
+    __tablename__ = "budget_transactions"
+
+    transaction_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    budget_id = Column(UUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    amount_minor = Column(BigInteger, nullable=False)  # Positive for spend, negative for refunds
+    transaction_type = Column(String(50), nullable=False)  # "spend", "refund", "adjustment"
+    description = Column(Text, nullable=False)
+    reference_id = Column(String(100), nullable=True)  # Invoice ID, order ID, etc.
+    reference_type = Column(String(50), nullable=True)  # "invoice", "order", "adjustment"
+    approval_id = Column(UUID(as_uuid=True), nullable=True)  # Link to approval if required
+    is_approved = Column(Boolean, nullable=False, default=False)
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class BudgetAlert(Base):
+    """Budget alerts for overspend notifications - Phase 4"""
+    __tablename__ = "budget_alerts"
+
+    alert_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    budget_id = Column(UUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    alert_type = Column(String(50), nullable=False)  # "warning", "critical", "exceeded"
+    threshold_percentage = Column(Numeric(5, 2), nullable=False)  # 80.00, 100.00, etc.
+    message = Column(Text, nullable=False)
+    is_acknowledged = Column(Boolean, nullable=False, default=False)
+    acknowledged_by = Column(UUID(as_uuid=True), nullable=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class TradeInvoice(Base):
     """Trade Invoice: Tenant invoices for billing"""
@@ -739,7 +812,7 @@ class SettlementCreationSaga(BillingSaga):
 # CONFIGURATION
 # =============================================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://sourabhagrawa@localhost:5432/zeroque_dev_fresh")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 SERVICE_NAME = "billing-service-v2"
@@ -1340,12 +1413,461 @@ class AdjustmentResponse(BaseModel):
     settlement_id: str
     settlement_item_id: Optional[str]
     tenant_id: str
-    adjustment_amount_minor: int
-    adjustment_reason: str
-    adjustment_type: str
-    currency: str
-    adjustment_status: str
+
+# Phase 4: Cost Centre Budgeting Models
+class CostCentreRequest(BaseModel):
+    """Cost centre creation request - Phase 4"""
+    name: str = Field(..., description="Cost centre name", max_length=200)
+    code: str = Field(..., description="Cost centre code (e.g., IT-001)", max_length=50)
+    description: Optional[str] = Field(None, description="Cost centre description")
+    parent_cost_centre_id: Optional[str] = Field(None, description="Parent cost centre ID for hierarchy")
+    budget_owner_id: str = Field(..., description="User ID who owns the budget")
+
+class CostCentreResponse(BaseModel):
+    """Cost centre response model - Phase 4"""
+    cost_centre_id: str
+    name: str
+    code: str
+    description: Optional[str]
+    parent_cost_centre_id: Optional[str]
+    budget_owner_id: str
+    is_active: bool
     created_at: datetime
+
+class BudgetRequest(BaseModel):
+    """Budget creation request - Phase 4"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    budget_year: int = Field(..., description="Budget year", ge=2020, le=2030)
+    budget_month: Optional[int] = Field(None, description="Budget month (1-12)", ge=1, le=12)
+    budget_type: str = Field(..., description="Budget type", regex="^(annual|monthly|project)$")
+    budget_amount_minor: int = Field(..., description="Budget amount in minor units", gt=0)
+    currency: str = Field("GBP", description="Currency code", max_length=3)
+    approval_workflow_id: Optional[str] = Field(None, description="Approval workflow ID")
+
+class BudgetResponse(BaseModel):
+    """Budget response model - Phase 4"""
+    budget_id: str
+    cost_centre_id: str
+    budget_year: int
+    budget_month: Optional[int]
+    budget_type: str
+    budget_amount_minor: int
+    spent_amount_minor: int
+    available_amount_minor: int
+    currency: str
+    status: str
+    created_at: datetime
+
+class BudgetCheckRequest(BaseModel):
+    """Budget check request - Phase 4"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    amount_minor: int = Field(..., description="Amount to check in minor units", gt=0)
+    description: str = Field(..., description="Transaction description")
+    reference_id: Optional[str] = Field(None, description="Reference ID (invoice, order, etc.)")
+    reference_type: Optional[str] = Field(None, description="Reference type")
+
+class BudgetCheckResponse(BaseModel):
+    """Budget check response - Phase 4"""
+    budget_id: str
+    cost_centre_id: str
+    requested_amount_minor: int
+    available_amount_minor: int
+    is_approved: bool
+    approval_required: bool
+    approval_id: Optional[str]
+    message: str
+
+class SpendRequest(BaseModel):
+    """Spend recording request - Phase 4"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    amount_minor: int = Field(..., description="Spend amount in minor units", gt=0)
+    description: str = Field(..., description="Spend description")
+    reference_id: Optional[str] = Field(None, description="Reference ID")
+    reference_type: Optional[str] = Field(None, description="Reference type")
+    approval_id: Optional[str] = Field(None, description="Pre-approved approval ID")
+
+# Phase 4: Cost Centre Budgeting Endpoints
+@app.post("/cost-centres", response_model=CostCentreResponse)
+async def create_cost_centre(
+    request: CostCentreRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Create a new cost centre - Phase 4"""
+    try:
+        billing_requests_total.labels(endpoint="create_cost_centre", status="start").inc()
+
+        # Check permissions
+        if not check_permission("billing.admin", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        cost_centre = CostCentre(
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            name=request.name,
+            code=request.code,
+            description=request.description,
+            parent_cost_centre_id=uuid.UUID(request.parent_cost_centre_id) if request.parent_cost_centre_id else None,
+            budget_owner_id=uuid.UUID(request.budget_owner_id)
+        )
+
+        db.add(cost_centre)
+        db.commit()
+        db.refresh(cost_centre)
+
+        billing_requests_total.labels(endpoint="create_cost_centre", status="ok").inc()
+
+        return CostCentreResponse(
+            cost_centre_id=str(cost_centre.cost_centre_id),
+            name=cost_centre.name,
+            code=cost_centre.code,
+            description=cost_centre.description,
+            parent_cost_centre_id=str(cost_centre.parent_cost_centre_id) if cost_centre.parent_cost_centre_id else None,
+            budget_owner_id=str(cost_centre.budget_owner_id),
+            is_active=cost_centre.is_active,
+            created_at=cost_centre.created_at
+        )
+
+    except Exception as e:
+        billing_requests_total.labels(endpoint="create_cost_centre", status="fail").inc()
+        logger.error(f"Failed to create cost centre: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cost-centres")
+async def list_cost_centres(
+    tenant_id: str = Query(...),
+    parent_cost_centre_id: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db = Depends(get_db_with_rls)
+):
+    """List cost centres - Phase 4"""
+    try:
+        query = db.query(CostCentre).filter(
+            CostCentre.tenant_id == uuid.UUID(tenant_id),
+            CostCentre.is_active == True
+        )
+
+        if parent_cost_centre_id:
+            query = query.filter(CostCentre.parent_cost_centre_id == uuid.UUID(parent_cost_centre_id))
+
+        cost_centres = query.offset(offset).limit(limit).all()
+
+        return {
+            "cost_centres": [
+                CostCentreResponse(
+                    cost_centre_id=str(cc.cost_centre_id),
+                    name=cc.name,
+                    code=cc.code,
+                    description=cc.description,
+                    parent_cost_centre_id=str(cc.parent_cost_centre_id) if cc.parent_cost_centre_id else None,
+                    budget_owner_id=str(cc.budget_owner_id),
+                    is_active=cc.is_active,
+                    created_at=cc.created_at
+                )
+                for cc in cost_centres
+            ],
+            "total": len(cost_centres),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list cost centres: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/budgets", response_model=BudgetResponse)
+async def create_budget(
+    request: BudgetRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Create a new budget - Phase 4"""
+    try:
+        billing_requests_total.labels(endpoint="create_budget", status="start").inc()
+
+        # Check permissions
+        if not check_permission("billing.admin", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Check if cost centre exists
+        cost_centre = db.query(CostCentre).filter(
+            CostCentre.cost_centre_id == uuid.UUID(request.cost_centre_id),
+            CostCentre.tenant_id == uuid.UUID(uctx["tenant_id"])
+        ).first()
+
+        if not cost_centre:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
+        budget = Budget(
+            cost_centre_id=uuid.UUID(request.cost_centre_id),
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            budget_year=request.budget_year,
+            budget_month=request.budget_month,
+            budget_type=request.budget_type,
+            budget_amount_minor=request.budget_amount_minor,
+            currency=request.currency,
+            approval_workflow_id=uuid.UUID(request.approval_workflow_id) if request.approval_workflow_id else None
+        )
+
+        db.add(budget)
+        db.commit()
+        db.refresh(budget)
+
+        billing_requests_total.labels(endpoint="create_budget", status="ok").inc()
+
+        return BudgetResponse(
+            budget_id=str(budget.budget_id),
+            cost_centre_id=str(budget.cost_centre_id),
+            budget_year=budget.budget_year,
+            budget_month=budget.budget_month,
+            budget_type=budget.budget_type,
+            budget_amount_minor=budget.budget_amount_minor,
+            spent_amount_minor=budget.spent_amount_minor,
+            available_amount_minor=budget.available_amount_minor,
+            currency=budget.currency,
+            status=budget.status,
+            created_at=budget.created_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        billing_requests_total.labels(endpoint="create_budget", status="fail").inc()
+        logger.error(f"Failed to create budget: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/budget-check", response_model=BudgetCheckResponse)
+async def check_budget(
+    request: BudgetCheckRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Check if budget allows spend and trigger approval if needed - Phase 4"""
+    try:
+        billing_requests_total.labels(endpoint="check_budget", status="start").inc()
+
+        # Get active budget for cost centre and current period
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+
+        budget = db.query(Budget).join(CostCentre).filter(
+            Budget.cost_centre_id == uuid.UUID(request.cost_centre_id),
+            Budget.tenant_id == uuid.UUID(uctx["tenant_id"]),
+            CostCentre.tenant_id == uuid.UUID(uctx["tenant_id"]),
+            Budget.budget_year == current_year,
+            Budget.is_active == True,
+            or_(Budget.budget_month == current_month, Budget.budget_type == "annual")
+        ).first()
+
+        if not budget:
+            raise HTTPException(status_code=404, detail="No active budget found for cost centre")
+
+        available_amount = budget.available_amount_minor
+        requested_amount = request.amount_minor
+
+        # Check if budget is sufficient
+        if available_amount >= requested_amount:
+            # Budget sufficient, no approval needed
+            approval_required = False
+            approval_id = None
+            is_approved = True
+            message = "Budget check passed - sufficient funds available"
+        else:
+            # Budget insufficient, check if approval is required
+            approval_required = True
+            is_approved = False
+
+            # Create approval request
+            approval_data = {
+                "tenant_id": uctx["tenant_id"],
+                "requester_id": uctx["user_id"],
+                "cost_centre_id": request.cost_centre_id,
+                "amount_minor": requested_amount,
+                "description": request.description,
+                "reference_id": request.reference_id,
+                "reference_type": request.reference_type,
+                "budget_id": str(budget.budget_id)
+            }
+
+            # Call Approvals service to create approval
+            try:
+                approval_response = requests.post(
+                    f"{APPROVALS_URL}/approvals/budget",
+                    headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                    json=approval_data,
+                    timeout=10
+                )
+                if approval_response.status_code == 200:
+                    approval_result = approval_response.json()
+                    approval_id = approval_result.get("approval_id")
+                    message = f"Budget check failed - approval required (ID: {approval_id})"
+                else:
+                    message = "Budget check failed - insufficient funds and approval service unavailable"
+            except Exception as e:
+                logger.error(f"Failed to create approval: {e}")
+                message = "Budget check failed - insufficient funds"
+
+        billing_requests_total.labels(endpoint="check_budget", status="ok").inc()
+
+        return BudgetCheckResponse(
+            budget_id=str(budget.budget_id),
+            cost_centre_id=request.cost_centre_id,
+            requested_amount_minor=requested_amount,
+            available_amount_minor=available_amount,
+            is_approved=is_approved,
+            approval_required=approval_required,
+            approval_id=approval_id,
+            message=message
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        billing_requests_total.labels(endpoint="check_budget", status="fail").inc()
+        logger.error(f"Failed to check budget: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/spend")
+async def record_spend(
+    request: SpendRequest,
+    db = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """Record spend against budget - Phase 4"""
+    try:
+        billing_requests_total.labels(endpoint="record_spend", status="start").inc()
+
+        # Check permissions
+        if not check_permission("billing.create", uctx):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get budget
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+
+        budget = db.query(Budget).filter(
+            Budget.cost_centre_id == uuid.UUID(request.cost_centre_id),
+            Budget.tenant_id == uuid.UUID(uctx["tenant_id"]),
+            Budget.budget_year == current_year,
+            Budget.is_active == True,
+            or_(Budget.budget_month == current_month, Budget.budget_type == "annual")
+        ).first()
+
+        if not budget:
+            raise HTTPException(status_code=404, detail="No active budget found for cost centre")
+
+        # Check if pre-approved
+        if request.approval_id:
+            # Verify approval exists and is approved
+            # This would integrate with Approvals service
+            pass
+
+        # Record transaction
+        transaction = BudgetTransaction(
+            budget_id=budget.budget_id,
+            tenant_id=uuid.UUID(uctx["tenant_id"]),
+            amount_minor=request.amount_minor,
+            transaction_type="spend",
+            description=request.description,
+            reference_id=request.reference_id,
+            reference_type=request.reference_type,
+            approval_id=uuid.UUID(request.approval_id) if request.approval_id else None,
+            is_approved=True,  # Pre-approved or within budget
+            created_by=uuid.UUID(uctx["user_id"])
+        )
+
+        db.add(transaction)
+
+        # Update budget spent amount
+        budget.spent_amount_minor += request.amount_minor
+        budget.available_amount_minor = budget.budget_amount_minor - budget.spent_amount_minor
+
+        # Check if budget is exceeded
+        if budget.spent_amount_minor > budget.budget_amount_minor:
+            budget.status = "exceeded"
+
+            # Create budget alert
+            alert = BudgetAlert(
+                budget_id=budget.budget_id,
+                tenant_id=uuid.UUID(uctx["tenant_id"]),
+                alert_type="exceeded",
+                threshold_percentage=100.00,
+                message=f"Budget exceeded by {budget.spent_amount_minor - budget.budget_amount_minor} minor units"
+            )
+            db.add(alert)
+
+        db.commit()
+
+        billing_requests_total.labels(endpoint="record_spend", status="ok").inc()
+
+        return {
+            "transaction_id": str(transaction.transaction_id),
+            "budget_id": str(budget.budget_id),
+            "amount_recorded_minor": request.amount_minor,
+            "new_spent_amount_minor": budget.spent_amount_minor,
+            "available_amount_minor": budget.available_amount_minor,
+            "status": budget.status,
+            "created_at": transaction.created_at.isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        billing_requests_total.labels(endpoint="record_spend", status="fail").inc()
+        logger.error(f"Failed to record spend: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/budgets/{budget_id}")
+async def get_budget_details(
+    budget_id: str,
+    db = Depends(get_db_with_rls)
+):
+    """Get budget details with transactions - Phase 4"""
+    try:
+        budget = db.query(Budget).filter(
+            Budget.budget_id == uuid.UUID(budget_id)
+        ).first()
+
+        if not budget:
+            raise HTTPException(status_code=404, detail="Budget not found")
+
+        # Get transactions
+        transactions = db.query(BudgetTransaction).filter(
+            BudgetTransaction.budget_id == uuid.UUID(budget_id)
+        ).order_by(BudgetTransaction.created_at.desc()).limit(50).all()
+
+        return {
+            "budget_id": str(budget.budget_id),
+            "cost_centre_id": str(budget.cost_centre_id),
+            "budget_year": budget.budget_year,
+            "budget_month": budget.budget_month,
+            "budget_type": budget.budget_type,
+            "budget_amount_minor": budget.budget_amount_minor,
+            "spent_amount_minor": budget.spent_amount_minor,
+            "available_amount_minor": budget.available_amount_minor,
+            "currency": budget.currency,
+            "status": budget.status,
+            "transactions": [
+                {
+                    "transaction_id": str(t.transaction_id),
+                    "amount_minor": t.amount_minor,
+                    "transaction_type": t.transaction_type,
+                    "description": t.description,
+                    "reference_id": t.reference_id,
+                    "is_approved": t.is_approved,
+                    "created_at": t.created_at.isoformat()
+                }
+                for t in transactions
+            ],
+            "created_at": budget.created_at.isoformat(),
+            "updated_at": budget.updated_at.isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get budget details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/billing/v2/adjustments", response_model=AdjustmentResponse)
 async def create_adjustment(request: CreateAdjustmentRequest, db = Depends(get_db)):

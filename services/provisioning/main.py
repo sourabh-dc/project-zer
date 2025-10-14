@@ -123,6 +123,7 @@ class SiteV2(Base):
     name = Column(String(255), nullable=False)
     site_type = Column(String(50), default="retail")
     geo = Column(JSON)
+    device_metadata = Column(JSON)  # Phase 2: Site Registry - tracks cameras, sensors, entry devices
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class StoreV2(Base):
@@ -181,14 +182,10 @@ class OutboxEvent(Base):
     event_type = Column(String(100), nullable=False, index=True)
     aggregate_id = Column(String(255), nullable=False)
     event_data = Column(Text, nullable=False)
-    event_version = Column(Integer, nullable=False, default=1)
-    event_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    processed_at = Column(DateTime(timezone=True))
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
     status = Column(String(20), nullable=False, default="pending")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    retry_count = Column(Integer, nullable=False, default=0)
     published_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
@@ -221,6 +218,7 @@ class SiteRequest(BaseModel):
     name: str
     site_type: str = "office"
     geo: Optional[Dict] = None
+    device_metadata: Optional[Dict] = None  # Phase 2: Site Registry - device tracking
 
 class StoreRequest(BaseModel):
     name: str
@@ -233,6 +231,13 @@ class UserRequest(BaseModel):
     tenant_id: str
     generate_api_key: bool = False
     permissions: Optional[List[str]] = None
+
+class BulkUserRequest(BaseModel):
+    """Bulk user import for self-service provisioning (Pro/Ent feature)"""
+    tenant_id: str
+    users: List[Dict[str, Any]]  # [{"email": "...", "display_name": "...", "permissions": [...]}, ...]
+    notify_users: bool = True
+    auto_generate_api_keys: bool = False
 
 class RoleRequest(BaseModel):
     code: str
@@ -271,10 +276,8 @@ def store_outbox(db, evt_type, tid, eid, data):
         event_type=evt_type,
         aggregate_id=tid,
         event_data=json.dumps(data),
-        event_version=1,
-        retry_count=0,
-        max_retries=3,
-        status="pending"
+        status="pending",
+        retry_count=0
     )
     db.add(evt)
     db.commit()
@@ -307,7 +310,7 @@ def publish_outbox_events():
         logger.error(f"Outbox publish failed: {ex}")
 
 # RLS
-def set_rls(db, tid, uid=None):
+def set_rls_context(db, tid, uid=None):
     try:
         # Rollback any failed transaction first
         db.rollback()
@@ -366,12 +369,36 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
 
     raise HTTPException(status_code=401, detail="Authentication required")
 
+def check_permission(uctx: Dict, required_permission: str):
+    """Check if user has required permission"""
+    permissions = uctx.get("permissions", [])
+    
+    # Wildcard permission (demo mode or superadmin)
+    if "*" in permissions:
+        return True
+    
+    # Exact match
+    if required_permission in permissions:
+        return True
+    
+    # Check permission hierarchy (e.g., "provisioning.*" grants "provisioning.bulk_import")
+    permission_parts = required_permission.split(".")
+    for i in range(len(permission_parts)):
+        wildcard_perm = ".".join(permission_parts[:i+1]) + ".*"
+        if wildcard_perm in permissions:
+            return True
+    
+    raise HTTPException(
+        status_code=403,
+        detail=f"Permission denied: {required_permission} required"
+    )
+
 def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     db = SessionLocal()
     try:
         # Skip RLS in demo mode to avoid transaction issues
         if not ALLOW_DEMO:
-            set_rls(db, uctx["tenant_id"], uctx.get("user_id"))
+            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
         yield db
     finally:
         db.close()
@@ -473,11 +500,22 @@ class SiteSaga:
             cnt = self.db.query(SiteV2).filter(SiteV2.tenant_id == tid).count()
             if cnt >= lims.get("max_sites", 10):
                 raise ValueError("Limit reached")
-            self.s = SiteV2(site_id=sid, tenant_id=tid, name=req.name, site_type=req.site_type, geo=req.geo)
+            self.s = SiteV2(
+                site_id=sid,
+                tenant_id=tid,
+                name=req.name,
+                site_type=req.site_type,
+                geo=req.geo,
+                device_metadata=req.device_metadata  # Phase 2: Site Registry
+            )
             self.db.add(self.s)
             self.db.commit()
             self.db.refresh(self.s)
-            self.eid = store_outbox(self.db, "SITE_CREATED", str(tid), str(sid), {"site_id": str(sid), "name": req.name})
+            self.eid = store_outbox(self.db, "SITE_CREATED", str(tid), str(sid), {
+                "site_id": str(sid),
+                "name": req.name,
+                "device_metadata": req.device_metadata  # Include in event for CV Gateway
+            })
             publish_outbox_events.delay()
             audit(self.db, str(tid), uctx["user_id"], "CREATE", "site", str(sid), {"name": req.name})
             saga_total.labels(type="site", status="ok").inc()
@@ -596,6 +634,132 @@ class UserSaga:
                 self.db.commit()
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
+            self.db.rollback()
+
+class BulkUserSaga:
+    """Saga for bulk user import - Pro/Enterprise feature"""
+    def __init__(self, db):
+        self.db = db
+        self.created_users = []
+        self.created_events = []
+    
+    async def exec(self, tenant_id: str, users_data: List[Dict], uctx: Dict, auto_generate_api_keys: bool = False):
+        start = time.time()
+        sid = f"saga_bulk_users_{uuid.uuid4().hex[:8]}"
+        results = {"success": [], "failed": []}
+        
+        try:
+            # Validate tenant exists
+            t = self.db.query(TenantV2).filter(TenantV2.tenant_id == uuid.UUID(tenant_id)).first()
+            if not t:
+                raise ValueError(f"Tenant {tenant_id} not found")
+            
+            # Check entitlement for bulk user import (Pro/Ent feature)
+            limits = await get_limits(tenant_id)
+            max_users = limits.get("max_users", 100)
+            current_user_count = self.db.query(UserV2).filter(
+                UserV2.tenant_id == uuid.UUID(tenant_id),
+                UserV2.active == True
+            ).count()
+            
+            if current_user_count + len(users_data) > max_users:
+                raise ValueError(f"Bulk import would exceed user limit ({max_users}). Current: {current_user_count}, Requested: {len(users_data)}")
+            
+            # Create users
+            for user_data in users_data:
+                try:
+                    email = user_data.get("email")
+                    display_name = user_data.get("display_name", email)
+                    permissions = user_data.get("permissions", [])
+                    
+                    if not email:
+                        results["failed"].append({"error": "Missing email", "data": user_data})
+                        continue
+                    
+                    # Check if user already exists
+                    if self.db.query(UserV2).filter(UserV2.email == email).first():
+                        results["failed"].append({"email": email, "error": "Email already exists"})
+                        continue
+                    
+                    # Create user
+                    user_id = uuid.uuid4()
+                    api_key = gen_api_key() if auto_generate_api_keys else None
+                    new_user = UserV2(
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                        email=email,
+                        display_name=display_name,
+                        active=True,
+                        api_key=api_key,
+                        api_key_created_at=datetime.now() if api_key else None,
+                        permissions=permissions
+                    )
+                    self.db.add(new_user)
+                    self.db.flush()
+                    self.created_users.append(new_user)
+                    
+                    # Create outbox event
+                    event_id = store_outbox(self.db, "USER_CREATED", tenant_id, str(user_id), {
+                        "user_id": str(user_id),
+                        "email": email,
+                        "display_name": display_name,
+                        "bulk_import": True
+                    })
+                    self.created_events.append(event_id)
+                    
+                    # Audit log
+                    audit(self.db, tenant_id, uctx["user_id"], "CREATE", "user", str(user_id), {
+                        "email": email,
+                        "bulk_import": True
+                    })
+                    
+                    results["success"].append({
+                        "user_id": str(user_id),
+                        "email": email,
+                        "api_key": api_key
+                    })
+                    
+                except Exception as user_error:
+                    results["failed"].append({
+                        "email": user_data.get("email", "unknown"),
+                        "error": str(user_error)
+                    })
+            
+            # Commit all changes
+            self.db.commit()
+            
+            # Trigger outbox publishing
+            publish_outbox_events.delay()
+            
+            saga_total.labels(type="bulk_users", status="ok").inc()
+            saga_duration.labels(type="bulk_users").observe(time.time() - start)
+            
+            return {
+                "saga_id": sid,
+                "tenant_id": tenant_id,
+                "total_requested": len(users_data),
+                "success_count": len(results["success"]),
+                "failed_count": len(results["failed"]),
+                "results": results
+            }
+            
+        except Exception as e:
+            await self.comp()
+            saga_total.labels(type="bulk_users", status="fail").inc()
+            raise
+    
+    async def comp(self):
+        """Compensation: rollback created users and events"""
+        try:
+            for event_id in self.created_events:
+                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": event_id})
+            
+            for user in self.created_users:
+                self.db.delete(user)
+            
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"BulkUserSaga compensation failed: {e}")
             self.db.rollback()
 
 class RoleSaga:
@@ -840,6 +1004,45 @@ async def create_user(user_id: str, req: UserRequest, db: Session = Depends(get_
 async def list_users(db: Session = Depends(get_db_with_rls)):
     us = db.query(UserV2).filter(UserV2.active == True).all()
     return [{"user_id": str(u.user_id), "tenant_id": str(u.tenant_id), "email": u.email} for u in us]
+
+@app.post("/provisioning/users/bulk-import")
+async def bulk_import_users(
+    req: BulkUserRequest,
+    db: Session = Depends(get_db_with_rls),
+    uctx: Dict = Depends(get_user_context)
+):
+    """
+    Bulk user import endpoint - Pro/Enterprise feature
+    Requires 'self_service_users' entitlement
+    """
+    start = time.time()
+    try:
+        req_total.labels(op="bulk_import_users", status="start").inc()
+        
+        # Check entitlement for bulk user import feature
+        check_permission(uctx, "provisioning.bulk_import")
+        
+        saga = BulkUserSaga(db)
+        res = await saga.exec(
+            tenant_id=req.tenant_id,
+            users_data=req.users,
+            uctx=uctx,
+            auto_generate_api_keys=req.auto_generate_api_keys
+        )
+        
+        req_total.labels(op="bulk_import_users", status="ok").inc()
+        req_duration.labels(op="bulk_import_users").observe(time.time() - start)
+        
+        logger.info(f"Bulk user import completed: {res['success_count']}/{res['total_requested']} succeeded")
+        return res
+        
+    except ValueError as e:
+        req_total.labels(op="bulk_import_users", status="fail").inc()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        req_total.labels(op="bulk_import_users", status="fail").inc()
+        logger.error(f"Bulk user import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/provisioning/roles/{role_id}")
 async def create_role(role_id: str, req: RoleRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):

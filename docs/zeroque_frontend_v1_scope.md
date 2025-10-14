@@ -1,4 +1,5 @@
 <!-- 72fcfecf-1f95-49d6-877e-df0d16adf7db 9810505e-ab41-4207-8c73-d2563fbe00bf -->
+
 # ZeroQue Frontend V1 – Scope and Hiring Brief
 
 ## Objective
@@ -152,5 +153,3 @@ Note: Implement a typed `apiClient` wrapper with:
 - [ ] Vitest unit tests, Playwright E2E, GitHub Actions CI
 - [ ] Performance budgets, accessibility audits and fixes
 - [ ] Dev README, env configs, runbook, onboarding guide
-
-
