@@ -7,7 +7,7 @@ Create Date: 2025-01-14 06:00:00.000000
 """
 from alembic import op
 import sqlalchemy as sa
-
+import sqlalchemy.dialects.postgresql as pg
 
 # revision identifiers, used by Alembic.
 revision = 'phase4_budgets_spend'
@@ -17,13 +17,10 @@ depends_on = None
 
 
 def upgrade():
-    # Phase 4: Create cost centre budgeting tables if they don't exist
-    # Note: These tables may already exist in some environments
-
     # Create cost_centres table
     try:
         op.create_table('cost_centres',
-            sa.Column('cost_centre_id', sa.UUID(), nullable=False),
+            sa.Column('cost_centre_id', pg.UUID(), nullable=False),
             sa.Column('tenant_id', sa.UUID(), nullable=False),
             sa.Column('name', sa.String(200), nullable=False),
             sa.Column('code', sa.String(50), nullable=False),
@@ -37,7 +34,6 @@ def upgrade():
             sa.PrimaryKeyConstraint('cost_centre_id')
         )
     except:
-        # Table might already exist
         pass
 
     # Create budgets table
