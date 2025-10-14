@@ -14,27 +14,18 @@ Features (ALL GAPS FIXED):
 9. Enhanced metrics
 10. Full audit logging
 """
-
-import os
-import uuid
 import json
 import logging
 import time
 import secrets
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Header
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Integer, JSON, ForeignKey, func, text, Text
-from sqlalchemy.dialects.postgresql import UUID as SQLUUID
-from sqlalchemy.orm import Session, sessionmaker, declarative_base
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 import pika
 from celery import Celery
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 import httpx
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -42,18 +33,9 @@ import pybreaker
 import jwt
 import redis
 
-class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev"
-    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672//"
-    REDIS_URL: str = "redis://localhost:6379/0"
-    SUBSCRIPTIONS_SERVICE_URL: str = "http://localhost:8010"
-    JWT_SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION"
-    JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRATION_HOURS: int = 24
-    ALLOW_DEMO: bool = False
-    SERVICE_PORT: int = 8000
-
-    model_config = ConfigDict(env_file=".env", extra="ignore")
+from .models import *
+from .schemas import *
+from core.config import Settings
 
 SETTINGS = Settings()  # env-driven
 
@@ -74,7 +56,7 @@ logger = logging.getLogger(SERVICE_NAME)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
 
 celery_app = Celery(SERVICE_NAME, broker=RABBITMQ_URL, backend=REDIS_URL)
 celery_app.conf.update(task_serializer='json', accept_content=['json'], timezone='UTC', enable_utc=True)
@@ -86,6 +68,8 @@ try:
     logger.info("Loaded Celery configuration")
 except ImportError:
     logger.warning("No celeryconfig.py found, using defaults")
+except Exception as e:
+    logger.error(f"Error loading celeryconfig.py: {e}")
 
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -104,156 +88,6 @@ req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
 req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
 saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
 saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
-
-# Models
-class TenantV2(Base):
-    __tablename__ = "tenants_new"
-    tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), nullable=False, unique=True)
-    type = Column(String(50), default="customer")
-    active = Column(Boolean, default=True)
-    tenant_metadata = Column(JSON)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class SiteV2(Base):
-    __tablename__ = "sites_new"
-    site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants_new.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    site_type = Column(String(50), default="retail")
-    geo = Column(JSON)
-    device_metadata = Column(JSON)  # Phase 2: Site Registry - tracks cameras, sensors, entry devices
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class StoreV2(Base):
-    __tablename__ = "stores_new"
-    store_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites_new.site_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    store_type = Column(String(50), default="retail")
-    geo = Column(JSON)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class UserV2(Base):
-    __tablename__ = "users_new"
-    user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants_new.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    email = Column(String(255), unique=True, nullable=False)
-    display_name = Column(String(255), nullable=False)
-    active = Column(Boolean, default=True)
-    api_key = Column(String(255), unique=True, index=True)
-    api_key_created_at = Column(DateTime(timezone=True))
-    permissions = Column(JSON)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class RoleV2(Base):
-    __tablename__ = "roles_new"
-    role_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code = Column(String(100), unique=True, nullable=False)
-    name = Column(String(255))
-    description = Column(String(500))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class VendorV2(Base):
-    __tablename__ = "vendors_new"
-    vendor_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants_new.tenant_id", ondelete="CASCADE"), nullable=False)
-    name = Column(String(255), nullable=False)
-    contact_email = Column(String(255))
-    description = Column(String(500))
-    status = Column(String(50), default="active")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class CostCentre(Base):
-    __tablename__ = "cost_centres"
-    cost_centre_id = Column(String(100), primary_key=True)
-    tenant_id = Column(String(100), nullable=False, index=True)
-    name = Column(String(200), nullable=False)
-    budget_minor = Column(Integer, default=0)
-    spent_minor = Column(Integer, default=0)
-    currency_code = Column(String(3), default="GBP")
-    status = Column(String(50), default="active")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class OutboxEvent(Base):
-    __tablename__ = "outbox_events"
-    event_id = Column(String(255), primary_key=True)
-    event_type = Column(String(100), nullable=False, index=True)
-    aggregate_id = Column(String(255), nullable=False)
-    event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default="pending")
-    retry_count = Column(Integer, nullable=False, default=0)
-    published_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-    log_id = Column(String(255), primary_key=True)
-    aggregate_id = Column(String(255), nullable=False, index=True)
-    user_id = Column(String(255))
-    action = Column(String(100), nullable=False)
-    entity_type = Column(String(50), nullable=False)
-    entity_id = Column(String(255), nullable=False)
-    changes = Column(JSON)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Tables initialized")
-except Exception as e:
-    logger.warning(f"Table init: {e}")
-
-# Payloads
-class TenantRequest(BaseModel):
-    name: str
-    tenant_type: str = "customer"
-    
-    def __init__(self, **data):
-        super().__init__(**data)
-        if not self.name or not self.name.strip():
-            raise ValueError("Tenant name cannot be empty")
-
-class SiteRequest(BaseModel):
-    name: str
-    site_type: str = "office"
-    geo: Optional[Dict] = None
-    device_metadata: Optional[Dict] = None  # Phase 2: Site Registry - device tracking
-
-class StoreRequest(BaseModel):
-    name: str
-    store_type: str = "retail"
-    geo: Optional[Dict] = None
-
-class UserRequest(BaseModel):
-    email: str
-    display_name: str
-    tenant_id: str
-    generate_api_key: bool = False
-    permissions: Optional[List[str]] = None
-
-class BulkUserRequest(BaseModel):
-    """Bulk user import for self-service provisioning (Pro/Ent feature)"""
-    tenant_id: str
-    users: List[Dict[str, Any]]  # [{"email": "...", "display_name": "...", "permissions": [...]}, ...]
-    notify_users: bool = True
-    auto_generate_api_keys: bool = False
-
-class RoleRequest(BaseModel):
-    code: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-
-class VendorRequest(BaseModel):
-    tenant_id: str
-    name: str
-    contact_email: Optional[str] = None
-    description: Optional[str] = None
-
-class CostCentreRequest(BaseModel):
-    tenant_id: str
-    name: str
-    budget_minor: int = 0
 
 # RabbitMQ
 def publish_to_rabbitmq(event_type: str, event_data: Dict, tenant_id: str):
