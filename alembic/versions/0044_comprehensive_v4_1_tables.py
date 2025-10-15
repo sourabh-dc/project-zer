@@ -95,7 +95,7 @@ def upgrade():
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants_new.tenant_id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('vendor_id')
     )
-    
+
     # Outbox and Audit Tables
     op.create_table('outbox_events',
         sa.Column('event_id', sa.String(length=255), nullable=False),
