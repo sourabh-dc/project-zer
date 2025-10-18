@@ -67,3 +67,10 @@ class VendorSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        try:
+            vs = self.db.query(VendorV2).all()
+            return [{"vendor_id": str(v.vendor_id), "name": v.name, "status": v.status} for v in vs]
+        except Exception as e:
+            raise

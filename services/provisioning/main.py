@@ -20,21 +20,16 @@ from fastapi import FastAPI, Query, Depends
 from sqlalchemy.orm import Session
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
-from watchfiles import awatch
+
 
 from services.provisioning.services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
-    create_store, create_user, get_stores, get_users
+    create_store, create_user, get_stores, get_users, bulk_import_users, create_role, get_roles, create_vendor, \
+    get_vendors, create_cc, get_cc
 from .models import *
 from .repositories.db_handler import SessionLocal, set_rls_context
 from .core.celery_main import celery_app
 from .utils.user_auth import *
-from .repositories.site_saga import SiteSaga
-from .repositories.store_saga import StoreSaga
-from .repositories.user_saga import UserSaga
-from .repositories.role_saga import RoleSaga
-from .repositories.vendor_saga import VendorSaga
 from .repositories.cost_centre_saga import CostCentreSaga
-from .repositories.bulk_user_saga import BulkUserSaga
 
 
 SERVICE_NAME = "provisioning"
@@ -117,7 +112,7 @@ async def list_users(db: Session = Depends(get_db_with_rls)):
     return await get_users(db)
 
 @app.post("/provisioning/users/bulk-import")
-async def bulk_import_users(
+async def bulk_import_users_route(
     req: BulkUserRequest,
     db: Session = Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
@@ -126,103 +121,31 @@ async def bulk_import_users(
     Bulk user import endpoint - Pro/Enterprise feature
     Requires 'self_service_users' entitlement
     """
-    start = time.time()
-    try:
-        req_total.labels(op="bulk_import_users", status="start").inc()
-        
-        # Check entitlement for bulk user import feature
-        check_permission(uctx, "provisioning.bulk_import")
-        
-        saga = BulkUserSaga(db)
-        res = await saga.exec(
-            tenant_id=req.tenant_id,
-            users_data=req.users,
-            uctx=uctx,
-            auto_generate_api_keys=req.auto_generate_api_keys
-        )
-        
-        req_total.labels(op="bulk_import_users", status="ok").inc()
-        req_duration.labels(op="bulk_import_users").observe(time.time() - start)
-        
-        logger.info(f"Bulk user import completed: {res['success_count']}/{res['total_requested']} succeeded")
-        return res
-        
-    except ValueError as e:
-        req_total.labels(op="bulk_import_users", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="bulk_import_users", status="fail").inc()
-        logger.error(f"Bulk user import failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await bulk_import_users(req, db, uctx)
 
 @app.put("/provisioning/roles/{role_id}")
-async def create_role(role_id: str, req: RoleRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_role", status="start").inc()
-        saga = RoleSaga(db)
-        res = await saga.exec(uuid.UUID(role_id), req, uctx)
-        req_total.labels(op="create_role", status="ok").inc()
-        req_duration.labels(op="create_role").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_role", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_role", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_role_route(role_id: str, req: RoleRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_role(role_id, req, db, uctx)
 
 @app.get("/provisioning/roles")
 async def list_roles(db: Session = Depends(get_db_with_rls)):
-    rs = db.query(RoleV2).all()
-    return [{"role_id": str(r.role_id), "code": r.code, "name": r.name} for r in rs]
+    return await get_roles(db)
 
 @app.put("/provisioning/vendors/{vendor_id}")
-async def create_vendor(vendor_id: str, req: VendorRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_vendor", status="start").inc()
-        saga = VendorSaga(db)
-        res = await saga.exec(uuid.UUID(vendor_id), req, uctx)
-        req_total.labels(op="create_vendor", status="ok").inc()
-        req_duration.labels(op="create_vendor").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_vendor", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_vendor", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_vendor_route(vendor_id: str, req: VendorRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_vendor(vendor_id, req, db, uctx)
 
 @app.get("/provisioning/vendors")
 async def list_vendors(db: Session = Depends(get_db_with_rls)):
-    vs = db.query(VendorV2).all()
-    return [{"vendor_id": str(v.vendor_id), "name": v.name, "status": v.status} for v in vs]
+    return await get_vendors(db)
 
 @app.post("/provisioning/cost-centres")
-async def create_cc(req: CostCentreRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_cost_centre", status="start").inc()
-        saga = CostCentreSaga(db)
-        res = await saga.exec(req, uctx)
-        req_total.labels(op="create_cost_centre", status="ok").inc()
-        req_duration.labels(op="create_cost_centre").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_cost_centre", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_cost_centre", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_cost_centre(req: CostCentreRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_cc(req, db, uctx)
 
 @app.get("/provisioning/cost-centres")
 async def list_ccs(tenant_id: Optional[str] = Query(None), db: Session = Depends(get_db_with_rls)):
-    q = db.query(CostCentre).filter(CostCentre.status == "active")
-    if tenant_id:
-        q = q.filter(CostCentre.tenant_id == tenant_id)
-    ccs = q.all()
-    return [{"cost_centre_id": cc.cost_centre_id, "name": cc.name, "budget_minor": cc.budget_minor, "spent_minor": cc.spent_minor} for cc in ccs]
+    return await get_cc(db, tenant_id)
 
 # Celery workers
 @celery_app.task(name='provisioning.process_entry_granted')

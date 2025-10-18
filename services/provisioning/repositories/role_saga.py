@@ -53,3 +53,10 @@ class RoleSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        try:
+            rs = self.db.query(RoleV2).all()
+            return [{"role_id": str(r.role_id), "code": r.code, "name": r.name} for r in rs]
+        except Exception as e:
+            raise

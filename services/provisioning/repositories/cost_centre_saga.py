@@ -66,3 +66,14 @@ class CostCentreSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self, tenant_id):
+        try:
+            q = self.db.query(CostCentre).filter(CostCentre.status == "active")
+            if tenant_id:
+                q = q.filter(CostCentre.tenant_id == tenant_id)
+            ccs = q.all()
+            return [{"cost_centre_id": cc.cost_centre_id, "name": cc.name, "budget_minor": cc.budget_minor,
+                     "spent_minor": cc.spent_minor} for cc in ccs]
+        except Exception as e:
+            raise
