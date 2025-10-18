@@ -1,5 +1,7 @@
 import time
 import uuid
+from http.client import HTTPException
+
 from prometheus_client import Counter, Histogram
 from sqlalchemy import text
 
@@ -53,3 +55,11 @@ class TenantSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        try:
+            tenants = self.db.query(TenantV2).filter(TenantV2.active == True).all()
+            return [{"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type} for t in tenants]
+        except Exception as e:
+            logger.error(f"Get all tenants failed: {e}")
+            raise HTTPException

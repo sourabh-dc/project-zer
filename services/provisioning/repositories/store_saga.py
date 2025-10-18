@@ -58,3 +58,7 @@ class StoreSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        ss = self.db.query(StoreV2).all()
+        return [{"store_id": str(s.store_id), "site_id": str(s.site_id), "name": s.name} for s in ss]

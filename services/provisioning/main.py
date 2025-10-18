@@ -20,12 +20,14 @@ from fastapi import FastAPI, Query, Depends
 from sqlalchemy.orm import Session
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
+from watchfiles import awatch
 
+from services.provisioning.services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
+    create_store, create_user, get_stores, get_users
 from .models import *
 from .repositories.db_handler import SessionLocal, set_rls_context
 from .core.celery_main import celery_app
 from .utils.user_auth import *
-from .repositories.tenant_saga import TenantSaga
 from .repositories.site_saga import SiteSaga
 from .repositories.store_saga import StoreSaga
 from .repositories.user_saga import UserSaga
@@ -83,92 +85,36 @@ async def metrics():
 
 # Endpoints
 @app.post("/provisioning/tenants")
-async def create_tenant(req: TenantRequest, db: Session = Depends(get_db_with_rls)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_tenant", status="start").inc()
-        saga = TenantSaga(db)
-        res = await saga.exec(req)
-        req_total.labels(op="create_tenant", status="ok").inc()
-        req_duration.labels(op="create_tenant").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_tenant", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_tenant", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_tenant_route(req: TenantRequest, db: Session = Depends(get_db_with_rls)):
+    return await create_tenant(req, db)
 
 @app.get("/provisioning/tenants")
 async def list_tenants(db: Session = Depends(get_db_with_rls)):
-    ts = db.query(TenantV2).filter(TenantV2.active == True).all()
-    return [{"tenant_id": str(t.tenant_id), "name": t.name, "type": t.type} for t in ts]
+    return await get_tenants(db)
 
 @app.put("/provisioning/sites/{site_id}")
-async def create_site(site_id: str, req: SiteRequest, tenant_id: str = Query(...), db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_site", status="start").inc()
-        saga = SiteSaga(db)
-        res = await saga.exec(uuid.UUID(site_id), uuid.UUID(tenant_id), req, uctx)
-        req_total.labels(op="create_site", status="ok").inc()
-        req_duration.labels(op="create_site").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_site", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_site", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_site_route(site_id: str, req: SiteRequest, tenant_id: str = Query(...), db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_site(site_id, req, tenant_id, db, uctx)
 
 @app.get("/provisioning/sites")
 async def list_sites(db: Session = Depends(get_db_with_rls)):
-    ss = db.query(SiteV2).all()
-    return [{"site_id": str(s.site_id), "tenant_id": str(s.tenant_id), "name": s.name} for s in ss]
+    return await get_sites(db)
 
 @app.put("/provisioning/stores/{store_id}")
-async def create_store(store_id: str, req: StoreRequest, site_id: str = Query(...), db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_store", status="start").inc()
-        saga = StoreSaga(db)
-        res = await saga.exec(uuid.UUID(store_id), uuid.UUID(site_id), req, uctx)
-        req_total.labels(op="create_store", status="ok").inc()
-        req_duration.labels(op="create_store").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_store", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_store", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_store_route(store_id: str, req: StoreRequest, site_id: str = Query(...), db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_store(store_id, req, site_id, db, uctx)
 
 @app.get("/provisioning/stores")
 async def list_stores(db: Session = Depends(get_db_with_rls)):
-    ss = db.query(StoreV2).all()
-    return [{"store_id": str(s.store_id), "site_id": str(s.site_id), "name": s.name} for s in ss]
+    return await get_stores(db)
 
 @app.put("/provisioning/users/{user_id}")
-async def create_user(user_id: str, req: UserRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
-    start = time.time()
-    try:
-        req_total.labels(op="create_user", status="start").inc()
-        saga = UserSaga(db)
-        res = await saga.exec(uuid.UUID(user_id), req, uctx)
-        req_total.labels(op="create_user", status="ok").inc()
-        req_duration.labels(op="create_user").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        req_total.labels(op="create_user", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        req_total.labels(op="create_user", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_user_route(user_id: str, req: UserRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_user(user_id, req, db, uctx)
 
 @app.get("/provisioning/users")
 async def list_users(db: Session = Depends(get_db_with_rls)):
-    us = db.query(UserV2).filter(UserV2.active == True).all()
-    return [{"user_id": str(u.user_id), "tenant_id": str(u.tenant_id), "email": u.email} for u in us]
+    return await get_users(db)
 
 @app.post("/provisioning/users/bulk-import")
 async def bulk_import_users(

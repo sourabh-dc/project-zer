@@ -74,3 +74,10 @@ class UserSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        try:
+            us = self.db.query(UserV2).filter(UserV2.active == True).all()
+            return [{"user_id": str(u.user_id), "tenant_id": str(u.tenant_id), "email": u.email} for u in us]
+        except Exception as e:
+            raise

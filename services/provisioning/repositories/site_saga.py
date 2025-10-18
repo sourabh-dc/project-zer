@@ -67,3 +67,11 @@ class SiteSaga:
         except Exception as e:
             logger.error(f"Compensation failed: {e}")
             self.db.rollback()
+
+    async def getall(self):
+        try:
+            sites = self.db.query(SiteV2).all()
+            return [{"site_id": str(s.site_id), "tenant_id": str(s.tenant_id), "name": s.name} for s in sites]
+        except Exception as e:
+            logger.error(f"Get all sites failed: {e}")
+            raise
