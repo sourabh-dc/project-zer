@@ -14,20 +14,16 @@ Features (ALL GAPS FIXED):
 9. Enhanced metrics
 10. Full audit logging
 """
-import json
 import time
 from datetime import datetime, timedelta
-
 from fastapi import FastAPI, Query, Depends
 from sqlalchemy.orm import Session
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
-import httpx
-from tenacity import retry, stop_after_attempt, wait_fixed
 import pybreaker
 
 from .models import *
-from .repositories.db_handler import SessionLocal, set_rls_context
+from .repositories.db_handler import SessionLocal, set_rls_context, audit
 from tasks.celery_tasks import publish_outbox_events
 from .repositories.outbox_repository import store_outbox
 from .core.celery_main import celery_app
@@ -68,14 +64,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     finally:
         db.close()
 
-
-def audit(db, tid, uid, action, etype, eid, changes=None):
-    try:
-        log = AuditLog(log_id=f"aud_{uuid.uuid4().hex[:12]}", aggregate_id=tid, user_id=uid, action=action, entity_type=etype, entity_id=eid, changes=changes)
-        db.add(log)
-        db.commit()
-    except Exception as e:
-        logger.warning(f"Audit failed: {e}")
 
 # Sagas
 class TenantSaga:

@@ -3,6 +3,9 @@ from sqlalchemy import Column, String, Boolean, DateTime, Integer, JSON, Foreign
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID
 from sqlalchemy.orm import declarative_base
 
+from repositories.db_handler import engine
+from utils.provisioning_logger import logger
+
 Base = declarative_base()
 
 # Models

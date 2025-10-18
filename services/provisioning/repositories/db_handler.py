@@ -39,13 +39,11 @@ def set_rls_context(db, tid, uid=None):
         except:
             pass
 
-def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
-    db = get_db()
+def audit(db, tid, uid, action, etype, eid, changes=None):
     try:
-        # Skip RLS in demo mode to avoid transaction issues
-        if not ALLOW_DEMO:
-            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
-        yield db
-    finally:
-        db.close()
+        log = AuditLog(log_id=f"aud_{uuid.uuid4().hex[:12]}", aggregate_id=tid, user_id=uid, action=action, entity_type=etype, entity_id=eid, changes=changes)
+        db.add(log)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Audit failed: {e}")
 
