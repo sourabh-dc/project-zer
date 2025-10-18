@@ -27,7 +27,6 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_fixed
 import pybreaker
 import jwt
-import redis
 
 from .models import *
 from .schemas import *
@@ -37,6 +36,7 @@ from utils.provisioning_logger import logger
 from tasks.celery_tasks import publish_outbox_events
 from .repositories.outbox_repository import store_outbox
 from .core.celery_main import celery_app
+from .core.redis_config import redis_client
 
 
 SERVICE_NAME = "provisioning"
@@ -51,13 +51,7 @@ JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 SERVICE_PORT = get_settings().SERVICE_PORT
 
-try:
-    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
-    logger.info("Redis connected")
-except:
-    redis_client = None
-    logger.warning("Redis unavailable, caching disabled")
+
 
 subscription_cb = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
 
