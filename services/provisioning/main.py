@@ -16,27 +16,23 @@ Features (ALL GAPS FIXED):
 """
 import json
 import time
-import secrets
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Header
+from fastapi import FastAPI, Query, Depends
 from sqlalchemy.orm import Session
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 import httpx
 from tenacity import retry, stop_after_attempt, wait_fixed
 import pybreaker
-import jwt
 
 from .models import *
-from .schemas import *
-from core.config import get_settings
 from .repositories.db_handler import SessionLocal, set_rls_context
-from utils.provisioning_logger import logger
 from tasks.celery_tasks import publish_outbox_events
 from .repositories.outbox_repository import store_outbox
 from .core.celery_main import celery_app
-from .core.redis_config import redis_client
+from .services.subscription_service import get_limits
+from .utils.user_auth import *
 
 
 SERVICE_NAME = "provisioning"
@@ -51,8 +47,6 @@ JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 SERVICE_PORT = get_settings().SERVICE_PORT
 
-
-
 subscription_cb = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
 
 app = FastAPI(title="ZeroQue Provisioning", version=SERVICE_VERSION)
@@ -63,73 +57,6 @@ req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
 saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
 saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
 
-# Auth
-def gen_api_key():
-    return f"zq_{secrets.token_urlsafe(32)}"
-
-def verify_api_key(key, db):
-    try:
-        u = db.query(UserV2).filter(UserV2.api_key == key, UserV2.active == True).first()
-        return {"user_id": str(u.user_id), "tenant_id": str(u.tenant_id), "permissions": u.permissions or ["*"]} if u else None
-    except Exception as e:
-        logger.error(f"API key verify: {e}")
-        return None
-
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
-    # Demo mode (dev only) - check first for demo API key
-    if ALLOW_DEMO and x_api_key == "zq_demo_key_for_testing":
-        logger.warning("Using demo API key - not for production!")
-        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-
-    # Try API key first
-    if x_api_key:
-        with SessionLocal() as db:
-            ctx = verify_api_key(x_api_key, db)
-            if ctx:
-                return ctx
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # Try JWT
-    if authorization and "Bearer " in authorization:
-        try:
-            token = authorization.replace("Bearer ", "")
-            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return claims
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
-
-    # Demo mode fallback (dev only)
-    if ALLOW_DEMO:
-        logger.warning("Using demo mode - not for production!")
-        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-
-    raise HTTPException(status_code=401, detail="Authentication required")
-
-def check_permission(uctx: Dict, required_permission: str):
-    """Check if user has required permission"""
-    permissions = uctx.get("permissions", [])
-    
-    # Wildcard permission (demo mode or superadmin)
-    if "*" in permissions:
-        return True
-    
-    # Exact match
-    if required_permission in permissions:
-        return True
-    
-    # Check permission hierarchy (e.g., "provisioning.*" grants "provisioning.bulk_import")
-    permission_parts = required_permission.split(".")
-    for i in range(len(permission_parts)):
-        wildcard_perm = ".".join(permission_parts[:i+1]) + ".*"
-        if wildcard_perm in permissions:
-            return True
-    
-    raise HTTPException(
-        status_code=403,
-        detail=f"Permission denied: {required_permission} required"
-    )
 
 def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     db = SessionLocal()
@@ -141,39 +68,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     finally:
         db.close()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Subscription limits with retry + circuit breaker + cache
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
-@subscription_cb
-async def get_limits(tid):
-    cache_key = f"lim:{tid}"
-    if redis_client:
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except:
-            pass
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as c:
-            r = await c.get(f"{SUBSCRIPTIONS_SERVICE_URL}/subscriptions/v4/limits", params={"tenant_id": tid})
-            if r.status_code == 200:
-                lims = r.json()
-                if redis_client:
-                    try:
-                        redis_client.setex(cache_key, 300, json.dumps(lims))
-                    except:
-                        pass
-                return lims
-    except Exception as e:
-        logger.warning(f"Limits fetch failed: {e}")
-    return {"max_sites": 10, "max_stores": 50, "max_users": 100, "max_vendors": 20}
 
 def audit(db, tid, uid, action, etype, eid, changes=None):
     try:
