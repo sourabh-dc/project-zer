@@ -15,16 +15,12 @@ Features (ALL GAPS FIXED):
 10. Full audit logging
 """
 import json
-import logging
 import time
 import secrets
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Header
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-import pika
-from celery import Celery
+from sqlalchemy.orm import Session
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 import httpx
@@ -35,41 +31,25 @@ import redis
 
 from .models import *
 from .schemas import *
-from core.config import Settings
+from core.config import get_settings
+from .repositories.db_handler import SessionLocal, set_rls_context
+from utils.provisioning_logger import logger
+from tasks.celery_tasks import publish_outbox_events
+from .repositories.outbox_repository import store_outbox
+from .core.celery_main import celery_app
 
-SETTINGS = Settings()  # env-driven
 
 SERVICE_NAME = "provisioning"
 SERVICE_VERSION = "4.1.1"
-DATABASE_URL = SETTINGS.DATABASE_URL
-RABBITMQ_URL = SETTINGS.RABBITMQ_URL
-REDIS_URL = SETTINGS.REDIS_URL
-SUBSCRIPTIONS_SERVICE_URL = SETTINGS.SUBSCRIPTIONS_SERVICE_URL
-JWT_SECRET_KEY = SETTINGS.JWT_SECRET_KEY
-JWT_ALGORITHM = SETTINGS.JWT_ALGORITHM
-JWT_EXPIRATION_HOURS = SETTINGS.JWT_EXPIRATION_HOURS
-ALLOW_DEMO = SETTINGS.ALLOW_DEMO
-SERVICE_PORT = SETTINGS.SERVICE_PORT
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(SERVICE_NAME)
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-celery_app = Celery(SERVICE_NAME, broker=RABBITMQ_URL, backend=REDIS_URL)
-celery_app.conf.update(task_serializer='json', accept_content=['json'], timezone='UTC', enable_utc=True)
-
-# Load Celery config if available
-try:
-    import celeryconfig
-    celery_app.conf.update(**{k: v for k, v in celeryconfig.__dict__.items() if not k.startswith('_')})
-    logger.info("Loaded Celery configuration")
-except ImportError:
-    logger.warning("No celeryconfig.py found, using defaults")
-except Exception as e:
-    logger.error(f"Error loading celeryconfig.py: {e}")
+DATABASE_URL = get_settings().DATABASE_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+REDIS_URL = get_settings().REDIS_URL
+SUBSCRIPTIONS_SERVICE_URL = get_settings().SUBSCRIPTIONS_SERVICE_URL
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
+JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+SERVICE_PORT = get_settings().SERVICE_PORT
 
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -88,76 +68,6 @@ req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
 req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
 saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
 saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
-
-# RabbitMQ
-def publish_to_rabbitmq(event_type: str, event_data: Dict, tenant_id: str):
-    try:
-        conn = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-        ch = conn.channel()
-        ch.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
-        msg = json.dumps({"event_type": event_type, "tenant_id": tenant_id, "timestamp": datetime.now().isoformat(), "data": event_data})
-        ch.basic_publish(exchange='zeroque_events', routing_key=event_type, body=msg, properties=pika.BasicProperties(delivery_mode=2))
-        conn.close()
-        logger.info(f"Published {event_type}")
-        return True
-    except Exception as e:
-        logger.error(f"RabbitMQ publish failed: {e}")
-        return False
-
-def store_outbox(db, evt_type, tid, eid, data):
-    evt = OutboxEvent(
-        event_id=f"evt_{uuid.uuid4().hex[:12]}",
-        event_type=evt_type,
-        aggregate_id=tid,
-        event_data=json.dumps(data),
-        status="pending",
-        retry_count=0
-    )
-    db.add(evt)
-    db.commit()
-    return str(evt.event_id)
-
-@celery_app.task(name='provisioning.publish_outbox_events')
-def publish_outbox_events():
-    try:
-        with SessionLocal() as db:
-            # Publish up to 100 pending events, retrying up to 5 times per event
-            evts = (
-                db.query(OutboxEvent)
-                .filter(OutboxEvent.status == "pending", OutboxEvent.retry_count < 5)
-                .limit(100)
-                .all()
-            )
-            for e in evts:
-                event_data = json.loads(e.event_data) if isinstance(e.event_data, str) else e.event_data
-                if publish_to_rabbitmq(e.event_type, event_data, str(e.aggregate_id)):
-                    e.status = "published"
-                    e.published_at = datetime.now()
-                else:
-                    e.retry_count += 1
-                    if e.retry_count >= 5:
-                        e.status = "failed"
-                db.commit()
-        if evts:
-            logger.info(f"Published {len(evts)} events")
-    except Exception as ex:
-        logger.error(f"Outbox publish failed: {ex}")
-
-# RLS
-def set_rls_context(db, tid, uid=None):
-    try:
-        # Rollback any failed transaction first
-        db.rollback()
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tid})
-        if uid:
-            db.execute(text("SET app.current_user = :uid"), {"uid": uid})
-    except Exception as e:
-        logger.debug(f"RLS: {e}")
-        # Ensure we're not in a failed transaction state
-        try:
-            db.rollback()
-        except:
-            pass
 
 # Auth
 def gen_api_key():

@@ -13,3 +13,6 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8000
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
+
+def get_settings() -> Settings:
+    return Settings()
