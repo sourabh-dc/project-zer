@@ -7,18 +7,10 @@ from ..schemas import *
 from core.config import get_settings
 from ..utils.provisioning_logger import logger
 
-SERVICE_NAME = "provisioning"
-SERVICE_VERSION = "4.1.1"
-DATABASE_URL = get_settings().DATABASE_URL
-RABBITMQ_URL = get_settings().RABBITMQ_URL
-REDIS_URL = get_settings().REDIS_URL
-SUBSCRIPTIONS_SERVICE_URL = get_settings().SUBSCRIPTIONS_SERVICE_URL
 JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
 JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
 ALLOW_DEMO = get_settings().ALLOW_DEMO
-SERVICE_PORT = get_settings().SERVICE_PORT
-
 
 # Auth
 def gen_api_key():

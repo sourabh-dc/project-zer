@@ -14,22 +14,19 @@ Features (ALL GAPS FIXED):
 9. Enhanced metrics
 10. Full audit logging
 """
-import time
-from datetime import datetime, timedelta
 from fastapi import FastAPI, Query, Depends
+from sqlalchemy import text
 from sqlalchemy.orm import Session
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
 
 from services.provisioning.services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
     create_store, create_user, get_stores, get_users, bulk_import_users, create_role, get_roles, create_vendor, \
     get_vendors, create_cc, get_cc
-from .models import *
 from .repositories.db_handler import SessionLocal, set_rls_context
-from .core.celery_main import celery_app
 from .utils.user_auth import *
-from .repositories.cost_centre_saga import CostCentreSaga
+from .schemas import TenantRequest, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, RoleRequest, VendorRequest, CostCentreRequest
 
 
 SERVICE_NAME = "provisioning"
@@ -37,21 +34,10 @@ SERVICE_VERSION = "4.1.1"
 DATABASE_URL = get_settings().DATABASE_URL
 RABBITMQ_URL = get_settings().RABBITMQ_URL
 REDIS_URL = get_settings().REDIS_URL
-SUBSCRIPTIONS_SERVICE_URL = get_settings().SUBSCRIPTIONS_SERVICE_URL
-JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
-JWT_ALGORITHM = get_settings().JWT_ALGORITHM
-JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 SERVICE_PORT = get_settings().SERVICE_PORT
 
 app = FastAPI(title="ZeroQue Provisioning", version=SERVICE_VERSION)
-
-# Metrics
-req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
-req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
-saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
-saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
-
 
 def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     db = SessionLocal()
@@ -147,70 +133,6 @@ async def create_cost_centre(req: CostCentreRequest, db: Session = Depends(get_d
 async def list_ccs(tenant_id: Optional[str] = Query(None), db: Session = Depends(get_db_with_rls)):
     return await get_cc(db, tenant_id)
 
-# Celery workers
-@celery_app.task(name='provisioning.process_entry_granted')
-def process_entry_granted(data):
-    logger.info(f"Processed ENTRY_GRANTED: {data}")
-    return {"status": "ok"}
-
-@celery_app.task(name='provisioning.process_order_completed')
-def process_order_completed(data):
-    logger.info(f"Processed ORDER_COMPLETED: {data}")
-    return {"status": "ok"}
-
-@celery_app.task(name='provisioning.process_invoice_posted')
-def process_invoice_posted(data):
-    try:
-        tid = data.get("tenant_id")
-        if tid:
-            with SessionLocal() as db:
-                t = db.query(TenantV2).filter(TenantV2.tenant_id == uuid.UUID(tid)).first()
-                if t:
-                    m = t.tenant_metadata or {}
-                    m["last_billed"] = datetime.now().isoformat()
-                    t.tenant_metadata = m
-                    db.commit()
-        logger.info(f"Processed INVOICE_POSTED")
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error(f"Invoice handler failed: {e}")
-        return {"status": "error"}
-
-@celery_app.task(name='provisioning.process_notification_sent')
-def process_notification_sent(data):
-    logger.info(f"Processed NOTIFICATION_SENT")
-    return {"status": "ok"}
-
-@celery_app.task(name='provisioning.process_usage_recorded')
-def process_usage_recorded(data):
-    logger.info(f"Processed USAGE_RECORDED")
-    return {"status": "ok"}
-
-@celery_app.task(bind=True, max_retries=3, name='provisioning.cleanup_old_audit_logs')
-def cleanup_audit(self):
-    try:
-        with SessionLocal() as db:
-            cutoff = datetime.now() - timedelta(days=90)
-            result = db.execute(text("DELETE FROM audit_logs WHERE created_at < :c"), {"c": cutoff})
-            db.commit()
-            logger.info(f"Cleaned {result.rowcount} audit logs")
-            return {"deleted": result.rowcount}
-    except Exception as e:
-        logger.error(f"Audit cleanup failed: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-@celery_app.task(bind=True, max_retries=3, name='provisioning.cleanup_old_outbox_events')
-def cleanup_outbox(self):
-    try:
-        with SessionLocal() as db:
-            cutoff = datetime.now() - timedelta(days=30)
-            result = db.execute(text("DELETE FROM outbox_events WHERE created_at < :c AND status IN ('published', 'failed')"), {"c": cutoff})
-            db.commit()
-            logger.info(f"Cleaned {result.rowcount} outbox events")
-            return {"deleted": result.rowcount}
-    except Exception as e:
-        logger.error(f"Outbox cleanup failed: {e}")
-        raise self.retry(exc=e, countdown=300)
 
 if __name__ == "__main__":
     import uvicorn
