@@ -1,18 +1,13 @@
 import time
 from sqlalchemy import text
-from prometheus_client import Counter, Histogram
+
 
 from .db_handler import audit
 from ..utils.provisioning_logger import logger
 from ..models import RoleV2
-from outbox_repository import store_outbox
+from .outbox_repository import store_outbox
 from ..tasks.celery_tasks import publish_outbox_events
-
-
-req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
-req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
-saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
-saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
+from ..utils.metrics import saga_total, saga_duration
 
 
 class RoleSaga:

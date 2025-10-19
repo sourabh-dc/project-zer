@@ -1,20 +1,14 @@
 import time
 import uuid
 from http.client import HTTPException
-
-from prometheus_client import Counter, Histogram
 from sqlalchemy import text
 
 from ..utils.provisioning_logger import logger
 from ..models import TenantV2
-from outbox_repository import store_outbox
+from .outbox_repository import store_outbox
 from ..tasks.celery_tasks import publish_outbox_events
+from ..utils.metrics import saga_total, saga_duration
 
-
-req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
-req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
-saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
-saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
 
 
 class TenantSaga:

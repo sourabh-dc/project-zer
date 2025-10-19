@@ -1,22 +1,16 @@
 import time
 import uuid
 from datetime import datetime
-
 from sqlalchemy import text
-from prometheus_client import Counter, Histogram
 
 from .db_handler import audit
 from ..services.subscription_service import get_limits
 from ..utils.provisioning_logger import logger
 from ..models import UserV2, TenantV2
-from outbox_repository import store_outbox
+from .outbox_repository import store_outbox
 from ..tasks.celery_tasks import publish_outbox_events
 from ..utils.user_auth import gen_api_key
-
-req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
-req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
-saga_total = Counter('prov_saga_total', 'Sagas', ['type', 'status'])
-saga_duration = Histogram('prov_saga_duration_seconds', 'Saga duration', ['type'])
+from ..utils.metrics import saga_total, saga_duration
 
 
 class UserSaga:

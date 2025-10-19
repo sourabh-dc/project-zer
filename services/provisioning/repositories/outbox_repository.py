@@ -2,7 +2,7 @@ import json
 import logging
 
 from ..models import *
-from db_handler import SessionLocal
+from .db_handler import SessionLocal
 from ..models import OutboxEvent
 
 logger = logging.getLogger(__name__)

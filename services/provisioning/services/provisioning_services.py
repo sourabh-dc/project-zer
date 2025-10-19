@@ -19,9 +19,8 @@ from ..repositories.cost_centre_saga import CostCentreSaga
 from ..repositories.role_saga import RoleSaga
 from ..repositories.vendor_saga import VendorSaga
 from ..utils.provisioning_logger import logger
+from ..utils.metrics import req_total, req_duration
 
-req_total = Counter('prov_requests_total', 'Requests', ['op', 'status'])
-req_duration = Histogram('prov_duration_seconds', 'Duration', ['op'])
 
 async def create_tenant(req: TenantRequest, db: Session):
     start = time.time()

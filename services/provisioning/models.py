@@ -3,8 +3,6 @@ from sqlalchemy import Column, String, Boolean, DateTime, Integer, JSON, Foreign
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID
 from sqlalchemy.orm import declarative_base
 
-from repositories.db_handler import engine
-from utils.provisioning_logger import logger
 
 Base = declarative_base()
 
@@ -101,8 +99,3 @@ class AuditLog(Base):
     changes = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Tables initialized")
-except Exception as e:
-    logger.warning(f"Table init: {e}")

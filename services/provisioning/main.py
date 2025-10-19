@@ -21,7 +21,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
 
-from services.provisioning.services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
+from .services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
     create_store, create_user, get_stores, get_users, bulk_import_users, create_role, get_roles, create_vendor, \
     get_vendors, create_cc, get_cc
 from .repositories.db_handler import SessionLocal, set_rls_context

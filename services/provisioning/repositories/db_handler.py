@@ -1,9 +1,6 @@
 import logging
-from typing import Dict
-
-from fastapi import Depends
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import  sessionmaker
 
 from core.config import get_settings
 from ..models import *
@@ -22,6 +19,12 @@ def get_db():
         yield db
     finally:
         db.close()
+
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("Tables initialized")
+except Exception as e:
+    logger.warning(f"Table init: {e}")
 
 # RLS
 def set_rls_context(db, tid, uid=None):
