@@ -3,7 +3,6 @@
 
 import os
 import time
-import json
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
@@ -12,23 +11,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
-from sqlalchemy.orm import sessionmaker
-from celery import Celery
 import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
-import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
-import jwt
 from fastapi.security import HTTPBearer
-from fastapi import Header, HTTPException, Depends
+from fastapi import HTTPException, Depends
 
 from core.config import get_settings
 from .models import *
 from .schemas import *
-from .repositories.db_handler import SessionLocal, engine
+from .repositories.db_handler import SessionLocal, engine, set_rls_context
+from .utils.user_auth import get_user_context, check_permission
+from .utils.cataog_logger import logger
+from .core.celery_config import celery_app
+from .utils.metrics import *
+from .repositories.outbox_repository import store_outbox_event
+from .repositories.product_saga import ProductSaga
+from .repositories.variant_saga import VariantSaga
+from .repositories.catrgory_saga import CategorySaga
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -52,19 +55,7 @@ security = HTTPBearer(auto_error=False)
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
 
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
 
 # External service URLs
 PRICING_BASE = os.getenv("PRICING_BASE", "http://localhost:8007")
@@ -89,7 +80,6 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-logger = structlog.get_logger(__name__)
 
 # Prometheus metrics - clear registry to avoid duplicates
 from prometheus_client import REGISTRY
@@ -99,151 +89,10 @@ try:
 except:
     pass
 
-catalog_requests_total = Counter('catalog_requests_total', 'Total catalog requests', ['endpoint', 'status'])
-catalog_request_duration = Histogram('catalog_request_duration_seconds', 'Catalog request duration', ['endpoint'])
-catalog_operations_total = Counter('catalog_operations_total', 'Total catalog operations', ['operation', 'status'])
-catalog_duration = Histogram('catalog_duration_seconds', 'Catalog operation duration', ['operation'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
+
 
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# =============================================================================
-# SAGA PATTERN IMPLEMENTATION
-# =============================================================================
-
-class ProductSaga:
-    """Saga for product creation with compensation"""
-    
-    def __init__(self, db):
-        self.db = db
-        self.product = None
-        self.eid = None
-    
-    async def exec(self, product_id, tenant_id, req, uctx):
-        """Execute product creation saga"""
-        start = time.time()
-        try:
-            # Create product
-            self.product = ProductV2(
-                product_id=product_id,
-                tenant_id=tenant_id,
-                vendor_id=req.vendor_id,
-                name=req.name,
-                description=req.description,
-                sku=req.sku,
-                category_id=req.category_id,
-                brand=req.brand,
-                base_price_minor=req.base_price_minor,
-                currency=req.currency,
-                weight_grams=req.weight_grams,
-                dimensions_cm=req.dimensions_cm,
-                metadata=req.metadata
-            )
-            self.db.add(self.product)
-            self.db.commit()
-            self.db.refresh(self.product)
-            
-            # Store outbox event
-            self.eid = store_outbox(self.db, "PRODUCT_CREATED", str(tenant_id), str(product_id), {
-                "product_id": str(product_id),
-                "name": req.name,
-                "sku": req.sku,
-                "vendor_id": req.vendor_id
-            })
-            
-            # Publish event
-            publish_outbox_events.delay()
-            
-            # Audit log
-            audit(self.db, str(tenant_id), uctx["user_id"], "CREATE", "product", str(product_id), {
-                "name": req.name,
-                "sku": req.sku,
-                "vendor_id": req.vendor_id
-            })
-            
-            saga_total.labels(type="product", status="ok").inc()
-            saga_duration.labels(type="product").observe(time.time() - start)
-            
-            return {
-                "product_id": str(product_id),
-                "name": req.name,
-                "sku": req.sku,
-                "vendor_id": req.vendor_id,
-                "created": True
-            }
-            
-        except Exception as e:
-            await self.comp()
-            saga_total.labels(type="product", status="fail").inc()
-            raise
-    
-    async def comp(self):
-        """Compensation logic"""
-        try:
-            if self.eid:
-                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
-                self.db.commit()
-            
-            if self.product:
-                self.db.delete(self.product)
-                self.db.commit()
-                
-        except Exception as e:
-            logger.error("Compensation failed", error=str(e))
-            self.db.rollback()
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
-    """Get user context from JWT or API key"""
-    # Try API key first (simplified for catalog service)
-    if x_api_key:
-        # For now, accept any API key in demo mode or validate against known keys
-        if ALLOW_DEMO or x_api_key.startswith('zq_'):
-            return {
-                "user_id": "demo_user",
-                "tenant_id": "demo_tenant",
-                "permissions": ["catalog.create", "catalog.view", "catalog.admin"]
-            }
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # Try JWT
-    if authorization and "Bearer " in authorization:
-        try:
-            token = authorization.replace("Bearer ", "")
-            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return claims
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
-
-    # Demo mode (dev only)
-    if ALLOW_DEMO:
-        logger.warning("Using demo mode - not for production!")
-        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-
-    raise HTTPException(status_code=401, detail="Authentication required")
-
-def check_permission(user_context: Dict, permission: str) -> bool:
-    """Check if user has required permission"""
-    permissions = user_context.get("permissions", [])
-    return "*" in permissions or permission in permissions
-
-def set_rls_context(db, tenant_id: str, user_id: Optional[str] = None):
-    """Set RLS context for database session"""
-    try:
-        db.rollback()  # Ensure clean state
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
-        if user_id:
-            db.execute(text("SET app.current_user = :uid"), {"uid": user_id})
-    except Exception as e:
-        logger.warning(f"Failed to set RLS context: {e}")
-        db.rollback()
 
 def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
     """Database dependency with RLS"""
@@ -255,50 +104,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
         yield db
     finally:
         db.close()
-
-# Authentication is handled by the first get_user_context function above
-
-def store_outbox(db, event_type, tenant_id, entity_id, event_data):
-    """Store outbox event"""
-    event_id = f"evt_{uuid.uuid4().hex[:12]}"
-    outbox_event = OutboxEvent(
-        event_id=event_id,
-        event_type=event_type,
-        aggregate_id=tenant_id,
-        event_data=json.dumps(event_data),
-        status='pending'
-    )
-    db.add(outbox_event)
-    db.commit()
-    return event_id
-
-def audit(db, tenant_id, user_id, action, entity_type, entity_id, changes):
-    """Audit logging"""
-    try:
-        log_id = f"aud_{uuid.uuid4().hex[:12]}"
-        audit_log = AuditLog(
-            log_id=log_id,
-            aggregate_id=tenant_id,
-            user_id=user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            changes=json.dumps(changes) if changes else None
-        )
-        db.add(audit_log)
-        db.commit()
-    except Exception as e:
-        logger.warning("Audit failed", error=str(e))
-
-def set_rls_context(db, tenant_id: str):
-    """Best-effort RLS context setter for tenant scoping."""
-    try:
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            pass
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def call_external_service(url: str, method: str = "GET", data: Dict = None):
@@ -316,90 +121,6 @@ def call_external_service(url: str, method: str = "GET", data: Dict = None):
         response.raise_for_status()
         return response.json()
 
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3, name='catalog.publish_outbox_events')
-def publish_outbox_events(self):
-    """Publish outbox events to RabbitMQ"""
-    try:
-        with SessionLocal() as db:
-            events = db.execute(text("SELECT * FROM outbox_events WHERE status = 'pending' LIMIT 100")).fetchall()
-            
-            for event in events:
-                try:
-                    # Publish to RabbitMQ
-                    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-                    channel = connection.channel()
-                    
-                    channel.basic_publish(
-                        exchange='catalog_events',
-                        routing_key=event.event_type.lower(),
-                        body=event.event_data
-                    )
-                    
-                    # Update status
-                    db.execute(
-                        text("UPDATE outbox_events SET status = 'published', published_at = NOW() WHERE event_id = :id"),
-                        {"id": event.event_id}
-                    )
-                    db.commit()
-                    
-                    connection.close()
-                    
-                except Exception as e:
-                    logger.error("Failed to publish event", event_id=event.event_id, error=str(e))
-                    # Increment retry count
-                    db.execute(
-                        text("UPDATE outbox_events SET retry_count = retry_count + 1 WHERE event_id = :id"),
-                        {"id": event.event_id}
-                    )
-                    db.commit()
-                    
-    except Exception as e:
-        logger.error("Outbox publishing failed", error=str(e))
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_search_indexing(self, product_id: str):
-    """Process search indexing for a product"""
-    try:
-        with SessionLocal() as db:
-            product = db.execute(
-                text("SELECT * FROM products_v2 WHERE product_id = :id"),
-                {"id": product_id}
-            ).fetchone()
-            
-            if not product:
-                raise ValueError("Product not found")
-            
-            # TODO: Index product in search engine (Elasticsearch, etc.)
-            logger.info("Product indexed for search", product_id=product_id)
-            
-    except Exception as e:
-        logger.error("Search indexing failed", product_id=product_id, error=str(e))
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_products(self):
-    """Cleanup old inactive products"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
-            result = db.execute(
-                text("DELETE FROM products_v2 WHERE is_active = false AND updated_at < :cutoff"),
-                {"cutoff": cutoff_date}
-            )
-            db.commit()
-            logger.info("Cleaned up old products", count=result.rowcount)
-    except Exception as e:
-        logger.error("Product cleanup failed", error=str(e))
-        raise self.retry(exc=e, countdown=60)
-
-# =============================================================================
-# FASTAPI APPLICATION
-# =============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -415,7 +136,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down catalog service")
-
 app = FastAPI(
     title="ZeroQue Catalog Service",
     description="Production-ready catalog service with Celery and RabbitMQ",
@@ -432,149 +152,6 @@ app.add_middleware(
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
-
-# =============================================================================
-
-class VariantSaga:
-    """Saga for product variant creation with compensation"""
-
-    def __init__(self, db):
-        self.db = db
-        self.variant = None
-        self.eid = None
-
-    async def exec(self, variant_id, product_id, req, uctx):
-        """Execute variant creation saga"""
-        start = time.time()
-        try:
-            # Validate product exists
-            product = self.db.query(ProductV2).filter(ProductV2.product_id == product_id).first()
-            if not product:
-                raise ValueError("Product not found")
-
-            # Check permissions
-            if not check_permission(uctx, "catalog.create"):
-                raise ValueError("Insufficient permissions")
-
-            # Create variant
-            self.variant = ProductVariantV2(
-                variant_id=variant_id,
-                product_id=product_id,
-                name=req.name,
-                sku=req.sku,
-                price_adjustment_minor=req.price_adjustment_minor,
-                attributes=req.attributes,
-                is_active=True
-            )
-            self.db.add(self.variant)
-            self.db.commit()
-            self.db.refresh(self.variant)
-
-            # Create outbox event
-            self.eid = store_outbox_event(self.db, "VARIANT_CREATED", str(product.tenant_id), str(variant_id), {
-                "variant_id": str(variant_id),
-                "product_id": str(product_id),
-                "name": req.name
-            })
-
-            # Publish event
-            publish_to_rabbitmq("VARIANT_CREATED", {
-                "variant_id": str(variant_id),
-                "product_id": str(product_id),
-                "name": req.name
-            }, str(product.tenant_id))
-
-            saga_total.labels(type="variant", status="ok").inc()
-            saga_duration.labels(type="variant").observe(time.time() - start)
-            return {"variant_id": str(variant_id), "name": req.name, "created": True}
-
-        except Exception as e:
-            await self.comp()
-            saga_total.labels(type="variant", status="fail").inc()
-            raise
-
-    async def comp(self):
-        """Compensation logic"""
-        try:
-            if self.eid:
-                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
-                self.db.commit()
-            if self.variant:
-                self.db.delete(self.variant)
-                self.db.commit()
-        except Exception as e:
-            logger.error(f"Variant compensation failed: {e}")
-            self.db.rollback()
-
-class CategorySaga:
-    """Saga for category creation with compensation"""
-
-    def __init__(self, db):
-        self.db = db
-        self.category = None
-        self.eid = None
-
-    async def exec(self, category_id, tenant_id, req, uctx):
-        """Execute category creation saga"""
-        start = time.time()
-        try:
-            # Check permissions
-            if not check_permission(uctx, "catalog.create"):
-                raise ValueError("Insufficient permissions")
-
-            # Check if category name already exists
-            existing = self.db.query(CategoryV2).filter(
-                CategoryV2.tenant_id == tenant_id,
-                CategoryV2.name == req.name
-            ).first()
-            if existing:
-                raise ValueError("Category name already exists")
-
-            # Create category
-            self.category = CategoryV2(
-                category_id=category_id,
-                tenant_id=tenant_id,
-                name=req.name,
-                description=req.description,
-                is_active=True
-            )
-            self.db.add(self.category)
-            self.db.commit()
-            self.db.refresh(self.category)
-
-            # Create outbox event
-            self.eid = store_outbox_event(self.db, "CATEGORY_CREATED", str(tenant_id), str(category_id), {
-                "category_id": str(category_id),
-                "name": req.name
-            })
-
-            # Publish event
-            publish_to_rabbitmq("CATEGORY_CREATED", {
-                "category_id": str(category_id),
-                "name": req.name
-            }, str(tenant_id))
-
-            saga_total.labels(type="category", status="ok").inc()
-            saga_duration.labels(type="category").observe(time.time() - start)
-            return {"category_id": str(category_id), "name": req.name, "created": True}
-
-        except Exception as e:
-            await self.comp()
-            saga_total.labels(type="category", status="fail").inc()
-            raise
-
-    async def comp(self):
-        """Compensation logic"""
-        try:
-            if self.eid:
-                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
-                self.db.commit()
-            if self.category:
-                self.db.delete(self.category)
-                self.db.commit()
-        except Exception as e:
-            logger.error(f"Category compensation failed: {e}")
-            self.db.rollback()
 
 
 # API ENDPOINTS

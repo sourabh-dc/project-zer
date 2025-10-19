@@ -2,8 +2,8 @@ from datetime import datetime
 import json
 
 from ..repositories.outbox_repository import get_pending_events, update_event_status
-from ..utils.rabitmq import publish_to_rabbitmq
-from ..utils.provisioning_logger import logger
+from ..utils.rabbitmq import publish_to_rabbitmq
+from ..utils.cataog_logger import logger
 
 def process_pending_outbox_events():
     events = get_pending_events(limit=100)
