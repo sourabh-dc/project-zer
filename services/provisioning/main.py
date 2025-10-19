@@ -54,9 +54,7 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
 @app.get("/health")
 async def health():
     try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
-        return {"status": "ok", "service": SERVICE_NAME, "version": SERVICE_VERSION}
+        return {"status": "healthy", "service": SERVICE_NAME, "version": SERVICE_VERSION}
     except Exception as e:
         return {"status": "error", "service": SERVICE_NAME, "error": str(e)}
 

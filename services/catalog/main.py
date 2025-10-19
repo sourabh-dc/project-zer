@@ -14,13 +14,13 @@ from fastapi.responses import Response
 import structlog
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 from fastapi.security import HTTPBearer
 from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
 
 from core.config import get_settings
+from services.catalog.services.catalog_services import create_product
 from .models import *
 from .schemas import *
 from .repositories.db_handler import SessionLocal, engine, set_rls_context
@@ -86,6 +86,7 @@ from prometheus_client import REGISTRY
 try:
     REGISTRY._collector_to_names.clear()
     REGISTRY._names_to_collectors.clear()
+
 except:
     pass
 
@@ -104,22 +105,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
         yield db
     finally:
         db.close()
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def call_external_service(url: str, method: str = "GET", data: Dict = None):
-    """Call external service with retry"""
-    with httpx.Client() as client:
-        if method == "GET":
-            response = client.get(url)
-        elif method == "POST":
-            response = client.post(url, json=data)
-        elif method == "PUT":
-            response = client.put(url, json=data)
-        else:
-            raise ValueError(f"Unsupported method: {method}")
-        
-        response.raise_for_status()
-        return response.json()
 
 
 @asynccontextmanager
@@ -173,34 +158,8 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/products")
-async def create_product(
-    req: ProductRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
-):
-    """Create a new product"""
-    start = time.time()
-    try:
-        catalog_requests_total.labels(endpoint="create_product", status="start").inc()
-        
-        product_id = uuid.uuid4()
-        tenant_id = uctx["tenant_id"]
-        
-        saga = ProductSaga(db)
-        result = await saga.exec(product_id, tenant_id, req, uctx)
-        
-        catalog_requests_total.labels(endpoint="create_product", status="ok").inc()
-        catalog_request_duration.labels(endpoint="create_product").observe(time.time() - start)
-        
-        return result
-        
-    except ValueError as e:
-        catalog_requests_total.labels(endpoint="create_product", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        catalog_requests_total.labels(endpoint="create_product", status="fail").inc()
-        logger.error("Product creation failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+async def create_product_route( req: ProductRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
+    return await create_product(req, db, uctx)
 
 @app.get("/products")
 async def list_products(
@@ -209,7 +168,7 @@ async def list_products(
     category_id: Optional[str] = Query(None),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
-    db: SessionLocal = Depends(get_db_with_rls)
+    db: Session = Depends(get_db_with_rls)
 ):
     """List products for a tenant"""
     try:
