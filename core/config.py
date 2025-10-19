@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_HOURS: int = 24
     ALLOW_DEMO: bool = False
     SERVICE_PORT: int = 8000
+    ENVIRONMENT: str = "development"
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 

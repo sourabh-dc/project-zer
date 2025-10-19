@@ -2,25 +2,17 @@
 # Production-ready catalog service with Celery, RabbitMQ, and saga patterns
 
 import os
-import uuid
 import time
 import json
-import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import Response
+from sqlalchemy.orm import sessionmaker
 from celery import Celery
 import structlog
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
@@ -30,9 +22,13 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 import jwt
-import secrets
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from fastapi import Header, HTTPException, Depends
+
+from core.config import get_settings
+from .models import *
+from .schemas import *
+from .repositories.db_handler import SessionLocal, engine
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -40,27 +36,18 @@ from fastapi import Header, HTTPException, Depends
 
 SERVICE_NAME = "catalog"
 SERVICE_VERSION = "2.0.0"
-
-# Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev_fresh")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-
-# JWT Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", "24"))
-ALLOW_DEMO = os.getenv("ALLOW_DEMO", "false").lower() == "true"
+DATABASE_URL = get_settings().DATABASE_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+REDIS_URL = get_settings().REDIS_URL
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+SERVICE_PORT = get_settings().SERVICE_PORT
+ENVIRONMENT = get_settings().ENVIRONMENT
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
+JWT_EXPIRATION_HOURS = get_settings().JWT_EXPIRATION_HOURS
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
-
-
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -121,183 +108,6 @@ saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
 
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# =============================================================================
-# MODELS (SQLAlchemy)
-# =============================================================================
-
-class ProductV2(Base):
-    """Product entity for V2 architecture - Phase 3 Enhanced"""
-    __tablename__ = "products_v2"
-
-    product_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), nullable=False)
-    name = Column(String(200), nullable=False)
-    description = Column(Text, nullable=True)
-    sku = Column(String(100), nullable=False)
-    barcode = Column(String(100), nullable=True)  # Phase 3: Barcode for CV linkage
-    category_id = Column(UUID(as_uuid=True), nullable=True)
-    brand = Column(String(100), nullable=True)
-    base_price_minor = Column(Integer, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    weight_grams = Column(Integer, nullable=True)
-    dimensions_cm = Column(JSON, nullable=True)  # {"length": 10, "width": 5, "height": 3}
-    is_active = Column(Boolean, nullable=False, default=True)
-    metadata_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class ProductVariantV2(Base):
-    """Product variant entity"""
-    __tablename__ = "product_variants_v2"
-
-    variant_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    product_id = Column(UUID(as_uuid=True), ForeignKey('products_v2.product_id'), nullable=False)
-    name = Column(String(200), nullable=False)
-    sku = Column(String(100), nullable=False)
-    price_adjustment_minor = Column(Integer, nullable=False, default=0)
-    attributes = Column(JSON, nullable=True)  # {"color": "red", "size": "L"}
-    is_active = Column(Boolean, nullable=False, default=True)
-
-# Phase 3: Bundle/Kit Models
-class ProductBundleV2(Base):
-    """Product bundle/kit entity - Phase 3"""
-    __tablename__ = "product_bundles_v2"
-
-    bundle_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    name = Column(String(200), nullable=False)
-    description = Column(Text, nullable=True)
-    bundle_sku = Column(String(100), nullable=False)
-    bundle_type = Column(String(50), nullable=False)  # "kit", "bundle", "package"
-    base_price_minor = Column(Integer, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-class BundleComponentV2(Base):
-    """Bundle component mapping - Phase 3"""
-    __tablename__ = "bundle_components_v2"
-
-    component_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    bundle_id = Column(UUID(as_uuid=True), ForeignKey('product_bundles_v2.bundle_id'), nullable=False)
-    product_id = Column(UUID(as_uuid=True), ForeignKey('products_v2.product_id'), nullable=False)
-    variant_id = Column(UUID(as_uuid=True), ForeignKey('product_variants_v2.variant_id'), nullable=True)
-    quantity = Column(Integer, nullable=False, default=1)
-    price_override_minor = Column(Integer, nullable=True)  # Override price for this component
-    is_required = Column(Boolean, nullable=False, default=True)
-    sort_order = Column(Integer, nullable=False, default=0)
-    metadata_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class CategoryV2(Base):
-    """Product category entity"""
-    __tablename__ = "categories_v2"
-    
-    category_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    name = Column(String(100), nullable=False)
-    description = Column(Text, nullable=True)
-    parent_category_id = Column(UUID(as_uuid=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    metadata_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class OutboxEvent(Base):
-    """Outbox pattern for event publishing"""
-    __tablename__ = "outbox_events"
-    
-    event_id = Column(String(50), primary_key=True)
-    event_type = Column(String(50), nullable=False)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class AuditLog(Base):
-    """Audit logging"""
-    __tablename__ = "audit_logs"
-    
-    log_id = Column(String(50), primary_key=True)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(String(50), nullable=False)
-    action = Column(String(20), nullable=False)
-    entity_type = Column(String(50), nullable=False)
-    entity_id = Column(UUID(as_uuid=True), nullable=False)
-    changes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class ProductRequest(BaseModel):
-    """Product creation request - Phase 3 Enhanced"""
-    vendor_id: str
-    name: str
-    description: Optional[str] = None
-    sku: str
-    barcode: Optional[str] = None  # Phase 3: Barcode for CV linkage
-    category_id: Optional[str] = None
-    brand: Optional[str] = None
-    base_price_minor: int = 0
-    currency: str = "GBP"
-    weight_grams: Optional[int] = None
-    dimensions_cm: Optional[Dict[str, float]] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-class ProductVariantRequest(BaseModel):
-    """Product variant creation request"""
-    product_id: str
-    name: str
-    sku: str
-    price_adjustment_minor: int = 0
-    attributes: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-class CategoryRequest(BaseModel):
-    """Category creation request"""
-    name: str
-    description: Optional[str] = None
-    parent_category_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-# Phase 3: Bundle Models
-class BundleComponentRequest(BaseModel):
-    """Bundle component request"""
-    product_id: str
-    variant_id: Optional[str] = None
-    quantity: int = 1
-    price_override_minor: Optional[int] = None
-    is_required: bool = True
-    sort_order: int = 0
-
-class ProductBundleRequest(BaseModel):
-    """Product bundle creation request - Phase 3"""
-    name: str
-    description: Optional[str] = None
-    bundle_sku: str
-    bundle_type: str = "bundle"  # "kit", "bundle", "package"
-    base_price_minor: int = 0
-    currency: str = "GBP"
-    components: List[BundleComponentRequest]
-    metadata: Optional[Dict[str, Any]] = None
-
-class ProductSearchRequest(BaseModel):
-    """Product search request"""
-    query: Optional[str] = None
-    category_id: Optional[str] = None
-    vendor_id: Optional[str] = None
-    min_price: Optional[int] = None
-    max_price: Optional[int] = None
-    limit: int = 50
-    offset: int = 0
 
 # =============================================================================
 # SAGA PATTERN IMPLEMENTATION
@@ -387,15 +197,6 @@ class ProductSaga:
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-
-
-def get_db():
-    """Database dependency"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
     """Get user context from JWT or API key"""
