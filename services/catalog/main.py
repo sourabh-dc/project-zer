@@ -3,7 +3,7 @@
 
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query
@@ -20,17 +20,15 @@ from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
-from services.catalog.services.catalog_services import create_product
+from services.catalog.services.catalog_services import create_product, get_products, get_product, \
+    create_product_variant, create_category, create_bundle
 from .models import *
 from .schemas import *
 from .repositories.db_handler import SessionLocal, engine, set_rls_context
 from .utils.user_auth import get_user_context, check_permission
 from .utils.cataog_logger import logger
-from .core.celery_config import celery_app
 from .utils.metrics import *
 from .repositories.outbox_repository import store_outbox_event
-from .repositories.variant_saga import VariantSaga
-from .repositories.catrgory_saga import CategorySaga
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -53,8 +51,6 @@ security = HTTPBearer(auto_error=False)
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-
-
 
 # External service URLs
 PRICING_BASE = os.getenv("PRICING_BASE", "http://localhost:8007")
@@ -139,7 +135,6 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 
 # API ENDPOINTS
-# =============================================================================
 
 @app.get("/health")
 async def health_check():
@@ -162,207 +157,36 @@ async def create_product_route( req: ProductRequest, db: Session = Depends(get_d
 
 @app.get("/products")
 async def list_products(
-    tenant_id: str = Query(...),
-    vendor_id: Optional[str] = Query(None),
-    category_id: Optional[str] = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db_with_rls)
+    tenant_id: str = Query(...), vendor_id: Optional[str] = Query(None), category_id: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000), offset: int = Query(0, ge=0), db: Session = Depends(get_db_with_rls)
 ):
     """List products for a tenant"""
-    try:
-        # Validate tenant_id is a valid UUID
-        try:
-            uuid.UUID(tenant_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tenant_id format. Must be a valid UUID.")
-
-        query = "SELECT * FROM products_v2 WHERE tenant_id = :tenant_id"
-        params = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
-        
-        if vendor_id:
-            query += " AND vendor_id = :vendor_id"
-            params["vendor_id"] = vendor_id
-        
-        if category_id:
-            query += " AND category_id = :category_id"
-            params["category_id"] = category_id
-        
-        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-        
-        products = db.execute(text(query), params).fetchall()
-        
-        return [dict(product._mapping) for product in products]
-        
-    except Exception as e:
-        logger.error("Failed to list products", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_products(tenant_id, vendor_id, category_id, limit, offset, db)
 
 @app.get("/products/{product_id}")
-async def get_product(
-    product_id: str,
-    db: SessionLocal = Depends(get_db_with_rls)
-):
+async def get_product_route(product_id: str, db: Session = Depends(get_db_with_rls)):
     """Get product by ID"""
-    try:
-        product = db.execute(
-            text("SELECT * FROM products_v2 WHERE product_id = :id"),
-            {"id": product_id}
-        ).fetchone()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-        
-        return dict(product._mapping)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get product", product_id=product_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_product(product_id, db)
 
 @app.post("/products/{product_id}/variants")
-async def create_product_variant(
-    product_id: str,
-    req: ProductVariantRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
+async def create_product_variant_route(
+    product_id: str, req: ProductVariantRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)
 ):
     """Create a product variant using saga pattern"""
-    start = time.time()
-    try:
-        catalog_requests_total.labels(endpoint="create_variant", status="start").inc()
-        variant_id = uuid.uuid4()
-        saga = VariantSaga(db)
-        res = await saga.exec(variant_id, product_id, req, uctx)
-        catalog_requests_total.labels(endpoint="create_variant", status="ok").inc()
-        catalog_request_duration.labels(endpoint="create_variant").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        catalog_requests_total.labels(endpoint="create_variant", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        catalog_requests_total.labels(endpoint="create_variant", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
-        
-        # Audit log
-        audit(db, uctx["tenant_id"], uctx["user_id"], "CREATE", "product_variant", str(variant_id), req.dict())
-        
-        return {"variant_id": str(variant_id), "created": True}
-        
-    except Exception as e:
-        logger.error("Failed to create product variant", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await create_product_variant(product_id, req, db, uctx)
 
 @app.post("/categories")
-async def create_category(
-    req: CategoryRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
-):
+async def create_category_route(req: CategoryRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)):
     """Create a new category using saga pattern"""
-    start = time.time()
-    try:
-        catalog_requests_total.labels(endpoint="create_category", status="start").inc()
-        category_id = uuid.uuid4()
-        saga = CategorySaga(db)
-        res = await saga.exec(category_id, uctx["tenant_id"], req, uctx)
-        catalog_requests_total.labels(endpoint="create_category", status="ok").inc()
-        catalog_request_duration.labels(endpoint="create_category").observe(time.time() - start)
-        return res
-    except ValueError as e:
-        catalog_requests_total.labels(endpoint="create_category", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        catalog_requests_total.labels(endpoint="create_category", status="fail").inc()
-        raise HTTPException(status_code=500, detail=str(e))
-        
-    except Exception as e:
-        logger.error("Failed to create category", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await create_category(req, db, uctx)
 
 # Phase 3: Bundle Endpoints
 @app.post("/bundles")
-async def create_bundle(
-    req: ProductBundleRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
+async def create_bundle_route(
+    req: ProductBundleRequest, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)
 ):
     """Create a new product bundle/kit - Phase 3"""
-    start = time.time()
-    try:
-        catalog_requests_total.labels(endpoint="create_bundle", status="start").inc()
-
-        # Check permissions
-        if not check_permission("catalog.create", uctx):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-        # Create bundle
-        bundle_id = uuid.uuid4()
-        bundle = ProductBundleV2(
-            bundle_id=bundle_id,
-            tenant_id=uuid.UUID(uctx["tenant_id"]),
-            name=req.name,
-            description=req.description,
-            bundle_sku=req.bundle_sku,
-            bundle_type=req.bundle_type,
-            base_price_minor=req.base_price_minor,
-            currency=req.currency,
-            metadata_json=req.metadata
-        )
-
-        db.add(bundle)
-        db.commit()
-        db.refresh(bundle)
-
-        # Create bundle components
-        for i, component_req in enumerate(req.components):
-            component = BundleComponentV2(
-                bundle_id=bundle_id,
-                product_id=uuid.UUID(component_req.product_id),
-                variant_id=uuid.UUID(component_req.variant_id) if component_req.variant_id else None,
-                quantity=component_req.quantity,
-                price_override_minor=component_req.price_override_minor,
-                is_required=component_req.is_required,
-                sort_order=component_req.sort_order or i
-            )
-            db.add(component)
-
-        db.commit()
-
-        # Publish PRODUCT_CREATED event for bundle
-        event_data = {
-            "event_id": str(uuid.uuid4()),
-            "event_type": "BUNDLE_CREATED",
-            "tenant_id": uctx["tenant_id"],
-            "bundle_id": str(bundle_id),
-            "bundle_name": req.name,
-            "bundle_sku": req.bundle_sku,
-            "bundle_type": req.bundle_type,
-            "component_count": len(req.components),
-            "created_by": uctx["user_id"],
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        # Store event in outbox
-        await store_outbox_event(db, event_data, "catalog_events")
-
-        catalog_requests_total.labels(endpoint="create_bundle", status="ok").inc()
-        catalog_request_duration.labels(endpoint="create_bundle").observe(time.time() - start)
-
-        return {
-            "bundle_id": str(bundle_id),
-            "bundle_name": req.name,
-            "bundle_sku": req.bundle_sku,
-            "bundle_type": req.bundle_type,
-            "component_count": len(req.components),
-            "created_at": bundle.created_at.isoformat()
-        }
-
-    except Exception as e:
-        catalog_requests_total.labels(endpoint="create_bundle", status="fail").inc()
-        logger.error(f"Failed to create bundle: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_bundle(req, db, uctx)
 
 @app.get("/bundles")
 async def list_bundles(

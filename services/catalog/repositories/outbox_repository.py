@@ -5,7 +5,7 @@ from services.catalog.models import OutboxEvent
 from .db_handler import SessionLocal
 
 
-def store_outbox_event(db, event_type, tenant_id, entity_id, event_data):
+async def store_outbox_event(db, event_type, tenant_id, entity_id, event_data):
     """Store outbox event"""
     event_id = f"evt_{uuid.uuid4().hex[:12]}"
     outbox_event = OutboxEvent(

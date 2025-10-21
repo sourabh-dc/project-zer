@@ -1,6 +1,9 @@
 import time
+from typing import Optional, List
 
+from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from services.catalog.models import ProductV2
 from services.catalog.repositories.outbox_repository import store_outbox_event
@@ -91,3 +94,37 @@ class ProductSaga:
         except Exception as e:
             logger.error("Compensation failed", error=str(e))
             self.db.rollback()
+
+def fetch_products_from_db(
+    tenant_id: str,
+    vendor_id: Optional[str],
+    category_id: Optional[str],
+    limit: int,
+    offset: int,
+    db: Session
+) -> List[dict]:
+    query = "SELECT * FROM products_v2 WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+
+    if vendor_id:
+        query += " AND vendor_id = :vendor_id"
+        params["vendor_id"] = vendor_id
+
+    if category_id:
+        query += " AND category_id = :category_id"
+        params["category_id"] = category_id
+
+    query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+
+    result = db.execute(text(query), params).fetchall()
+    return [dict(row._mapping) for row in result]
+
+def get_product_by_id(db: Session, product_id: str) -> Optional[dict]:
+    product = db.execute(
+        text("SELECT * FROM products_v2 WHERE product_id = :id"),
+        {"id": product_id}
+    ).fetchone()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return dict(product._mapping)
