@@ -2,7 +2,6 @@
 # Production-ready catalog service with Celery, RabbitMQ, and saga patterns
 
 import os
-import time
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
@@ -11,24 +10,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
-import structlog
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pybreaker
 from fastapi.security import HTTPBearer
-from fastapi import HTTPException, Depends
+from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from services.catalog.services.catalog_services import create_product, get_products, get_product, \
-    create_product_variant, create_category, create_bundle
+    create_product_variant, create_category, create_bundle, get_bundles, get_bundle, sync_product_barcode, \
+    search_products
 from .models import *
 from .schemas import *
 from .repositories.db_handler import SessionLocal, engine, set_rls_context
-from .utils.user_auth import get_user_context, check_permission
+from .utils.user_auth import get_user_context
 from .utils.cataog_logger import logger
-from .utils.metrics import *
-from .repositories.outbox_repository import store_outbox_event
+
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -55,26 +53,6 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # External service URLs
 PRICING_BASE = os.getenv("PRICING_BASE", "http://localhost:8007")
 INVENTORY_BASE = os.getenv("INVENTORY_BASE", "http://localhost:8008")
-
-# Logging configuration
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
 
 # Prometheus metrics - clear registry to avoid duplicates
 from prometheus_client import REGISTRY
@@ -189,189 +167,34 @@ async def create_bundle_route(
     return await create_bundle(req, db, uctx)
 
 @app.get("/bundles")
-async def list_bundles(
-    tenant_id: str = Query(...),
-    bundle_type: Optional[str] = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
-    db: SessionLocal = Depends(get_db_with_rls)
+async def list_bundles(tenant_id: str = Query(...), bundle_type: Optional[str] = Query(None), limit: int = Query(100, le=1000),
+                       offset: int = Query(0, ge=0), db: Session = Depends(get_db_with_rls)
 ):
     """List bundles/kits - Phase 3"""
-    try:
-        query = db.query(ProductBundleV2).filter(
-            ProductBundleV2.tenant_id == uuid.UUID(tenant_id),
-            ProductBundleV2.is_active == True
-        )
-
-        if bundle_type:
-            query = query.filter(ProductBundleV2.bundle_type == bundle_type)
-
-        bundles = query.offset(offset).limit(limit).all()
-
-        return {
-            "bundles": [
-                {
-                    "bundle_id": str(bundle.bundle_id),
-                    "name": bundle.name,
-                    "bundle_sku": bundle.bundle_sku,
-                    "bundle_type": bundle.bundle_type,
-                    "base_price_minor": bundle.base_price_minor,
-                    "currency": bundle.currency,
-                    "created_at": bundle.created_at.isoformat()
-                }
-                for bundle in bundles
-            ],
-            "total": len(bundles),
-            "limit": limit,
-            "offset": offset
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to list bundles: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_bundles(db, tenant_id, bundle_type, limit, offset)
 
 @app.get("/bundles/{bundle_id}")
-async def get_bundle(
+async def get_bundle_route(
     bundle_id: str,
-    db: SessionLocal = Depends(get_db_with_rls)
+    db: Session = Depends(get_db_with_rls)
 ):
     """Get bundle details with components - Phase 3"""
-    try:
-        bundle = db.query(ProductBundleV2).filter(
-            ProductBundleV2.bundle_id == uuid.UUID(bundle_id)
-        ).first()
-
-        if not bundle:
-            raise HTTPException(status_code=404, detail="Bundle not found")
-
-        # Get components
-        components = db.query(BundleComponentV2).filter(
-            BundleComponentV2.bundle_id == uuid.UUID(bundle_id)
-        ).order_by(BundleComponentV2.sort_order).all()
-
-        return {
-            "bundle_id": str(bundle.bundle_id),
-            "name": bundle.name,
-            "description": bundle.description,
-            "bundle_sku": bundle.bundle_sku,
-            "bundle_type": bundle.bundle_type,
-            "base_price_minor": bundle.base_price_minor,
-            "currency": bundle.currency,
-            "is_active": bundle.is_active,
-            "components": [
-                {
-                    "component_id": str(component.component_id),
-                    "product_id": str(component.product_id),
-                    "variant_id": str(component.variant_id) if component.variant_id else None,
-                    "quantity": component.quantity,
-                    "price_override_minor": component.price_override_minor,
-                    "is_required": component.is_required,
-                    "sort_order": component.sort_order
-                }
-                for component in components
-            ],
-            "created_at": bundle.created_at.isoformat(),
-            "updated_at": bundle.updated_at.isoformat()
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get bundle: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_bundle(db, bundle_id)
 
 # Phase 3: Barcode Sync Endpoint
 @app.post("/products/{product_id}/barcode-sync")
-async def sync_product_barcode(
-    product_id: str,
-    db: SessionLocal = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
+async def sync_product_barcode_route(product_id: str, db: Session = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)
 ):
     """Sync product barcode to CV Connector - Phase 3"""
-    try:
-        # Check permissions
-        if not check_permission("catalog.admin", uctx):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-        # Get product
-        product = db.query(ProductV2).filter(
-            ProductV2.product_id == uuid.UUID(product_id)
-        ).first()
-
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        if not product.barcode:
-            raise HTTPException(status_code=400, detail="Product has no barcode")
-
-        # Publish barcode sync event
-        event_data = {
-            "event_id": str(uuid.uuid4()),
-            "event_type": "BARCODE_SYNC",
-            "tenant_id": uctx["tenant_id"],
-            "product_id": product_id,
-            "barcode": product.barcode,
-            "product_name": product.name,
-            "sku": product.sku,
-            "created_by": uctx["user_id"],
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        # Store event in outbox for CV Connector consumption
-        store_outbox_event(db, event_data, "catalog_events")
-
-        return {
-            "product_id": product_id,
-            "barcode": product.barcode,
-            "sync_status": "queued",
-            "message": "Barcode sync event published to CV Connector"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to sync barcode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return sync_product_barcode(product_id, db, uctx)
 
 @app.post("/search")
-async def search_products(
+async def search_products_route(
     req: ProductSearchRequest,
-    db: SessionLocal = Depends(get_db_with_rls)
+    db: Session = Depends(get_db_with_rls)
 ):
     """Search products"""
-    try:
-        query = "SELECT * FROM products_v2 WHERE 1=1"
-        params = {"limit": req.limit, "offset": req.offset}
-        
-        if req.query:
-            query += " AND (name ILIKE :query OR description ILIKE :query OR sku ILIKE :query)"
-            params["query"] = f"%{req.query}%"
-        
-        if req.category_id:
-            query += " AND category_id = :category_id"
-            params["category_id"] = req.category_id
-        
-        if req.vendor_id:
-            query += " AND vendor_id = :vendor_id"
-            params["vendor_id"] = req.vendor_id
-        
-        if req.min_price:
-            query += " AND base_price_minor >= :min_price"
-            params["min_price"] = req.min_price
-        
-        if req.max_price:
-            query += " AND base_price_minor <= :max_price"
-            params["max_price"] = req.max_price
-        
-        query += " AND is_active = true ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-        
-        products = db.execute(text(query), params).fetchall()
-        
-        return [dict(product._mapping) for product in products]
-        
-    except Exception as e:
-        logger.error("Product search failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return search_products(req, db)
 
 if __name__ == "__main__":
     import uvicorn

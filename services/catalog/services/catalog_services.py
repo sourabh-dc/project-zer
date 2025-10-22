@@ -9,10 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from services.catalog.schemas import ProductRequest, ProductVariantRequest, CategoryRequest, ProductBundleRequest
+from services.catalog.schemas import ProductRequest, ProductVariantRequest, CategoryRequest, ProductBundleRequest, \
+    ProductSearchRequest
 from ..models import BundleComponentV2, ProductBundleV2
 from ..repositories.catrgory_saga import CategorySaga
-from ..repositories.database_ops import create_bundle_record, create_bundle_components
+from ..repositories.database_ops import create_bundle_record, create_bundle_components, get_all_bundles, \
+    get_bundle_by_id, search_product_db
 from ..repositories.outbox_repository import store_outbox_event
 from ..repositories.product_saga import ProductSaga, fetch_products_from_db, get_product_by_id
 from ..repositories.variant_saga import VariantSaga
@@ -182,3 +184,80 @@ async def create_bundle(req: ProductBundleRequest, db: Session, uctx: Dict):
         catalog_requests_total.labels(endpoint="create_bundle", status="fail").inc()
         logger.error(f"Failed to create bundle: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def get_bundles(db: Session, tenant_id: str, bundle_type: Optional[str], limit: int=100,
+                       offset: int=0):
+    """List bundles/kits - Phase 3"""
+    try:
+        return get_all_bundles(db, tenant_id, bundle_type, limit, offset)
+
+    except Exception as e:
+        logger.error(f"Failed to list bundles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def get_bundle(db: Session, bundle_id: str):
+    """Get bundle details with components - Phase 3"""
+    try:
+        return get_bundle_by_id(db, bundle_id)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get bundle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def sync_product_barcode(product_id: str, db: Session, uctx: Dict):
+    """Sync product barcode to CV Connector - Phase 3"""
+    try:
+        # Check permissions
+        if not check_permission(uctx, "catalog.admin"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get product
+        product = get_product_by_id(db, product_id)
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        if not product.barcode:
+            raise HTTPException(status_code=400, detail="Product has no barcode")
+        event_id = str(uuid.uuid4())
+
+        # Publish barcode sync event
+        event_data = {
+            "event_id": event_id,
+            "event_type": "BARCODE_SYNC",
+            "tenant_id": uctx["tenant_id"],
+            "product_id": product_id,
+            "barcode": product.barcode,
+            "product_name": product.name,
+            "sku": product.sku,
+            "created_by": uctx["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Store event in outbox for CV Connector consumption
+        await store_outbox_event(db, "catalog_events", uctx["tenant_id"], event_id, event_data)
+
+        return {
+            "product_id": product_id,
+            "barcode": product.barcode,
+            "sync_status": "queued",
+            "message": "Barcode sync event published to CV Connector"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync barcode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def search_products(req: ProductSearchRequest, db: Session):
+    """Search products"""
+    try:
+        return search_product_db(req, db)
+
+    except Exception as e:
+        logger.error("Product search failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
