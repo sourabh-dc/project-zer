@@ -5,48 +5,46 @@ import os
 import uuid
 import time
 import json
-import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import Response
+from sqlalchemy import text
 from celery import Celery
-import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 
+from .utils.orders_logger import logger
+from core.config import get_settings
+from .repositories.db_config import SessionLocal
+from .utils.metrics import *
+from .schemas import OrderRequest, OrderUpdateRequest
+from .repositories.order_saga import OrderSaga
+from .repositories.db_config import get_db
+from .utils.user_auth import get_user_context
+from .repositories.database_ops import audit
+
 # =============================================================================
-# CONFIGURATION & LOGGING
+# CONFIGURATION
 # =============================================================================
 
 SERVICE_NAME = "orders"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -68,352 +66,14 @@ except ImportError:
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
-
-# Prometheus metrics
-orders_operations_total = Counter('orders_operations_total', 'Total orders operations', ['operation', 'status'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
-
 # External service URLs
 PAYMENTS_BASE = os.getenv("PAYMENTS_BASE", "http://localhost:8005")
 BILLING_BASE = os.getenv("BILLING_BASE", "http://localhost:8002")
 PRICING_BASE = os.getenv("PRICING_BASE", "http://localhost:8007")
 INVENTORY_BASE = os.getenv("INVENTORY_BASE", "http://localhost:8008")
 
-# Logging configuration
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
-
-# Prometheus metrics - Clear registry to avoid duplicates
-from prometheus_client import REGISTRY
-try:
-    REGISTRY._collector_to_names.clear()
-    REGISTRY._names_to_collectors.clear()
-except:
-    pass
-
-orders_requests_total = Counter('orders_requests_total', 'Total orders requests', ['endpoint', 'status'])
-orders_request_duration = Histogram('orders_request_duration_seconds', 'Orders request duration', ['endpoint'])
-orders_total = Counter('orders_total', 'Total orders', ['status'])
-orders_duration = Histogram('orders_duration_seconds', 'Order processing duration', ['status'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
-
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# =============================================================================
-# MODELS (SQLAlchemy)
-# =============================================================================
-
-class OrderV2(Base):
-    """Order entity for V2 architecture"""
-    __tablename__ = "orders_v2"
-    
-    order_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    customer_id = Column(UUID(as_uuid=True), nullable=False)
-    order_number = Column(String(50), nullable=False, unique=True)
-    order_status = Column(String(20), nullable=False, default='pending')
-    order_type = Column(String(20), nullable=False, default='purchase')
-    total_amount_minor = Column(Integer, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    payment_status = Column(String(20), nullable=False, default='pending')
-    fulfillment_status = Column(String(20), nullable=False, default='pending')
-    shipping_address = Column(JSON, nullable=True)
-    billing_address = Column(JSON, nullable=True)
-    order_metadata = Column(JSON, nullable=True)  # Renamed from metadata to avoid SQLAlchemy conflict
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class OrderItemV2(Base):
-    """Order item entity"""
-    __tablename__ = "order_items_v2"
-    
-    item_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey('orders_v2.order_id'), nullable=False)
-    product_id = Column(UUID(as_uuid=True), nullable=False)
-    variant_id = Column(UUID(as_uuid=True), nullable=True)
-    quantity = Column(Integer, nullable=False)
-    unit_price_minor = Column(Integer, nullable=False)
-    total_price_minor = Column(Integer, nullable=False)
-    item_metadata = Column(JSON, nullable=True)  # Renamed from metadata to avoid SQLAlchemy conflict
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class OutboxEvent(Base):
-    """Outbox pattern for event publishing"""
-    __tablename__ = "outbox_events"
-    
-    event_id = Column(String(50), primary_key=True)
-    event_type = Column(String(50), nullable=False)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    event_version = Column(Integer, nullable=False, default=1)
-    max_retries = Column(Integer, nullable=False, default=3)
-    last_error = Column(Text, nullable=True)
-    next_retry_at = Column(DateTime(timezone=True), nullable=True)
-
-class AuditLog(Base):
-    """Audit logging"""
-    __tablename__ = "audit_logs"
-    
-    log_id = Column(String(50), primary_key=True)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(String(50), nullable=False)
-    action = Column(String(20), nullable=False)
-    entity_type = Column(String(50), nullable=False)
-    entity_id = Column(UUID(as_uuid=True), nullable=False)
-    changes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class OrderRequest(BaseModel):
-    """Order creation request"""
-    customer_id: str
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    order_type: str = "purchase"
-    items: List[Dict[str, Any]]
-    shipping_address: Optional[Dict[str, Any]] = None
-    billing_address: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-class OrderItemRequest(BaseModel):
-    """Order item request"""
-    product_id: str
-    variant_id: Optional[str] = None
-    quantity: int
-    unit_price_minor: int
-
-class OrderUpdateRequest(BaseModel):
-    """Order update request"""
-    order_status: Optional[str] = None
-    payment_status: Optional[str] = None
-    fulfillment_status: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-# =============================================================================
-# SAGA PATTERN IMPLEMENTATION
-# =============================================================================
-
-class OrderSaga:
-    """Saga for order creation with compensation"""
-    
-    def __init__(self, db):
-        self.db = db
-        self.order = None
-        self.order_items = []
-        self.eid = None
-    
-    async def exec(self, order_id, tenant_id, req, uctx):
-        """Execute order creation saga"""
-        start = time.time()
-        try:
-            # Validate and convert UUIDs
-            customer_uuid = uuid.UUID(req.customer_id) if req.customer_id and req.customer_id.strip() else uctx.get("user_id")
-            if isinstance(customer_uuid, str):
-                customer_uuid = uuid.UUID(customer_uuid) if customer_uuid and customer_uuid.strip() else uuid.uuid4()
-            
-            site_uuid = uuid.UUID(req.site_id) if req.site_id and req.site_id.strip() else None
-            store_uuid = uuid.UUID(req.store_id) if req.store_id and req.store_id.strip() else None
-            
-            # Create order
-            self.order = OrderV2(
-                order_id=order_id,
-                tenant_id=tenant_id,
-                site_id=site_uuid,
-                store_id=store_uuid,
-                customer_id=customer_uuid,
-                order_number=f"ORD-{int(time.time())}",
-                order_type=req.order_type,
-                shipping_address=req.shipping_address,
-                billing_address=req.billing_address,
-                metadata=req.metadata
-            )
-            self.db.add(self.order)
-            self.db.flush()  # FLUSH order first to ensure it exists before adding items
-            
-            # Calculate total amount
-            total_amount = 0
-            for item_data in req.items:
-                item = OrderItemV2(
-                    order_id=order_id,
-                    product_id=item_data['product_id'],
-                    variant_id=item_data.get('variant_id'),
-                    quantity=item_data['quantity'],
-                    unit_price_minor=item_data['unit_price_minor'],
-                    total_price_minor=item_data['quantity'] * item_data['unit_price_minor']
-                )
-                self.order_items.append(item)
-                self.db.add(item)
-                total_amount += item.total_price_minor
-            
-            self.order.total_amount_minor = total_amount
-            self.db.commit()
-            self.db.refresh(self.order)
-            
-            # Store outbox event (DISABLED for now to fix core functionality)
-            # self.eid = store_outbox(self.db, "ORDER_CREATED", str(tenant_id), str(order_id), {
-            #     "order_id": str(order_id),
-            #     "customer_id": req.customer_id,
-            #     "total_amount_minor": total_amount
-            # })
-            
-            # Publish event
-            # publish_outbox_events.delay()
-            
-            # Audit log (DISABLED for now to fix core functionality)
-            # audit(self.db, str(tenant_id), uctx["user_id"], "CREATE", "order", str(order_id), {
-            #     "order_number": self.order.order_number,
-            #     "total_amount_minor": total_amount
-            # })
-            
-            saga_total.labels(type="order", status="ok").inc()
-            saga_duration.labels(type="order").observe(time.time() - start)
-            
-            return {
-                "order_id": str(order_id),
-                "order_number": self.order.order_number,
-                "total_amount_minor": total_amount,
-                "created": True
-            }
-            
-        except Exception as e:
-            await self.comp()
-            saga_total.labels(type="order", status="fail").inc()
-            raise
-    
-    async def comp(self):
-        """Compensation logic"""
-        try:
-            if self.eid:
-                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
-                self.db.commit()
-            
-            if self.order:
-                self.db.delete(self.order)
-                self.db.commit()
-                
-        except Exception as e:
-            logger.error("Compensation failed", error=str(e))
-            self.db.rollback()
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def get_db():
-    """Database dependency"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def get_user_context(authorization: Optional[str] = None, x_api_key: Optional[str] = None):
-    """Get user context for authentication"""
-    # Demo mode for development
-    if os.getenv("ALLOW_DEMO", "false").lower() == "true":
-        return {
-            "tenant_id": "550e8400-e29b-41d4-a716-446655440000",  # Valid UUID
-            "user_id": "550e8400-e29b-41d4-a716-446655440004",  # Valid UUID
-            "roles": ["admin"]
-        }
-    
-    # TODO: Implement proper JWT/API key validation
-    raise HTTPException(status_code=401, detail="Authentication required")
-
-
-def set_rls_context(db, tenant_id: str, user_id: Optional[str] = None):
-    """Set RLS context for database session"""
-    try:
-        db.rollback()
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
-        if user_id:
-            db.execute(text("SET app.current_user = :uid"), {"uid": user_id})
-    except Exception as e:
-        logger.warning(f"Failed to set RLS context: {e}")
-        db.rollback()
-
-def store_outbox(db, event_type, tenant_id, entity_id, event_data):
-    """Store outbox event"""
-    event_id = f"evt_{uuid.uuid4().hex[:12]}"
-    # Use direct SQL to avoid schema caching issues
-    db.execute(text("""
-        INSERT INTO outbox_events 
-        (event_id, event_type, aggregate_id, event_data, status, retry_count, event_version, max_retries)
-        VALUES (:eid, :etype, :aid, :data, 'pending', 0, 1, 3)
-    """), {
-        "eid": event_id,
-        "etype": event_type,
-        "aid": tenant_id,
-        "data": json.dumps(event_data)
-    })
-    return event_id
-
-def audit(db, tenant_id, user_id, action, entity_type, entity_id, changes):
-    """Audit logging"""
-    try:
-        log_id = f"aud_{uuid.uuid4().hex[:12]}"
-        audit_log = AuditLog(
-            log_id=log_id,
-            aggregate_id=tenant_id,
-            user_id=user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            changes=json.dumps(changes) if changes else None
-        )
-        db.add(audit_log)
-        db.commit()
-    except Exception as e:
-        logger.warning("Audit failed", error=str(e))
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def call_external_service(url: str, method: str = "GET", data: Dict = None):
@@ -529,13 +189,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan"""
     # Startup
     logger.info("Starting orders service", version=SERVICE_VERSION)
-    
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables initialized")
-    
     yield
-    
     # Shutdown
     logger.info("Shutting down orders service")
 
