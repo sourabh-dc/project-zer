@@ -141,7 +141,14 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Prometheus metrics
+# Prometheus metrics - Clear registry to avoid duplicates
+from prometheus_client import REGISTRY
+try:
+    REGISTRY._collector_to_names.clear()
+    REGISTRY._names_to_collectors.clear()
+except:
+    pass
+
 payments_operations_total = Counter('payments_operations_total', 'Total payments operations', ['operation', 'status'])
 payments_request_duration = Histogram('payments_request_duration_seconds', 'Payments request duration', ['operation'])
 saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
@@ -251,7 +258,7 @@ class PaymentIntent(Base):
     provider = Column(String(50), nullable=False)  # stripe, adyen, paypal, etc.
     provider_intent_id = Column(String(255), nullable=True)
     payment_method = Column(String(50), nullable=True)  # card, bank_transfer, etc.
-    metadata = Column(JSONB, nullable=True)
+    payment_metadata = Column(JSONB, nullable=True)  # Renamed from metadata to avoid SQLAlchemy conflict
     expires_at = Column(DateTime(timezone=True), nullable=True)
     succeeded_at = Column(DateTime(timezone=True), nullable=True)
     failed_at = Column(DateTime(timezone=True), nullable=True)
@@ -391,7 +398,7 @@ class PaymentIntentRequest(BaseModel):
     trade_account_id: Optional[str] = Field(None, description="Trade account ID")
     amount_minor: int = Field(..., description="Amount in minor units", gt=0)
     currency: str = Field("GBP", description="Currency code", max_length=3)
-    payment_method: str = Field("card", description="Payment method", regex="^(card|bank_transfer|wallet)$")
+    payment_method: str = Field("card", description="Payment method", pattern="^(card|bank_transfer|wallet)$")
     description: Optional[str] = Field(None, description="Payment description")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
 
@@ -520,7 +527,7 @@ class StripeProvider(BasePaymentProvider):
                 "amount": payment_intent.amount,
                 "currency": payment_intent.currency,
                 "status": payment_intent.status,
-                "metadata": payment_intent.metadata
+                "metadata": payment_intent.payment_metadata
             }
         except Exception as e:
             logger.error(f"Stripe payment intent creation failed: {str(e)}")
@@ -642,7 +649,7 @@ class PaymentIntentSaga:
                 site_id=request.site_id,
                 store_id=request.store_id,
                 user_id=request.user_id,
-                metadata=request.metadata,
+                transaction_metadata=request.metadata,
                 raw_response=provider_result
             )
             
@@ -1630,7 +1637,7 @@ async def get_payment_intent(
             "provider": payment_intent.provider,
             "provider_intent_id": payment_intent.provider_intent_id,
             "payment_method": payment_intent.payment_method,
-            "metadata": payment_intent.metadata,
+            "metadata": payment_intent.payment_metadata,
             "expires_at": payment_intent.expires_at.isoformat() if payment_intent.expires_at else None,
             "succeeded_at": payment_intent.succeeded_at.isoformat() if payment_intent.succeeded_at else None,
             "failed_at": payment_intent.failed_at.isoformat() if payment_intent.failed_at else None,

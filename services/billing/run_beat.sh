@@ -35,3 +35,6 @@ celery -A main.celery_app beat \
     --pidfile=billing-beat.pid \
     --schedule=billing-beat-schedule
 
+
+
+

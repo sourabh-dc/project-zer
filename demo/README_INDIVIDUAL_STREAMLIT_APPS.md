@@ -271,3 +271,6 @@ Planned improvements:
 - [ ] Multi-language support
 - [ ] Dark mode theme
 
+
+
+

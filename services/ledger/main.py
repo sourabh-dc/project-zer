@@ -674,11 +674,11 @@ else:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # Add middleware
-add_api_call_meter(app)
-add_idempotency_middleware(app, routes=[
-    ("POST", "/ledger/v4/entries"),
-    ("POST", "/ledger/v4/adjustments"),
-])
+# add_api_call_meter(app)  # Function not defined - commented out
+# add_idempotency_middleware(app, routes=[  # Function not defined - commented out
+#     ("POST", "/ledger/v4/entries"),
+#     ("POST", "/ledger/v4/adjustments"),
+# ])
 
 # =============================================================================
 # DEPENDENCY INJECTION

@@ -840,12 +840,30 @@ async def _create_request_record(request_data: CreateApprovalRequestRequest, db_
     """Create the approval request record"""
     request_number = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     
+    # Validate and convert UUIDs
+    try:
+        requested_by_uuid = uuid.UUID(request_data.requested_by) if request_data.requested_by else uuid.uuid4()
+    except (ValueError, AttributeError):
+        raise ValueError(f"Invalid requested_by UUID: {request_data.requested_by}")
+    
+    try:
+        chain_id_uuid = uuid.UUID(request_data.chain_id) if request_data.chain_id else None
+        if not chain_id_uuid:
+            raise ValueError("chain_id is required")
+    except (ValueError, AttributeError):
+        raise ValueError(f"Invalid chain_id UUID: {request_data.chain_id}")
+    
+    try:
+        tenant_id_uuid = uuid.UUID(request_data.tenant_id) if request_data.tenant_id else uuid.uuid4()
+    except (ValueError, AttributeError):
+        raise ValueError(f"Invalid tenant_id UUID: {request_data.tenant_id}")
+    
     approval_request = ApprovalRequest(
         request_number=request_number,
         request_type=request_data.request_type,
-        requested_by=uuid.UUID(request_data.requested_by),
-        chain_id=uuid.UUID(request_data.chain_id),
-        tenant_id=uuid.UUID(request_data.tenant_id),
+        requested_by=requested_by_uuid,
+        chain_id=chain_id_uuid,
+        tenant_id=tenant_id_uuid,
         request_data=json.dumps(request_data.request_data),
         total_amount_minor=request_data.total_amount_minor,
         currency=request_data.currency,

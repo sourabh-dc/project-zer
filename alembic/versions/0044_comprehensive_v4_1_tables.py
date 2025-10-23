@@ -95,7 +95,20 @@ def upgrade():
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants_new.tenant_id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('vendor_id')
     )
-
+    
+    op.create_table('cost_centres',
+        sa.Column('cost_centre_id', sa.String(length=100), nullable=False),
+        sa.Column('tenant_id', sa.String(length=100), nullable=False),
+        sa.Column('name', sa.String(length=200), nullable=False),
+        sa.Column('budget_minor', sa.Integer(), nullable=True),
+        sa.Column('spent_minor', sa.Integer(), nullable=True),
+        sa.Column('currency_code', sa.String(length=3), nullable=True),
+        sa.Column('status', sa.String(length=50), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+        sa.PrimaryKeyConstraint('cost_centre_id')
+    )
+    op.create_index(op.f('ix_cost_centres_tenant_id'), 'cost_centres', ['tenant_id'], unique=False)
+    
     # Outbox and Audit Tables
     op.create_table('outbox_events',
         sa.Column('event_id', sa.String(length=255), nullable=False),

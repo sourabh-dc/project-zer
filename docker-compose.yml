@@ -130,12 +130,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-orders
     ports:
-      - "8080:8080"
+      - "8002:8002"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/
-      - PORT=8080
+      - PORT=8002
       - SERVICE_NAME=orders
     networks:
       - zeroque-network
@@ -156,12 +156,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-identity
     ports:
-      - "8085:8085"
+      - "8224:8224"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8085
+      - PORT=8224
       - SERVICE_NAME=identity
     networks:
       - zeroque-network
@@ -208,12 +208,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-payments
     ports:
-      - "8087:8087"
+      - "8213:8213"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8087
+      - PORT=8213
       - SERVICE_NAME=payments
     networks:
       - zeroque-network
@@ -234,12 +234,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-events
     ports:
-      - "8088:8088"
+      - "8085:8085"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8088
+      - PORT=8085
       - SERVICE_NAME=events
     networks:
       - zeroque-network
@@ -260,12 +260,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-cv-gateway
     ports:
-      - "8000:8000"
+      - "8080:8080"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8000
+      - PORT=8080
       - SERVICE_NAME=cv-gateway
     networks:
       - zeroque-network
@@ -286,12 +286,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-cv-connector
     ports:
-      - "8100:8100"
+      - "8216:8216"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8100
+      - PORT=8216
       - SERVICE_NAME=cv-connector
     networks:
       - zeroque-network
@@ -312,12 +312,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-approvals
     ports:
-      - "8213:8213"
+      - "8084:8084"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8213
+      - PORT=8084
       - SERVICE_NAME=approvals
     networks:
       - zeroque-network
@@ -338,12 +338,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-entitlements
     ports:
-      - "8211:8211"
+      - "8223:8223"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8211
+      - PORT=8223
       - SERVICE_NAME=entitlements
     networks:
       - zeroque-network
@@ -390,12 +390,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-notifications
     ports:
-      - "8300:8300"
+      - "8215:8215"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8300
+      - PORT=8215
       - SERVICE_NAME=notifications
     networks:
       - zeroque-network
@@ -416,12 +416,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-reports
     ports:
-      - "8400:8400"
+      - "8217:8217"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8400
+      - PORT=8217
       - SERVICE_NAME=reports
     networks:
       - zeroque-network
@@ -442,12 +442,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-usage
     ports:
-      - "8200:8200"
+      - "8219:8219"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8200
+      - PORT=8219
       - SERVICE_NAME=usage
     networks:
       - zeroque-network
@@ -468,12 +468,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-observability
     ports:
-      - "8600:8600"
+      - "8220:8220"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8600
+      - PORT=8220
       - SERVICE_NAME=observability
     networks:
       - zeroque-network
@@ -494,12 +494,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-service-registry
     ports:
-      - "8500:8500"
+      - "8222:8222"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8500
+      - PORT=8222
       - SERVICE_NAME=service-registry
     networks:
       - zeroque-network
@@ -525,7 +525,7 @@ services:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/
-      - SERVICE_PORT=8000
+      - PORT=8000
       - SERVICE_NAME=provisioning
       - ALLOW_DEMO=true
     networks:
@@ -537,6 +537,84 @@ services:
       - rabbitmq
     command: ["python", "-m", "services.provisioning.main"]
 
+  # Catalog Service
+  catalog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-catalog
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8001
+      - SERVICE_NAME=catalog
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.catalog.main"]
+
+  # Pricing Service
+  pricing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-pricing
+    ports:
+      - "8006:8006"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8006
+      - SERVICE_NAME=pricing
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.pricing.main"]
+
+  # Entry Service
+  entry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zeroque-entry
+    ports:
+      - "8218:8218"
+    environment:
+      - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
+      - PORT=8218
+      - SERVICE_NAME=entry
+    networks:
+      - zeroque-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "services.entry.main"]
+
   # Monitoring Service
   monitoring:
     build:
@@ -544,12 +622,12 @@ services:
       dockerfile: Dockerfile
     container_name: zeroque-monitoring
     ports:
-      - "8700:8700"
+      - "8221:8221"
     environment:
       - DATABASE_URL=postgresql://zeroque:zeroque_prod_2024_secure@postgres:5432/zeroque_prod
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://zeroque:zeroque_prod_2024@rabbitmq:5672/zeroque
-      - PORT=8700
+      - PORT=8221
       - SERVICE_NAME=monitoring
     networks:
       - zeroque-network

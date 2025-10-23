@@ -15,7 +15,7 @@ PROVISIONING_URL = "http://localhost:8000"
 IDENTITY_URL = "http://localhost:8003"
 CV_CONNECTOR_URL = "http://localhost:8216"
 CV_GATEWAY_URL = "http://localhost:8215"
-ENTRY_URL = "http://localhost:8200"  # Entry service
+ENTRY_URL = "http://localhost:8218"  # Entry service
 
 # Initialize session state
 if 'tenant_id' not in st.session_state:
@@ -70,7 +70,7 @@ if st.session_state.tenant_id:
             response = requests.put(
                 f"{PROVISIONING_URL}/provisioning/sites/{site_id}",
                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                params={"tenant_id": st.session_state.tenant_id},
+                params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"},
                 json={
                     "name": f"Site_{datetime.now().strftime('%H%M%S')}",
                     "site_type": "retail",
@@ -96,7 +96,7 @@ if st.session_state.tenant_id:
             response = requests.put(
                 f"{PROVISIONING_URL}/provisioning/stores/{store_id}",
                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                params={"tenant_id": st.session_state.tenant_id, "site_id": st.session_state.site_id},
+                params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa", "site_id": st.session_state.site_id},
                 json={"name": f"Store_{datetime.now().strftime('%H%M%S')}", "store_type": "retail"}
             )
             if response.status_code == 200:
@@ -181,7 +181,7 @@ with tab1:
                             f"{PROVISIONING_URL}/provisioning/users/bulk-import",
                             headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
                             json={
-                                "tenant_id": st.session_state.tenant_id,
+                                "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                                 "users": users,
                                 "auto_generate_api_keys": auto_api_keys,
                                 "notify_users": False
@@ -275,7 +275,7 @@ with tab2:
                 with st.spinner("Creating provider..."):
                     try:
                         payload = {
-                            "tenant_id": st.session_state.tenant_id,
+                            "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                             "provider_type": provider_type,
                             "provider_name": provider_name,
                             "client_id": client_id,
@@ -315,7 +315,7 @@ with tab2:
                         response = requests.get(
                             f"{IDENTITY_URL}/identity/v4/oauth/providers",
                             headers={"x-api-key": API_KEY},
-                            params={"tenant_id": st.session_state.tenant_id},
+                            params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"},
                             timeout=10
                         )
                         
@@ -354,7 +354,7 @@ with tab2:
                                 f"{IDENTITY_URL}/identity/v4/oauth/initiate",
                                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
                                 json={
-                                    "tenant_id": st.session_state.tenant_id,
+                                    "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                                     "provider_id": provider_id,
                                     "redirect_uri": redirect_uri
                                 },
@@ -415,7 +415,7 @@ with tab3:
                                 f"{CV_CONNECTOR_URL}/cv/entry/codes",
                                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
                                 json={
-                                    "tenant_id": st.session_state.tenant_id,
+                                    "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                                     "user_id": user_id,
                                     "displayable": True,
                                     "group_size": 1
@@ -423,17 +423,31 @@ with tab3:
                                 timeout=10
                             )
                         else:
-                            # Use Entry Service
-                            response = requests.post(
-                                f"{ENTRY_URL}/entry/codes",
-                                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                                json={
-                                    "tenant_id": st.session_state.tenant_id,
-                                    "user_id": user_id,
-                                    "displayable": True
-                                },
-                                timeout=10
-                            )
+                            # Use Entry Service - handle gracefully if not available
+                            try:
+                                response = requests.post(
+                                    f"{ENTRY_URL}/entry/codes",
+                                    headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                                    json={
+                                        "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
+                                        "user_id": user_id,
+                                        "displayable": True
+                                    },
+                                    timeout=5
+                                )
+                            except requests.exceptions.ConnectionError:
+                                st.warning("⚠️ Entry service not available. Using CV Connector as fallback.")
+                                response = requests.post(
+                                    f"{CV_CONNECTOR_URL}/cv/entry/codes",
+                                    headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                                    json={
+                                        "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
+                                        "user_id": user_id,
+                                        "displayable": True,
+                                        "group_size": 1
+                                    },
+                                    timeout=10
+                                )
                         
                         if response.status_code == 200:
                             result = response.json()
@@ -469,7 +483,7 @@ with tab3:
                                 f"{CV_CONNECTOR_URL}/cv/entry/card",
                                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
                                 json={
-                                    "tenant_id": st.session_state.tenant_id,
+                                    "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                                     "user_id": user_id,
                                     "store_id": st.session_state.store_id,
                                     "card_number": card_number,
@@ -517,7 +531,7 @@ with tab3:
                                     f"{CV_CONNECTOR_URL}/cv/entry/biometric",
                                     headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
                                     json={
-                                        "tenant_id": st.session_state.tenant_id,
+                                        "tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa",
                                         "user_id": user_id,
                                         "store_id": st.session_state.store_id,
                                         "biometric_type": biometric_type,
@@ -586,7 +600,7 @@ with tab4:
                     response = requests.put(
                         f"{PROVISIONING_URL}/provisioning/sites/{site_id}",
                         headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                        params={"tenant_id": st.session_state.tenant_id},
+                        params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"},
                         json={
                             "name": site_name,
                             "site_type": site_type,
@@ -633,7 +647,7 @@ with tab5:
             if st.button("Refresh Devices"):
                 with st.spinner("Loading devices..."):
                     try:
-                        params = {"tenant_id": st.session_state.tenant_id}
+                        params = {"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"}
                         if filter_site:
                             params["site_id"] = filter_site
                         if filter_status != "All":
@@ -693,7 +707,7 @@ with tab5:
                             response = requests.get(
                                 f"{CV_GATEWAY_URL}/devices/{device_id}/status",
                                 headers={"x-api-key": API_KEY},
-                                params={"tenant_id": st.session_state.tenant_id},
+                                params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"},
                                 timeout=10
                             )
                             
@@ -758,7 +772,7 @@ with tab5:
                             response = requests.put(
                                 f"{CV_GATEWAY_URL}/devices/{update_device_id}/status",
                                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                                params={"tenant_id": st.session_state.tenant_id},
+                                params={"tenant_id": str(st.session_state.tenant_id) if st.session_state.tenant_id else "733bc6e1-458b-4922-b2de-8213201dd3fa"},
                                 json={
                                     "status": new_status,
                                     "health_score": new_health_score,

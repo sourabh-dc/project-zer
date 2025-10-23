@@ -1,0 +1,6812 @@
+{
+  "info": {
+    "name": "ZeroQue Platform API Collection",
+    "description": "COMPREHENSIVE collection with ALL endpoints (21 services, 282+ endpoints). VERSION 7.3.0: Orders & Subscriptions fixed, all database schemas aligned. ALL WORKING: Orders, Subscriptions (Plan, Create, Get), Provisioning (all 6), Catalog, Pricing, Approvals. FLOW: 1.Provisioning -> 2.Entitlements -> 3.Subscriptions -> 4.Catalog -> 5.Pricing -> 6.Identity -> 7.Entry -> 8.Orders -> 9.Approvals.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "7.3.0"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "x-api-key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{API_KEY}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "value": "zq_demo_key_for_testing",
+      "type": "string"
+    },
+    {
+      "key": "tenant_id",
+      "value": "550e8400-e29b-41d4-a716-446655440000",
+      "type": "string"
+    },
+    {
+      "key": "site_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "store_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "plan_code",
+      "value": "core",
+      "type": "string"
+    },
+    {
+      "key": "product_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vendor_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "role_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "order_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "chain_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "entry_code",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "pricebook_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bundle_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "category_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "payment_intent_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "invoice_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "device_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "report_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "notification_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Provisioning Service (8000) - 17 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Tenant",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/tenants",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "tenants"
+              ]
+            },
+            "description": "Create new tenant",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Manufacturing Co {{$timestamp}}\",\n  \"company_name\": \"Manufacturing Solutions Ltd\",\n  \"industry\": \"manufacturing\",\n  \"admin_email\": \"admin{{$timestamp}}@company.com\",\n  \"admin_name\": \"Admin User\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.tenant_id) pm.environment.set('tenant_id', jsonData.tenant_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Tenants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/tenants",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "tenants"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Site",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/sites/{{$guid}}?tenant_id={{tenant_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "sites",
+                "{{$guid}}"
+              ],
+              "query": [
+                {
+                  "key": "tenant_id",
+                  "value": "{{tenant_id}}"
+                }
+              ]
+            },
+            "description": "Create site",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Main Factory\",\n  \"site_type\": \"factory\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.site_id) pm.environment.set('site_id', jsonData.site_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Sites",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/sites",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "sites"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Store",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/stores/{{$guid}}?site_id={{site_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "stores",
+                "{{$guid}}"
+              ],
+              "query": [
+                {
+                  "key": "site_id",
+                  "value": "{{site_id}}"
+                }
+              ]
+            },
+            "description": "Create store",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Employee Store\",\n  \"store_type\": \"retail\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.store_id) pm.environment.set('store_id', jsonData.store_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Stores",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/stores",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "stores"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/users/{{$guid}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "users",
+                "{{$guid}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user{{$timestamp}}@company.com\",\n  \"display_name\": \"Test User\",\n  \"tenant_id\": \"{{tenant_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/users",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "users"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk Import Users",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/users/bulk-import",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "users",
+                "bulk-import"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"users\": [\n    {\n      \"email\": \"alice@co.com\",\n      \"display_name\": \"Alice\"\n    }\n  ],\n  \"auto_generate_api_keys\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Role",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/roles/{{$guid}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "roles",
+                "{{$guid}}"
+              ]
+            },
+            "description": "NOTE: Roles are GLOBAL",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"manager_{{$timestamp}}\",\n  \"name\": \"Manager\",\n  \"description\": \"SITE Manager\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.role_id) pm.environment.set('role_id', jsonData.role_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Roles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/roles",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "roles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Vendor",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/vendors/{{$guid}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "vendors",
+                "{{$guid}}"
+              ]
+            },
+            "description": "Create vendor",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"name\": \"Office Supplies Inc\",\n  \"contact_email\": \"contact@supplier.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.vendor_id) pm.environment.set('vendor_id', jsonData.vendor_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Vendors",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/vendors",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "vendors"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Cost Centre",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/cost-centres",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "cost-centres"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"name\": \"Operations\",\n  \"budget_minor\": 500000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Cost Centres",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/cost-centres",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "cost-centres"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Tenant, site, store, user, role, vendor, cost centre management"
+    },
+    {
+      "name": "2. Catalog Service (8001) - 12 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Product",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products"
+              ]
+            },
+            "description": "Create product",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vendor_id\": \"{{vendor_id}}\",\n  \"name\": \"Premium Notebook\",\n  \"sku\": \"NB-{{$timestamp}}\",\n  \"barcode\": \"8901234567890\",\n  \"base_price_minor\": 500,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.product_id) pm.environment.set('product_id', jsonData.product_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products/{{product_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products",
+                "{{product_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Product Variant",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products/{{product_id}}/variants",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products",
+                "{{product_id}}",
+                "variants"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Large Size\",\n  \"sku\": \"VARIANT-L-{{$timestamp}}\",\n  \"price_adjustment_minor\": 10000,\n  \"attributes\": {\n    \"size\": \"large\",\n    \"color\": \"blue\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Category",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/categories",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "categories"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Office Equipment\",\n  \"description\": \"Office supplies\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.category_id) pm.environment.set('category_id', jsonData.category_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Bundle",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/bundles",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "bundles"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Starter Pack\",\n  \"description\": \"Complete starter bundle\",\n  \"bundle_sku\": \"BUNDLE-{{$timestamp}}\",\n  \"bundle_type\": \"kit\",\n  \"base_price_minor\": 250000,\n  \"currency\": \"GBP\",\n  \"components\": [\n    {\n      \"product_id\": \"{{product_id}}\",\n      \"quantity\": 2,\n      \"is_required\": true,\n      \"sort_order\": 0\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.bundle_id) pm.environment.set('bundle_id', jsonData.bundle_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Bundles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/bundles",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "bundles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Bundle",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/bundles/{{bundle_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "bundles",
+                "{{bundle_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sync Barcode to CV",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products/{{product_id}}/barcode-sync",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products",
+                "{{product_id}}",
+                "barcode-sync"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Search Products",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/search",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"notebook\",\n  \"filters\": {},\n  \"limit\": 20\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Product, variant, category, bundle, search management"
+    },
+    {
+      "name": "3. Orders Service (8002) - 7 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders"
+              ]
+            },
+            "description": "Create order",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"site_id\": \"{{site_id}}\",\n  \"store_id\": \"{{store_id}}\",\n  \"customer_id\": \"{{user_id}}\",\n  \"order_type\": \"retail\",\n  \"items\": [\n    {\n      \"product_id\": \"{{product_id}}\",\n      \"quantity\": 2,\n      \"unit_price_minor\": 500\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.order_id) pm.environment.set('order_id', jsonData.order_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders/{{order_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders",
+                "{{order_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Order",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders/{{order_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders",
+                "{{order_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fulfillment_status\": \"completed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Delete Order",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders/{{order_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders",
+                "{{order_id}}"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Order creation, retrieval, updates, deletion"
+    },
+    {
+      "name": "4. Pricing Service (8006) - 6 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Pricebook",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/pricebooks",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "pricebooks"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Standard Pricing\",\n  \"description\": \"Default pricebook\",\n  \"currency\": \"GBP\",\n  \"is_default\": true,\n  \"starts_at\": \"2025-01-01T00:00:00Z\",\n  \"ends_at\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.pricebook_id) pm.environment.set('pricebook_id', jsonData.pricebook_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Pricebooks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/pricebooks?tenant_id={{tenant_id}}&limit=10&offset=0",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "pricebooks"
+              ],
+              "query": [
+                {
+                  "key": "tenant_id",
+                  "value": "{{tenant_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Pricing Rule",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/pricebooks/{{pricebook_id}}/rules",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "pricebooks",
+                "{{pricebook_id}}",
+                "rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pricebook_id\": \"{{pricebook_id}}\",\n  \"product_id\": \"{{product_id}}\",\n  \"rule_type\": \"fixed\",\n  \"rule_value\": 1999.00,\n  \"min_quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Calculate Price",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/calculate",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "calculate"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pricebook_id\": \"{{pricebook_id}}\",\n  \"product_id\": \"{{product_id}}\",\n  \"quantity\": 2,\n  \"base_price_minor\": 199900\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Pricebook, pricing rules, price calculation"
+    },
+    {
+      "name": "5. Approvals Service (8084) - 20 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Approval Chain",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/chains",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "chains"
+              ]
+            },
+            "description": "Create workflow template",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Budget Approval - Manufacturing\",\n  \"chain_type\": \"budget\",\n  \"is_active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.chain_id) pm.environment.set('chain_id', jsonData.chain_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Approval Chains",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/chains",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "chains"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Chain Step - Level 1 (Manager)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/chains/{{chain_id}}/steps",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "chains",
+                "{{chain_id}}",
+                "steps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"step_number\": 1,\n  \"approver_role\": \"manager\",\n  \"approver_scope\": \"SITE\",\n  \"escalation_after_hours\": 24,\n  \"is_required\": true,\n  \"approval_chain_id\": \"{{chain_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add Chain Step - Level 2 (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/chains/{{chain_id}}/steps",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "chains",
+                "{{chain_id}}",
+                "steps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"step_number\": 2,\n  \"approver_role\": \"administrator\",\n  \"approver_scope\": \"TENANT\",\n  \"escalation_after_hours\": 48,\n  \"is_required\": true,\n  \"approval_chain_id\": \"{{chain_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Chain Steps",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/chains/{{chain_id}}/steps",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "chains",
+                "{{chain_id}}",
+                "steps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit Approval Request",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests"
+              ]
+            },
+            "description": "Submit for approval",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_type\": \"purchase_order\",\n  \"requested_by\": \"{{user_id}}\",\n  \"chain_id\": \"{{chain_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"request_data\": {\n    \"order_id\": \"ORD-{{$timestamp}}\",\n    \"description\": \"Office equipment purchase\",\n    \"items\": [\"laptops\", \"monitors\"]\n  },\n  \"total_amount_minor\": 150000,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.request_id) pm.environment.set('request_id', jsonData.request_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Pending Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests?status=pending",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List All Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Request Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests/{{request_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests",
+                "{{request_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Request Approvers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests/{{request_id}}/approvers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests",
+                "{{request_id}}",
+                "approvers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approve Request",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests/{{request_id}}/approve",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests",
+                "{{request_id}}",
+                "approve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approver_id\": \"{{user_id}}\",\n  \"decision\": \"approved\",\n  \"notes\": \"Approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Deny Request",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests/{{request_id}}/approve",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests",
+                "{{request_id}}",
+                "approve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approver_id\": \"{{user_id}}\",\n  \"decision\": \"denied\",\n  \"notes\": \"Budget exceeded\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Respond to Request (Alternative)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/requests/{{request_id}}/respond",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "requests",
+                "{{request_id}}",
+                "respond"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approver_id\": \"{{user_id}}\",\n  \"decision\": \"approved\",\n  \"notes\": \"Looks good\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Retry Failed Event",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/events/retry",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "events",
+                "retry"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"evt_12345\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Event Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/events/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "events",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/security/audit-logs",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "security",
+                "audit-logs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User Context",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/security/user-context",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "security",
+                "user-context"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Validate Permission",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/approvals/v2/security/validate-permission",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "approvals",
+                "v2",
+                "security",
+                "validate-permission"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"permission\": \"approve_budget\",\n  \"resource\": \"budget_request\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Multi-level approval workflows, chains, requests, events, audit"
+    },
+    {
+      "name": "6. Subscriptions Service (8212) - 12 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Feature",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/features",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "features"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"advanced_analytics\",\n  \"name\": \"Advanced Analytics\",\n  \"description\": \"Real-time dashboards\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Plan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/plans",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "plans"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"enterprise_{{$timestamp}}\",\n  \"name\": \"Enterprise Plan\",\n  \"description\": \"Full features\",\n  \"price_yearly_minor\": 999900,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/plans",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "plans"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Plan Features (core by default)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/plans/{{plan_code}}/features",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "plans",
+                "{{plan_code}}",
+                "features"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Feature to Plan (set plan_code variable)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/plans/{{plan_code}}/features/sku_management",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "plans",
+                "{{plan_code}}",
+                "features",
+                "advanced_analytics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rate_limit\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Remove Feature from Plan",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/plans/{{plan_code}}/features/advanced_analytics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "plans",
+                "{{plan_code}}",
+                "features",
+                "advanced_analytics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Subscription (plan_code defaults to core)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/subscriptions",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"plan_code\": \"{{plan_code}}\",\n  \"billing_cycle\": \"yearly\",\n  \"auto_renew\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Tenant Subscription",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/subscriptions/{{tenant_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "subscriptions",
+                "{{tenant_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Renew Subscription",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/subscriptions/{{tenant_id}}/renew",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "subscriptions",
+                "{{tenant_id}}",
+                "renew"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Subscription",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/subscriptions/{{tenant_id}}/cancel",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "subscriptions",
+                "{{tenant_id}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Process All Renewals (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/subscriptions/v2/subscriptions/process-renewals",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "subscriptions",
+                "v2",
+                "subscriptions",
+                "process-renewals"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Plans, features, subscriptions, renewals, cancellations"
+    },
+    {
+      "name": "7. Payments Service (8213) - 20 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Payment Intent (Stripe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/intent",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "intent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"amount_minor\": 1000,\n  \"currency\": \"GBP\",\n  \"payment_method\": \"stripe\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.payment_intent_id) pm.environment.set('payment_intent_id', jsonData.payment_intent_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Payment Intent (Trade Account)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/intent",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "intent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"amount_minor\": 5000,\n  \"currency\": \"GBP\",\n  \"payment_method\": \"trade_account\",\n  \"metadata\": {\n    \"terms\": \"Net30\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Stripe Customer",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/customers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"email\": \"billing@company.com\",\n  \"name\": \"Manufacturing Co\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Refund",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/refund",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "refund"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"{{payment_intent_id}}\",\n  \"amount_minor\": 500,\n  \"reason\": \"customer_request\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Webhook Handler (Stripe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/webhook/stripe",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "webhook",
+                "stripe"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"payment_intent.succeeded\",\n  \"data\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Admin: Process Payment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/admin/rails/payment",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "admin",
+                "rails",
+                "payment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"amount_minor\": 1000,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/transactions",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "transactions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Payment Reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/reports",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "reports"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Stripe Customer (Legacy)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/stripe/customers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "stripe",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"email\": \"billing@co.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Trade Account",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/trade-accounts",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "trade-accounts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"account_name\": \"Manufacturing Co\",\n  \"credit_limit_minor\": 1000000,\n  \"terms\": \"Net30\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Trade Accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/trade-accounts",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "trade-accounts"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Payment Intent (Generic)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payment-intents",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_minor\": 1000,\n  \"currency\": \"GBP\",\n  \"payment_method\": \"stripe\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Currency Conversion",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/currency/convert",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "currency",
+                "convert"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_minor\": 1000,\n  \"from_currency\": \"GBP\",\n  \"to_currencies\": [\n    \"USD\",\n    \"EUR\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Payment Intent",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payment-intents/{{payment_intent_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payment-intents",
+                "{{payment_intent_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Stripe Payment Intent (Direct)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/stripe/payment-intent",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "stripe",
+                "payment-intent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_minor\": 1000,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stripe Webhook (Direct)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/stripe/webhook",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "stripe",
+                "webhook"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Integration: Payment Required",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8213/payments/v2/integration/orders/payment-required",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8213",
+              "path": [
+                "payments",
+                "v2",
+                "integration",
+                "orders",
+                "payment-required"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Stripe, trade accounts, refunds, webhooks, currency conversion"
+    },
+    {
+      "name": "8. Entry Service (8218) - 7 endpoints",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Issue Entry Code",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/entry/v4/issue-code",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "entry",
+                "v4",
+                "issue-code"
+              ]
+            },
+            "description": "Issue entry code with QR",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"store_id\": \"{{store_id}}\",\n  \"ttl_minutes\": 30,\n  \"metadata\": {\n    \"group_size\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.entry_code) pm.environment.set('entry_code', jsonData.entry_code);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validate Entry Code",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/entry/v4/validate-code",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "entry",
+                "v4",
+                "validate-code"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{entry_code}}\",\n  \"store_id\": \"{{store_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Entry Codes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/entry/v4/codes",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "entry",
+                "v4",
+                "codes"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Code Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8218/entry/v4/status/{{entry_code}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8218",
+              "path": [
+                "entry",
+                "v4",
+                "status",
+                "{{entry_code}}"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Entry code generation, validation, QR codes"
+    },
+    {
+      "name": "9. Ledger Service (8086) - 22 endpoints",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": []
+            }
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Ledger Entry (Debit/Credit)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/entries",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "entries"
+              ]
+            },
+            "description": "Double-entry accounting",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"transaction_type\": \"order_payment\",\n  \"lines\": [\n    {\n      \"account_code\": \"1100\",\n      \"debit_minor\": 1000,\n      \"credit_minor\": 0,\n      \"description\": \"Cash\"\n    },\n    {\n      \"account_code\": \"4000\",\n      \"debit_minor\": 0,\n      \"credit_minor\": 1000,\n      \"description\": \"Revenue\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Ledger Entries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/entries",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "entries"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Account Balances",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/balances",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "balances"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Adjustment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/adjustments",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "adjustments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"account_code\": \"1100\",\n  \"amount_minor\": 500,\n  \"description\": \"Correction\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Financial Reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/reports",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "reports"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Event: Order Completed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/events/order-completed",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "events",
+                "order-completed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Event: Invoice Posted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/events/invoice-posted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "events",
+                "invoice-posted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"inv_123\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Event: Approval Resolved",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/events/approval-resolved",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "events",
+                "approval-resolved"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"{{request_id}}\",\n  \"approved_amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Retry Failed Event",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/events/retry",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "events",
+                "retry"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"evt_123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Event Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/events/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "events",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Balance (Legacy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Account Balance (Legacy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/balance?account_code=1100",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "balance"
+              ],
+              "query": [
+                {
+                  "key": "account_code",
+                  "value": "1100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Integration: Order Completed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/integration/orders/order-completed",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "integration",
+                "orders",
+                "order-completed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\",\n  \"amount_minor\": 1000,\n  \"tenant_id\": \"{{tenant_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Approval Resolved",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/integration/approvals/approval-resolved",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "integration",
+                "approvals",
+                "approval-resolved"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"{{request_id}}\",\n  \"approved_amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Invoice Posted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/integration/billing/invoice-posted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "integration",
+                "billing",
+                "invoice-posted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"inv_123\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/ledger/v4/integration/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "ledger",
+                "v4",
+                "integration",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/audit/v7/logs",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "audit",
+                "v7",
+                "logs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Log by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8086/audit/v7/logs/log_123",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8086",
+              "path": [
+                "audit",
+                "v7",
+                "logs",
+                "log_123"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Double-entry accounting, balances, reports, audit logs"
+    },
+    {
+      "name": "10. Billing Service (8214) - 20 endpoints",
+      "description": "Invoice generation, settlements, disputes, cost centres, budgets, AR aging",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Invoice",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/invoices",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "invoices"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"order_id\": \"{{order_id}}\",\n  \"amount_minor\": 1000,\n  \"currency\": \"GBP\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Invoices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/invoices",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "invoices"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Settlements",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/settlements",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "settlements"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Settlement",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/settlements",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "settlements"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"invoice_ids\": [\n    \"{{invoice_id}}\"\n  ],\n  \"settlement_date\": \"2024-01-01\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Dispute",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/disputes",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "disputes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"{{invoice_id}}\",\n  \"reason\": \"Incorrect amount\",\n  \"amount_minor\": 500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Cost Centre",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/cost-centres",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "cost-centres"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"name\": \"Marketing\",\n  \"budget_minor\": 100000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Cost Centres",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/cost-centres",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "cost-centres"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Budget",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/budgets",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "budgets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"amount_minor\": 5000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Budget Check",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/budget-check",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "budget-check"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Record Spend",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/spend",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "spend"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"amount_minor\": 500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Budget",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/budgets/{{$guid}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "budgets",
+                "{{$guid}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Adjustment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/adjustments",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "adjustments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"{{invoice_id}}\",\n  \"amount_minor\": 100,\n  \"reason\": \"Discount\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Ledger Invoice Posted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/integration/ledger/invoice-posted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "integration",
+                "ledger",
+                "invoice-posted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"{{invoice_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: CV Gateway Invoice Creation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/integration/cv-gateway/invoice-creation",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "integration",
+                "cv-gateway",
+                "invoice-creation"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/integration/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "integration",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "AR Aging Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/reports/ar-aging",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "reports",
+                "ar-aging"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retry Event",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/events/retry",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "events",
+                "retry"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"evt_123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Event: Order Completed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8214/billing/v2/events/order-completed",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8214",
+              "path": [
+                "billing",
+                "v2",
+                "events",
+                "order-completed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "11. Notifications Service (8215) - 12 endpoints",
+      "description": "Send notifications, history, replay, integrations (entry, user, order, invoice)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Notification",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/send",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "send"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"channel\": \"email\",\n  \"template\": \"welcome\",\n  \"data\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Replay Notification",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/replay",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "replay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"delivery_id\": \"dlv_123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Notification History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/history",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "history"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Admin: Send Notification",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/admin/rails/notification",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "admin",
+                "rails",
+                "notification"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"message\": \"Test notification\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Entry Granted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/integration/entry-granted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "integration",
+                "entry-granted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entry_code\": \"{{entry_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: User Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/integration/user-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "integration",
+                "user-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Order Completed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/integration/order-completed",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "integration",
+                "order-completed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Invoice Posted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/v4/integration/invoice-posted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "v4",
+                "integration",
+                "invoice-posted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"{{invoice_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Replay by Delivery ID",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8215/notifications/replay/dlv_123",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8215",
+              "path": [
+                "notifications",
+                "replay",
+                "dlv_123"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "12. Reports Service (8217) - 16 endpoints",
+      "description": "Generate reports, analytics (sales, inventory, customers, operational), dashboards, Power BI embedding",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Report",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/reports/v4/generate",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "reports",
+                "v4",
+                "generate"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"report_type\": \"sales\",\n  \"start_date\": \"2024-01-01\",\n  \"end_date\": \"2024-01-31\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Report Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/reports/v4/status/job_123",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "reports",
+                "v4",
+                "status",
+                "job_123"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Download Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/reports/v4/download/job_123",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "reports",
+                "v4",
+                "download",
+                "job_123"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Analytics: Sales",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/analytics/v4/sales",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "analytics",
+                "v4",
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Analytics: Inventory",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/analytics/v4/inventory",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "analytics",
+                "v4",
+                "inventory"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Analytics: Customers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/analytics/v4/customers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "analytics",
+                "v4",
+                "customers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Analytics: Operational",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/analytics/v4/operational",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "analytics",
+                "v4",
+                "operational"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Dashboard",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"name\": \"Sales Dashboard\",\n  \"config\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Dashboards",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards/{{$guid}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards",
+                "{{$guid}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Power BI Embed Token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards/{{$guid}}/embed-token",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards",
+                "{{$guid}}",
+                "embed-token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Refresh Dashboard",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards/{{$guid}}/refresh",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards",
+                "{{$guid}}",
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Refresh Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8217/dashboards/{{$guid}}/refresh-status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8217",
+              "path": [
+                "dashboards",
+                "{{$guid}}",
+                "refresh-status"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "13. Usage Service (8219) - 3 endpoints",
+      "description": "Record and track feature usage events",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8219/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8219",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Record Usage",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8219/usage/v4/record",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8219",
+              "path": [
+                "usage",
+                "v4",
+                "record"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"feature_code\": \"advanced_analytics\",\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Usage Events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8219/usage/v4/events",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8219",
+              "path": [
+                "usage",
+                "v4",
+                "events"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "14. Observability Service (8220) - 9 endpoints",
+      "description": "Metrics collection, monitors, alerts, system metrics",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Post Metrics",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "metrics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service\": \"orders\",\n  \"metrics\": {\n    \"orders_created\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Monitor",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/monitors",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "monitors"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"High Error Rate\",\n  \"condition\": {\n    \"metric\": \"error_rate\",\n    \"threshold\": 5\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Monitors",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/monitors",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "monitors"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Collect System Metrics",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/collect-system-metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "collect-system-metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get System Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8220/observability/v4/system-metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8220",
+              "path": [
+                "observability",
+                "v4",
+                "system-metrics"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "15. Monitoring Service (8221) - 8 endpoints",
+      "description": "Health checks, service status, alerts",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Check Health",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/monitoring/v4/check-health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "monitoring",
+                "v4",
+                "check-health"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service_name\": \"orders\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Service Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/monitoring/v4/services/orders/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "monitoring",
+                "v4",
+                "services",
+                "orders",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/monitoring/v4/services",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "monitoring",
+                "v4",
+                "services"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Alert",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/monitoring/v4/alerts",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "monitoring",
+                "v4",
+                "alerts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service\": \"orders\",\n  \"severity\": \"critical\",\n  \"message\": \"Service down\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Alerts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8221/monitoring/v4/alerts",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8221",
+              "path": [
+                "monitoring",
+                "v4",
+                "alerts"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "16. Service Registry (8222) - 8 endpoints",
+      "description": "Service discovery, registration, health tracking",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/services",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "services"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Service",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/services/orders",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "services",
+                "orders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Refresh Services",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/services/refresh",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "services",
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Healthy Services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/services/healthy",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "services",
+                "healthy"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Unhealthy Services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/services/unhealthy",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "services",
+                "unhealthy"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Discover Service Endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8222/discovery/orders/endpoints",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8222",
+              "path": [
+                "discovery",
+                "orders",
+                "endpoints"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "17. Entitlements Service (8223) - 6 endpoints",
+      "description": "Check entitlements, record usage, cache management",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Check Entitlement",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/entitlements/v2/check?tenant_id={{tenant_id}}&feature_code=advanced_analytics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "entitlements",
+                "v2",
+                "check"
+              ],
+              "query": [
+                {
+                  "key": "tenant_id",
+                  "value": "{{tenant_id}}"
+                },
+                {
+                  "key": "feature_code",
+                  "value": "advanced_analytics"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Record Usage",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/entitlements/v2/usage/record",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "entitlements",
+                "v2",
+                "usage",
+                "record"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"feature_code\": \"api_calls\",\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Usage",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/entitlements/v2/usage/{{tenant_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "entitlements",
+                "v2",
+                "usage",
+                "{{tenant_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Clear Cache",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8223/entitlements/v2/cache/clear",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8223",
+              "path": [
+                "entitlements",
+                "v2",
+                "cache",
+                "clear"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "18. Identity Service (8224) - 16 endpoints",
+      "description": "User management, roles, role assignments, tokens, OAuth",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/users",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "users"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"email\": \"user@example.com\",\n  \"display_name\": \"John Doe\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/users",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "users"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Role",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/roles",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "roles"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Admin\",\n  \"permissions\": [\n    \"*\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Roles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/roles",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "roles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Assign Role",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/role-assignments",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "role-assignments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"role_id\": \"{{role_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/token",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "token"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"scopes\": [\n    \"read\",\n    \"write\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/reports",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "reports"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create OAuth Provider",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/oauth/providers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "oauth",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"google\",\n  \"client_id\": \"xxx\",\n  \"client_secret\": \"yyy\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List OAuth Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/oauth/providers",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "oauth",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Initiate OAuth",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/oauth/initiate",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "oauth",
+                "initiate"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"google\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "OAuth Callback",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/identity/v4/oauth/callback",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "identity",
+                "v4",
+                "oauth",
+                "callback"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"google\",\n  \"code\": \"auth_code\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Guest Token (Deprecated)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/guest-token",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "guest-token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Loyalty Token (Deprecated)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8224/loyalty-token",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8224",
+              "path": [
+                "loyalty-token"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "19. Events Service (8085) - 19 endpoints",
+      "description": "Event publishing, history, retry, queue metrics, subscriptions, integrations",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Queue Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/metrics/queues",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "metrics",
+                "queues"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Publish Event",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/publish",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "publish"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_type\": \"order.created\",\n  \"payload\": {\n    \"order_id\": \"{{order_id}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Event History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/history",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "history"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retry Event",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/retry",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "retry"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"evt_123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Event Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/stats",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "stats"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Subscription",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/admin/subscriptions",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "admin",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_type\": \"order.created\",\n  \"endpoint\": \"https://example.com/webhook\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Subscriptions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/admin/subscriptions",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "admin",
+                "subscriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Integration: Entry Granted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/entry/entry-granted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "entry",
+                "entry-granted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entry_code\": \"{{entry_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: User Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/identity/user-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "identity",
+                "user-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Order Completed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/orders/order-completed",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "orders",
+                "order-completed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Approval Resolved",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/approvals/approval-resolved",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "approvals",
+                "approval-resolved"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"{{request_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Invoice Posted",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/billing/invoice-posted",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "billing",
+                "invoice-posted"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoice_id\": \"{{invoice_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/events/v4/integration/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "events",
+                "v4",
+                "integration",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Publish (Legacy)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/publish",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "publish"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "History (Legacy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/history",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "history"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Stats (Legacy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8085/stats",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8085",
+              "path": [
+                "stats"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "20. CV Connector (AiFi) Service (8216) - 22 endpoints",
+      "description": "AiFi Computer Vision integration: entry codes, QR, card, biometric, webhooks, sync",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": []
+            }
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Admin: Create CV Entry",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/admin/rails/cv",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "admin",
+                "rails",
+                "cv"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entry_code\": \"{{entry_code}}\",\n  \"store_id\": \"{{store_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Admin: List CV Entries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/admin/rails/cv",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "admin",
+                "rails",
+                "cv"
+              ]
+            }
+          }
+        },
+        {
+          "name": "CV: Create Entry Codes",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/entry/codes",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "entry",
+                "codes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"codes\": [\n    \"CODE1\",\n    \"CODE2\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV: Verify Entry",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/entry/verify",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "entry",
+                "verify"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{entry_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV: Generate QR",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/entry/qr",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "entry",
+                "qr"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entry_code\": \"{{entry_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV: Card Entry",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/entry/card",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "entry",
+                "card"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"card_number\": \"1234567890\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV: Biometric Entry",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/entry/biometric",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "entry",
+                "biometric"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"biometric_data\": \"face_vector\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV Webhook: Validate Entry",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/webhook/entry-codes/validate",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "webhook",
+                "entry-codes",
+                "validate"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{entry_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV Webhook: Checkout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/webhook/checkout",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "webhook",
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"store_id\": \"{{store_id}}\",\n  \"items\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV: Batch Sync",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/sync/batch",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "sync",
+                "batch"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"products\": [],\n  \"users\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Entry Codes (Legacy)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/entry/codes",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "entry",
+                "codes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"codes\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Webhooks Checkout (Legacy)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/webhooks/checkout",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "webhooks",
+                "checkout"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Event: Product Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/events/product-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "events",
+                "product-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": \"{{product_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Event: User Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/events/user-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "events",
+                "user-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Admin: Cleanup Reviews",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/admin/reviews/cleanup",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "admin",
+                "reviews",
+                "cleanup"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Integration: Product Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/v4/integration/catalog/product-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "catalog",
+                "product-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": \"{{product_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: User Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/v4/integration/provisioning/user-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "provisioning",
+                "user-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Tenant Created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/v4/integration/provisioning/tenant-created",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "provisioning",
+                "tenant-created"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8216/cv/v4/integration/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8216",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "status"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "21. CV Gateway Service (8080) - 18 endpoints",
+      "description": "CV device management, order processing, reviews, integrations with orders/approvals/billing",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": []
+            }
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/health",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/readiness",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "readiness"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/metrics",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Device Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/devices/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "devices",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Device Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/devices/{{device_id}}/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "devices",
+                "{{device_id}}",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Device Status",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/devices/{{device_id}}/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "devices",
+                "{{device_id}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"online\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Device Alert",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/devices/{{device_id}}/alert",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "devices",
+                "{{device_id}}",
+                "alert"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"severity\": \"warning\",\n  \"message\": \"Low battery\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "CV Webhook: Create Order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/webhook/order",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "webhook",
+                "order"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"store_id\": \"{{store_id}}\",\n  \"items\": [\n    {\n      \"product_id\": \"{{product_id}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List CV Reviews",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/reviews",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "reviews"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Resolve Review",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/reviews/{{$guid}}/resolve",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "reviews",
+                "{{$guid}}",
+                "resolve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resolution\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Create Order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/v4/integration/orders/create-order",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "orders",
+                "create-order"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_data\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Budget Check",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/v4/integration/approvals/budget-check",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "approvals",
+                "budget-check"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"amount_minor\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration: Create Invoice",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/v4/integration/billing/create-invoice",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "billing",
+                "create-invoice"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_id\": \"{{order_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Integration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/v4/integration/status",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "v4",
+                "integration",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "CV Orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/orders",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "orders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "CV Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/stats/{{tenant_id}}",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "stats",
+                "{{tenant_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "AiFi Webhook: Order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8080/cv/aifi/webhook/order",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8080",
+              "path": [
+                "cv",
+                "aifi",
+                "webhook",
+                "order"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"store_id\": \"{{store_id}}\",\n  \"order_data\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "_postman_id": "6b85f47d-6764-4056-b716-4752b9819bfd"
+}

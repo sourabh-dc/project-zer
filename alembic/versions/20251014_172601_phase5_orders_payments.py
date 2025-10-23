@@ -35,7 +35,7 @@ def upgrade():
             sa.Column('is_active', sa.Boolean(), nullable=False),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
             sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-            sa.ForeignKeyConstraint(['tenant_id'], ['tenants_new.tenant_id'], ),
+            sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ),
             sa.PrimaryKeyConstraint('trade_account_id'),
             sa.UniqueConstraint('account_number')
         )
@@ -62,7 +62,7 @@ def upgrade():
             sa.Column('failed_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
             sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-            sa.ForeignKeyConstraint(['tenant_id'], ['tenants_new.tenant_id'], ),
+            sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ),
             sa.ForeignKeyConstraint(['trade_account_id'], ['trade_accounts.trade_account_id'], ),
             sa.PrimaryKeyConstraint('payment_intent_id')
         )
@@ -100,7 +100,7 @@ def upgrade():
             sa.Column('processed', sa.Boolean(), nullable=False),
             sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-            sa.ForeignKeyConstraint(['tenant_id'], ['tenants_new.tenant_id'], ),
+            sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ),
             sa.PrimaryKeyConstraint('webhook_id')
         )
     except:

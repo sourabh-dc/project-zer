@@ -341,3 +341,6 @@ class CompositeUser(HttpUser):
             self.client.get(f"/health", name=f"health-{service}")
 
 
+
+
+

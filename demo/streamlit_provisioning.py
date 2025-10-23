@@ -41,11 +41,14 @@ def rid(prefix: str) -> str:
     return f"{prefix}-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 def api_call(method: str, url: str, payload: dict = None, params: dict = None):
-    """Make API call with error handling"""
+    """Make API call with error handling and authentication"""
     try:
-        # In demo mode, don't send authentication headers
-        headers = {"Content-Type": "application/json"}
-        
+        # Include authentication in headers for demo mode
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": DEMO_API_KEY
+        }
+
         if method.upper() == "GET":
             r = requests.get(url, params=params, headers=headers, timeout=20)
         elif method.upper() == "POST":
@@ -54,7 +57,7 @@ def api_call(method: str, url: str, payload: dict = None, params: dict = None):
             r = requests.put(url, json=payload, params=params, headers=headers, timeout=20)
         else:
             return 0, {"error": f"Unsupported method: {method}"}
-        
+
         return r.status_code, _safe_json(r)
     except Exception as e:
         return 0, {"error": str(e)}
@@ -79,21 +82,24 @@ def show_response(status_code: int, response: dict, title: str = "Response"):
         st.json(response)
 
 def show_curl(title: str, method: str, url: str, payload: dict = None, params: dict = None):
-    """Show curl command for API call"""
+    """Show curl command for API call with authentication"""
     with st.expander(f"🔧 {title} - cURL", expanded=False):
         # Build URL with query parameters
         full_url = url
         if params:
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             full_url = f"{url}?{query_string}"
-        
+
+        # Include authentication header
+        auth_header = f'  -H "x-api-key: {DEMO_API_KEY}" \\\n'
+
         if payload:
             cmd = f"""curl -X {method.upper()} "{full_url}" \\
-  -H "Content-Type: application/json" \\
+{auth_header}  -H "Content-Type: application/json" \\
   -d '{json.dumps(payload, indent=2)}'"""
         else:
             cmd = f"""curl -X {method.upper()} "{full_url}" \\
-  -H "Content-Type: application/json" """
+{auth_header}  -H "Content-Type: application/json" """
         st.code(cmd, language="bash")
 
 # -------------------- Session State --------------------
@@ -213,9 +219,10 @@ st.markdown("---")
 # Main Tabs
 tabs = st.tabs([
     "🏢 Tenant Management",
-    "🏪 Site Management", 
+    "🏪 Site Management",
     "🏬 Store Management",
     "👥 User Management",
+    "🔄 Bulk Operations",
     "🎭 Role Management",
     "🏪 Vendor Management",
     "💰 Cost Centre Management",
@@ -551,24 +558,170 @@ with tabs[3]:
             else:
                 show_response(status_code, response, "List Users")
 
-# ===== Role Management =====
+# ===== Bulk Operations =====
 with tabs[4]:
+    st.header("🔄 Bulk Operations")
+    st.markdown("Perform bulk operations for efficient data management")
+
+    bulk_tabs = st.tabs(["👥 Bulk User Import", "🏢 Bulk Tenant Operations", "📊 Bulk Reports"])
+
+    # Bulk User Import
+    with bulk_tabs[0]:
+        st.subheader("👥 Bulk User Import (Pro/Enterprise Feature)")
+
+        if not st.session_state.tenant_id:
+            st.warning("⚠️ Please create or select a tenant first.")
+        else:
+            st.info(f"**Target Tenant:** `{st.session_state.tenant_id}`")
+
+            # Number of users input
+            num_users = st.number_input("Number of Users to Import", min_value=1, max_value=50, value=3, key="bulk_num_users")
+
+            # Generate user forms dynamically
+            users_data = []
+            st.markdown("**Users to Import:**")
+
+            for i in range(num_users):
+                with st.expander(f"User {i+1}", expanded=(i < 3)):
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        email = st.text_input(
+                            f"Email {i+1}",
+                            value=f"bulkuser{i+1}_{int(__import__('time').time())}@demo.com",
+                            key=f"bulk_email_{i}"
+                        )
+                        display_name = st.text_input(
+                            f"Display Name {i+1}",
+                            value=f"Bulk User {i+1}",
+                            key=f"bulk_name_{i}"
+                        )
+
+                    with col2:
+                        permissions = st.multiselect(
+                            f"Permissions {i+1}",
+                            ["catalog.view", "catalog.create", "orders.view", "orders.create", "provisioning.users.create"],
+                            key=f"bulk_perms_{i}"
+                        )
+
+                    users_data.append({
+                        "email": email,
+                        "display_name": display_name,
+                        "permissions": permissions
+                    })
+
+            # Bulk import options
+            col1, col2 = st.columns(2)
+            with col1:
+                auto_generate_api_keys = st.checkbox("Auto-generate API keys", value=True, key="bulk_auto_keys")
+                notify_users = st.checkbox("Send welcome notifications", value=False, key="bulk_notify")
+
+            with col2:
+                st.info("💡 **Bulk Import Features:**\n- Batch user creation\n- API key generation\n- Permission assignment\n- Transactional safety")
+
+            if st.button("🚀 Import Users", type="primary", use_container_width=True):
+                if not all(user["email"] and user["display_name"] for user in users_data):
+                    st.error("❌ All users must have email and display name")
+                else:
+                    with st.spinner("Importing users..."):
+                        url = f"{PROVISIONING_BASE}/provisioning/users/bulk-import"
+                        payload = {
+                            "tenant_id": st.session_state.tenant_id,
+                            "users": users_data,
+                            "auto_generate_api_keys": auto_generate_api_keys,
+                            "notify_users": notify_users
+                        }
+
+                        status_code, response = api_call("POST", url, payload)
+                        show_response(status_code, response, "Bulk User Import")
+                        show_curl("Bulk User Import", "POST", url, payload)
+
+                        if status_code >= 200 and status_code < 300:
+                            st.success(f"✅ Import completed! {response.get('success_count', 0)}/{len(users_data)} users created")
+
+                            # Show results
+                            if "results" in response:
+                                results = response["results"]
+                                if results.get("success"):
+                                    st.subheader("✅ Successfully Created:")
+                                    for user in results["success"]:
+                                        with st.expander(f"👤 {user['display_name']} ({user['email']})"):
+                                            st.code(f"User ID: {user['user_id']}")
+                                            if user.get("api_key"):
+                                                st.code(f"API Key: {user['api_key']}")
+
+                                if results.get("failed"):
+                                    st.subheader("❌ Failed to Create:")
+                                    for user in results["failed"]:
+                                        st.error(f"{user.get('email', 'Unknown')}: {user.get('error', 'Unknown error')}")
+
+    # Bulk Tenant Operations
+    with bulk_tabs[1]:
+        st.subheader("🏢 Bulk Tenant Operations")
+
+        st.info("💡 **Available Operations:**\n- Bulk tenant creation\n- Tenant status updates\n- Configuration changes")
+
+        bulk_tenant_action = st.selectbox("Operation", [
+            "Create Multiple Tenants",
+            "Update Tenant Status",
+            "Bulk Configuration Update"
+        ])
+
+        if bulk_tenant_action == "Create Multiple Tenants":
+            num_tenants = st.number_input("Number of Tenants", min_value=1, max_value=10, value=3)
+
+            st.markdown("**Tenant Configuration:**")
+            base_name = st.text_input("Base Name", value="BulkTenant")
+            tenant_type = st.selectbox("Tenant Type", ["customer", "partner", "vendor"])
+
+            if st.button("🏢 Create Tenants"):
+                tenants_data = []
+                for i in range(num_tenants):
+                    tenant_data = {
+                        "name": f"{base_name}_{i+1}_{int(__import__('time').time())}",
+                        "tenant_type": tenant_type
+                    }
+                    tenants_data.append(tenantant_data)
+
+                # Note: This would require a bulk tenant creation endpoint
+                st.info("💡 Note: Bulk tenant creation endpoint not yet implemented. Use individual creation above.")
+
+        elif bulk_tenant_action == "Update Tenant Status":
+            st.info("💡 Feature for updating multiple tenant statuses simultaneously")
+
+    # Bulk Reports
+    with bulk_tabs[2]:
+        st.subheader("📊 Bulk Reports & Analytics")
+
+        report_type = st.selectbox("Report Type", [
+            "User Activity Summary",
+            "Site Utilization Report",
+            "Cost Centre Analysis",
+            "Entity Count Summary"
+        ])
+
+        if st.button("📊 Generate Report"):
+            st.info(f"💡 Generating {report_type}...")
+            # This would generate comprehensive reports
+
+# ===== Role Management =====
+with tabs[5]:
     st.header("🎭 Role Management")
     st.markdown("Create and manage roles for access control")
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         st.subheader("Create Role")
-        
+
         if st.button("🎲 Generate Role ID"):
             st.session_state.role_id_input = generate_uuid()
-        
+
         st.text_input("Role ID", key="role_id_input", value=st.session_state.role_id)
         st.text_input("Role Code", key="role_code", help="Unique code for the role")
         st.text_input("Role Name", key="role_name")
         st.text_area("Description", key="role_description")
-        
+
         if st.button("🎭 Create Role"):
             if st.session_state.role_code and st.session_state.role_name:
                 role_id = st.session_state.role_id_input or generate_uuid()
@@ -578,11 +731,11 @@ with tabs[4]:
                     "name": st.session_state.role_name,
                     "description": st.session_state.role_description
                 }
-                
+
                 status_code, response = api_call("PUT", url, payload)
                 show_response(status_code, response, "Create Role")
                 show_curl("Create Role", "PUT", url, payload)
-                
+
                 if status_code >= 200 and status_code < 300:
                     st.session_state.role_id = role_id
                     st.rerun()
@@ -591,17 +744,17 @@ with tabs[4]:
                     st.error("Please provide role code")
                 if not st.session_state.role_name:
                     st.error("Please provide role name")
-    
+
     with col2:
         st.subheader("List Roles")
-        
+
         if st.button("📋 Fetch Roles"):
             url = f"{PROVISIONING_BASE}/provisioning/roles"
             status_code, response = api_call("GET", url)
-            
+
             if status_code >= 200 and status_code < 300 and isinstance(response, list):
                 st.success(f"✅ Found {len(response)} roles")
-                
+
                 if response:
                     for role in response:
                         with st.expander(f"🎭 {role.get('name', 'Unknown')} - {role.get('code', 'No code')}", expanded=False):
@@ -612,24 +765,24 @@ with tabs[4]:
                 show_response(status_code, response, "List Roles")
 
 # ===== Vendor Management =====
-with tabs[5]:
+with tabs[6]:
     st.header("🏪 Vendor Management")
     st.markdown("Create and manage vendors within tenants")
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         st.subheader("Create Vendor")
-        
+
         if st.button("🎲 Generate Vendor ID"):
             st.session_state.vendor_id_input = generate_uuid()
-        
+
         st.text_input("Vendor ID", key="vendor_id_input", value=st.session_state.vendor_id)
         st.text_input("Vendor Name", key="vendor_name", help="Business name of the vendor")
         st.text_input("Contact Email", key="vendor_contact_email")
         st.text_area("Description", key="vendor_description", help="Brief description of vendor's business")
         st.text_input("Tenant ID", key="vendor_tenant_id", value=st.session_state.tenant_id, help="Tenant ID for vendor association")
-        
+
         if st.button("🏪 Create Vendor"):
             if st.session_state.vendor_name:
                 # Auto-generate tenant ID if not provided
@@ -646,27 +799,27 @@ with tabs[5]:
                         "description": st.session_state.vendor_description,
                         "tenant_id": tenant_id
                     }
-                    
+
                     status_code, response = api_call("PUT", url, payload)
                     show_response(status_code, response, "Create Vendor")
                     show_curl("Create Vendor", "PUT", url, payload)
-                    
+
                     if status_code >= 200 and status_code < 300:
                         st.session_state.vendor_id = vendor_id
                         st.rerun()
             else:
                 st.error("Please provide vendor name")
-    
+
     with col2:
         st.subheader("List Vendors")
-        
+
         if st.button("📋 Fetch Vendors"):
             url = f"{PROVISIONING_BASE}/provisioning/vendors"
             status_code, response = api_call("GET", url)
-            
+
             if status_code >= 200 and status_code < 300 and isinstance(response, list):
                 st.success(f"✅ Found {len(response)} vendors")
-                
+
                 if response:
                     for vendor in response:
                         with st.expander(f"🏪 {vendor.get('name', 'Unknown')}", expanded=False):
@@ -677,20 +830,20 @@ with tabs[5]:
                 show_response(status_code, response, "List Vendors")
 
 # ===== Cost Centre Management =====
-with tabs[6]:
+with tabs[7]:
     st.header("💰 Cost Centre Management")
     st.markdown("Create and manage cost centres for budget tracking")
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         st.subheader("Create Cost Centre")
-        
+
         st.text_input("Tenant ID", key="cost_centre_tenant_id", value=st.session_state.tenant_id, help="Tenant ID for this cost centre")
         st.text_input("Cost Centre Name", key="cost_centre_name")
-        st.number_input("Budget (pence)", key="cost_centre_budget_minor", min_value=0, value=100000, 
+        st.number_input("Budget (pence)", key="cost_centre_budget_minor", min_value=0, value=100000,
                        help="Budget in minor units (100000 = £1000)")
-        
+
         if st.button("💰 Create Cost Centre"):
             if st.session_state.cost_centre_name:
                 # Auto-generate tenant ID if not provided
@@ -705,32 +858,32 @@ with tabs[6]:
                         "name": st.session_state.cost_centre_name,
                         "budget_minor": st.session_state.cost_centre_budget_minor
                     }
-                    
+
                     status_code, response = api_call("POST", url, payload)
                     show_response(status_code, response, "Create Cost Centre")
                     show_curl("Create Cost Centre", "POST", url, payload)
-                    
+
                     if status_code >= 200 and status_code < 300:
                         st.rerun()
             else:
                 st.error("Please provide cost centre name")
-    
+
     with col2:
         st.subheader("List Cost Centres")
-        
+
         tenant_filter = st.text_input("Filter by Tenant ID", value=st.session_state.tenant_id, help="Leave empty to list all")
-        
+
         if st.button("📋 Fetch Cost Centres"):
             url = f"{PROVISIONING_BASE}/provisioning/cost-centres"
             params = {}
             if tenant_filter:
                 params["tenant_id"] = tenant_filter
-            
+
             status_code, response = api_call("GET", url, params=params)
-            
+
             if status_code >= 200 and status_code < 300 and isinstance(response, list):
                 st.success(f"✅ Found {len(response)} cost centres")
-                
+
                 if response:
                     for cc in response:
                         budget_gbp = cc.get('budget_minor', 0) / 100
@@ -743,7 +896,7 @@ with tabs[6]:
                 show_response(status_code, response, "List Cost Centres")
 
 # ===== Browse & Reports =====
-with tabs[7]:
+with tabs[8]:
     st.header("📊 Browse & Reports")
     st.markdown("Browse all entities and generate reports")
     

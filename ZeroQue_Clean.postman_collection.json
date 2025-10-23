@@ -1,0 +1,386 @@
+{
+  "info": {
+    "_postman_id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "ZeroQue Platform API",
+    "description": "Complete API Collection for ZeroQue Platform - 21 Services with 280+ Endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "x-api-key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{API_KEY}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "1. Provisioning Service (8000)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/metrics",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Tenant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Manufacturing Co {{$timestamp}}\",\n  \"company_name\": \"Manufacturing Solutions Ltd\",\n  \"industry\": \"manufacturing\",\n  \"admin_email\": \"admin{{$timestamp}}@company.com\",\n  \"admin_name\": \"Admin User\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/tenants",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "tenants"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.tenant_id) {",
+                  "        pm.environment.set('tenant_id', jsonData.tenant_id);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Tenants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8000/provisioning/tenants",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8000",
+              "path": [
+                "provisioning",
+                "tenants"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Catalog Service (8001)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vendor_id\": \"{{vendor_id}}\",\n  \"name\": \"Premium Notebook\",\n  \"sku\": \"NB-{{$timestamp}}\",\n  \"barcode\": \"8901234567890\",\n  \"base_price_minor\": 500,\n  \"currency\": \"GBP\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8001/products",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8001",
+              "path": [
+                "products"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Orders Service (8002)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"site_id\": \"{{site_id}}\",\n  \"store_id\": \"{{store_id}}\",\n  \"customer_id\": \"{{user_id}}\",\n  \"order_type\": \"retail\",\n  \"items\": [\n    {\n      \"product_id\": \"{{product_id}}\",\n      \"quantity\": 2,\n      \"unit_price_minor\": 500\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8002/orders",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8002",
+              "path": [
+                "orders"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Pricing Service (8006)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8006/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8006",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Approvals Service (8084)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8084/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8084",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Subscriptions Service (8212)",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}:8212/health",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "port": "8212",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "value": "zq_demo_key_for_testing",
+      "type": "string"
+    },
+    {
+      "key": "tenant_id",
+      "value": "550e8400-e29b-41d4-a716-446655440000",
+      "type": "string"
+    },
+    {
+      "key": "site_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "store_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "product_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vendor_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "order_id",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

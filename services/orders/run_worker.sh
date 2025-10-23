@@ -40,3 +40,6 @@ celery -A main.celery_app worker \
     --without-mingle \
     --without-heartbeat
 
+
+
+

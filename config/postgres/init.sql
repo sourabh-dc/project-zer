@@ -184,3 +184,6 @@ GRANT SELECT ON metrics.database_sizes TO zeroque_monitor;
 \echo 'Performance monitoring: enabled'
 
 
+
+
+
