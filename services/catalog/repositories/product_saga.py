@@ -39,8 +39,7 @@ class ProductSaga:
                 base_price_minor=req.base_price_minor,
                 currency=req.currency,
                 weight_grams=req.weight_grams,
-                dimensions_cm=req.dimensions_cm,
-                metadata=req.metadata
+                dimensions_cm=req.dimensions_cm
             )
             self.db.add(self.product)
             self.db.commit()

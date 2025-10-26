@@ -4,7 +4,6 @@
 import os
 import uuid
 import time
-import json
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 from contextlib import asynccontextmanager
@@ -26,11 +25,12 @@ from core.config import get_settings
 from .utils.pricing_logger import logger
 from .core.celery_config import celery_app
 from .utils.metrics import saga_total, saga_duration, pricing_operations_total, pricing_operation_duration
-from .repositories.db_config import engine, SessionLocal
-from .models import Base, PriceRuleV2, CalculatedPriceV2, OutboxEvent, AuditLog
+from .repositories.db_config import engine, SessionLocal, set_rls_context
+from .models import Base, PriceRuleV2, CalculatedPriceV2, PricebookV2, ProductV2
 from .schemas import PricebookRequest, PriceRuleRequest, PriceCalculationRequest, PriceCalculationResponse
 from .utils.user_auth import get_user_context
 from .repositories.pricing_saga import PricebookSaga
+from .repositories.database_ops import audit, store_outbox_event
 
 
 # Configuration
@@ -57,47 +57,6 @@ ORDERS_BASE = os.getenv("ORDERS_BASE", "http://localhost:8003")
 
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# Authentication is handled by the first get_user_context function above
-
-def store_outbox(db, event_type, tenant_id, entity_id, event_data):
-    """Store outbox event"""
-    event_id = f"evt_{uuid.uuid4().hex[:12]}"
-    outbox_event = OutboxEvent(
-        event_id=event_id,
-        event_type=event_type,
-        aggregate_id=tenant_id,
-        event_data=json.dumps(event_data),
-        status='pending'
-    )
-    db.add(outbox_event)
-    db.commit()
-    return event_id
-
-def audit(db, tenant_id, user_id, action, entity_type, entity_id, changes):
-    """Audit logging"""
-    try:
-        log_id = f"aud_{uuid.uuid4().hex[:12]}"
-        audit_log = AuditLog(
-            log_id=log_id,
-            aggregate_id=tenant_id,
-            user_id=user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            changes=json.dumps(changes) if changes else None
-        )
-        db.add(audit_log)
-        db.commit()
-    except Exception as e:
-        logger.warning("Audit failed", error=str(e))
-
-def set_rls_context(db, tenant_id: str):
-    """Set RLS context for database session"""
-    try:
-        db.execute(text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"), {"tenant_id": str(tenant_id)})
-    except Exception as e:
-        logger.warning(f"RLS context set failed: {e}")
 
 def check_permission(permission: str, user_context: Dict[str, Any]) -> bool:
     """Check if user has required permission"""
@@ -345,21 +304,20 @@ class PriceRuleSaga:
         start = time.time()
         try:
             # Validate pricebook exists and belongs to tenant
-            pricebook = self.db.query(Pricebook).filter(Pricebook.id == pricebook_id).first()
+            pricebook = self.db.query(PricebookV2).filter(PricebookV2.pricebook_id == pricebook_id).first()
             if not pricebook:
                 raise ValueError("Pricebook not found")
 
             # Check permissions
-            if not check_permission(uctx, "pricing.create"):
+            if not check_permission("pricing.create", uctx):
                 raise ValueError("Insufficient permissions")
 
             # Create price rule
-            self.rule = PriceRule(
-                id=rule_id,
+            self.rule = PriceRuleV2(
+                rule_id=rule_id,
                 pricebook_id=pricebook_id,
                 rule_type=req['rule_type'],
-                rule_value=req['rule_value'],
-                priority=req.get('priority', 0)
+                rule_value=req['rule_value']
             )
             self.db.add(self.rule)
             self.db.commit()
@@ -414,15 +372,15 @@ class PriceCalculationSaga:
         start = time.time()
         try:
             # Check permissions
-            if not check_permission(uctx, "pricing.calculate"):
+            if not check_permission("pricing.calculate", uctx):
                 raise ValueError("Insufficient permissions")
 
             # Get product and pricebook
-            product = self.db.query(Product).filter(Product.product_id == req['product_id']).first()
+            product = self.db.query(ProductV2).filter(ProductV2.product_id == req['product_id']).first()
             if not product:
                 raise ValueError("Product not found")
 
-            pricebook = self.db.query(Pricebook).filter(Pricebook.id == req['pricebook_id']).first()
+            pricebook = self.db.query(PricebookV2).filter(PricebookV2.pricebook_id == req['pricebook_id']).first()
             if not pricebook:
                 raise ValueError("Pricebook not found")
 
@@ -431,13 +389,13 @@ class PriceCalculationSaga:
             final_price = base_price  # Simplified calculation
 
             # Create price calculation record
-            self.calculation = CalculatedPrice(
-                id=calculation_id,
+            self.calculation = CalculatedPriceV2(
+                price_id=calculation_id,
                 tenant_id=tenant_id,
                 product_id=req['product_id'],
                 pricebook_id=req['pricebook_id'],
                 base_price_minor=base_price,
-                final_price_minor=final_price,
+                calculated_price_minor=final_price,
                 quantity=req['quantity'],
                 calculated_at=datetime.now(timezone.utc)
             )
@@ -707,11 +665,6 @@ def cleanup_old_pricing_data(self):
         raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
-# MAIN EXECUTION
-# =============================================================================
-
-
-# =============================================================================
 # CELERY WORKERS - Event Consumption
 # =============================================================================
 
@@ -729,20 +682,19 @@ def process_product_created(self, event_data: Dict[str, Any]):
 
         with SessionLocal() as db:
             # Create default pricebook for new product if none exists
-            existing_pricebook = db.query(Pricebook).filter(
-                Pricebook.tenant_id == tenant_id,
-                Pricebook.name == 'Default Pricebook'
+            existing_pricebook = db.query(PricebookV2).filter(
+                PricebookV2.tenant_id == tenant_id,
+                PricebookV2.name == 'Default Pricebook'
             ).first()
 
             if not existing_pricebook:
                 # Create default pricebook
                 pricebook_id = f"pb_{uuid.uuid4().hex[:12]}"
-                pricebook = Pricebook(
-                    id=pricebook_id,
+                pricebook = PricebookV2(
+                    pricebook_id=pricebook_id,
                     tenant_id=tenant_id,
                     name='Default Pricebook',
-                    currency='GBP',
-                    active=True
+                    currency='GBP'
                 )
                 db.add(pricebook)
                 db.commit()

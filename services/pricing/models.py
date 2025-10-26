@@ -61,6 +61,28 @@ class CalculatedPriceV2(Base):
     calculated_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
+class ProductV2(Base):
+    """Product entity for V2 architecture - Phase 3 Enhanced"""
+    __tablename__ = "products_v2"
+
+    product_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    sku = Column(String(100), nullable=False)
+    barcode = Column(String(100), nullable=True)  # Phase 3: Barcode for CV linkage
+    category_id = Column(UUID(as_uuid=True), nullable=True)
+    brand = Column(String(100), nullable=True)
+    base_price_minor = Column(Integer, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    weight_grams = Column(Integer, nullable=True)
+    dimensions_cm = Column(JSON, nullable=True)  # {"length": 10, "width": 5, "height": 3}
+    is_active = Column(Boolean, nullable=False, default=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 
 class OutboxEvent(Base):
     """Outbox pattern for event publishing"""
