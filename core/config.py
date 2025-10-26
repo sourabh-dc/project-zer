@@ -1,8 +1,8 @@
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 
-class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev"
+class Settings():
+    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/zeroque_dev"
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672//"
     REDIS_URL: str = "redis://localhost:6379/0"
     SUBSCRIPTIONS_SERVICE_URL: str = "http://localhost:8010"

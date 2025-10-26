@@ -4,8 +4,8 @@
 import os
 import uuid
 import time
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -20,16 +20,14 @@ import redis
 
 from core.config import get_settings
 from .utils.pricing_logger import logger
-from .core.celery_config import celery_app
 from .utils.metrics import pricing_operations_total, pricing_operation_duration
-from .repositories.db_config import engine, SessionLocal, set_rls_context, get_db_with_rls
-from .models import Base, PriceRuleV2, PricebookV2
+from .repositories.db_config import engine, SessionLocal, get_db_with_rls
+from .models import Base, PriceRuleV2
 from .schemas import PricebookRequest, PriceRuleRequest, PriceCalculationRequest, PriceCalculationResponse
 from .utils.user_auth import get_user_context
 from .repositories.pricing_saga import PricebookSaga
 from .repositories.database_ops import audit
 from .services.pricing_services import calculate_price
-
 
 # Configuration
 SERVICE_NAME = "pricing"
