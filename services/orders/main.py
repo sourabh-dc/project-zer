@@ -5,23 +5,17 @@ import os
 import uuid
 import time
 import json
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 from sqlalchemy import text
-from celery import Celery
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
-import pika
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
-import pybreaker
 
 from .utils.orders_logger import logger
 from core.config import get_settings
@@ -48,137 +42,6 @@ ENVIRONMENT = get_settings().ENVIRONMENT
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
-# Circuit breaker for external service calls
-service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# External service URLs
-PAYMENTS_BASE = os.getenv("PAYMENTS_BASE", "http://localhost:8005")
-BILLING_BASE = os.getenv("BILLING_BASE", "http://localhost:8002")
-PRICING_BASE = os.getenv("PRICING_BASE", "http://localhost:8007")
-INVENTORY_BASE = os.getenv("INVENTORY_BASE", "http://localhost:8008")
-
-# Circuit breaker for external services
-circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def call_external_service(url: str, method: str = "GET", data: Dict = None):
-    """Call external service with retry"""
-    with httpx.Client() as client:
-        if method == "GET":
-            response = client.get(url)
-        elif method == "POST":
-            response = client.post(url, json=data)
-        elif method == "PUT":
-            response = client.put(url, json=data)
-        else:
-            raise ValueError(f"Unsupported method: {method}")
-        
-        response.raise_for_status()
-        return response.json()
-
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3, name='orders.publish_outbox_events')
-def publish_outbox_events(self):
-    """Publish outbox events to RabbitMQ"""
-    try:
-        with SessionLocal() as db:
-            events = db.execute(text("SELECT * FROM outbox_events WHERE status = 'pending' LIMIT 100")).fetchall()
-            
-            for event in events:
-                try:
-                    # Publish to RabbitMQ
-                    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-                    channel = connection.channel()
-                    
-                    channel.basic_publish(
-                        exchange='orders_events',
-                        routing_key=event.event_type.lower(),
-                        body=event.event_data
-                    )
-                    
-                    # Update status
-                    db.execute(
-                        text("UPDATE outbox_events SET status = 'published', published_at = NOW() WHERE event_id = :id"),
-                        {"id": event.event_id}
-                    )
-                    db.commit()
-                    
-                    connection.close()
-                    
-                except Exception as e:
-                    logger.error("Failed to publish event", event_id=event.event_id, error=str(e))
-                    # Increment retry count
-                    db.execute(
-                        text("UPDATE outbox_events SET retry_count = retry_count + 1 WHERE event_id = :id"),
-                        {"id": event.event_id}
-                    )
-                    db.commit()
-                    
-    except Exception as e:
-        logger.error("Outbox publishing failed", error=str(e))
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_order_fulfillment(self, order_id: str):
-    """Process order fulfillment"""
-    try:
-        with SessionLocal() as db:
-            order = db.execute(text("SELECT * FROM orders_v2 WHERE order_id = :id"), {"id": order_id}).fetchone()
-            if not order:
-                raise ValueError("Order not found")
-            
-            # Call inventory service
-            inventory_response = call_external_service(f"{INVENTORY_BASE}/inventory/reserve", "POST", {
-                "order_id": order_id,
-                "items": []  # TODO: Get order items
-            })
-            
-            # Update order status
-            db.execute(
-                text("UPDATE orders_v2 SET fulfillment_status = 'fulfilled' WHERE order_id = :id"),
-                {"id": order_id}
-            )
-            db.commit()
-            
-            logger.info("Order fulfillment processed", order_id=order_id)
-            
-    except Exception as e:
-        logger.error("Order fulfillment failed", order_id=order_id, error=str(e))
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_orders(self):
-    """Cleanup old orders"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
-            result = db.execute(
-                text("DELETE FROM orders_v2 WHERE created_at < :cutoff"),
-                {"cutoff": cutoff_date}
-            )
-            db.commit()
-            logger.info("Cleaned up old orders", count=result.rowcount)
-    except Exception as e:
-        logger.error("Order cleanup failed", error=str(e))
-        raise self.retry(exc=e, countdown=60)
 
 # =============================================================================
 # FASTAPI APPLICATION
@@ -377,97 +240,6 @@ async def cancel_order(
     except Exception as e:
         logger.error("Failed to cancel order", order_id=order_id, error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
-
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_order_fulfillment(self, order_id: str, fulfillment_data: Dict[str, Any]):
-    """Process order fulfillment asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Get order
-            order = db.execute(text("""
-                SELECT * FROM orders_v2 WHERE order_id = :id
-            """), {"id": order_id}).fetchone()
-            
-            if not order:
-                raise ValueError(f"Order {order_id} not found")
-            
-            # Process fulfillment logic here
-            logger.info(f"Processing order fulfillment for order {order_id}")
-            
-            # Update status
-            db.execute(text("""
-                UPDATE orders_v2 
-                SET fulfillment_status = 'fulfilled', updated_at = NOW()
-                WHERE order_id = :id
-            """), {"id": order_id})
-            
-            db.commit()
-            
-            # Update metrics
-            orders_operations_total.labels(operation="fulfillment", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process order fulfillment for order {order_id}: {e}")
-        orders_operations_total.labels(operation="fulfillment", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_order_cancellation(self, order_id: str, cancellation_reason: str):
-    """Process order cancellation asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Get order
-            order = db.execute(text("""
-                SELECT * FROM orders_v2 WHERE order_id = :id
-            """), {"id": order_id}).fetchone()
-            
-            if not order:
-                raise ValueError(f"Order {order_id} not found")
-            
-            # Process cancellation logic here
-            logger.info(f"Processing order cancellation for order {order_id}, reason: {cancellation_reason}")
-            
-            # Update status
-            db.execute(text("""
-                UPDATE orders_v2 
-                SET order_status = 'cancelled', updated_at = NOW()
-                WHERE order_id = :id
-            """), {"id": order_id})
-            
-            db.commit()
-            
-            # Update metrics
-            orders_operations_total.labels(operation="cancellation", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process order cancellation for order {order_id}: {e}")
-        orders_operations_total.labels(operation="cancellation", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_orders(self):
-    """Clean up old orders"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
-            
-            # Clean up old completed orders
-            order_result = db.execute(text("""
-                DELETE FROM orders_v2 
-                WHERE created_at < :cutoff_date AND order_status IN ('completed', 'cancelled')
-            """), {"cutoff_date": cutoff_date})
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {order_result.rowcount} old orders")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup old orders: {e}")
-        raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
 # MAIN EXECUTION
