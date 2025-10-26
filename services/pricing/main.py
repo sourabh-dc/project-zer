@@ -2,32 +2,25 @@
 # Production-ready pricing service with Celery, RabbitMQ, and saga patterns
 
 import os
-import uuid
-import time
 from datetime import datetime, timezone
 from typing import Dict
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
-from sqlalchemy import  text
-
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
+from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from .utils.pricing_logger import logger
-from .utils.metrics import pricing_operations_total, pricing_operation_duration
-from .repositories.db_config import engine, SessionLocal, get_db_with_rls
-from .models import Base, PriceRuleV2
-from .schemas import PricebookRequest, PriceRuleRequest, PriceCalculationRequest, PriceCalculationResponse
+from .repositories.db_config import  get_db_with_rls
+from .schemas import PricebookRequest, PriceRuleRequest, PriceCalculationRequest
 from .utils.user_auth import get_user_context
-from .repositories.pricing_saga import PricebookSaga
-from .repositories.database_ops import audit
-from .services.pricing_services import calculate_price
+from .services.pricing_services import create_pricebook, get_pricebooks, create_price_rule, \
+    calculate_price_service
 
 # Configuration
 SERVICE_NAME = "pricing"
@@ -63,13 +56,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan"""
     # Startup
     logger.info("Starting pricing service", version=SERVICE_VERSION)
-    
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables initialized")
-    
     yield
-    
     # Shutdown
     logger.info("Shutting down pricing service")
 
@@ -98,6 +85,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    logger.info("Checking Health of Pricing....")
     return {
         "status": "healthy",
         "service": SERVICE_NAME,
@@ -111,143 +99,41 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/pricebooks")
-async def create_pricebook(
+async def create_pricebook_route(
     req: PricebookRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
+    db: Session= Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
 ):
     """Create a new pricebook"""
-    start = time.time()
-    try:
-        pricing_operations_total.labels(operation="create_pricebook", status="start").inc()
-        
-        pricebook_id = uuid.uuid4()
-        tenant_id = uctx["tenant_id"]
-        
-        saga = PricebookSaga(db)
-        result = await saga.exec(pricebook_id, tenant_id, req, uctx)
-        
-        pricing_operations_total.labels(operation="create_pricebook", status="ok").inc()
-        pricing_operation_duration.labels(operation="create_pricebook").observe(time.time() - start)
-        
-        return result
-        
-    except ValueError as e:
-        pricing_operations_total.labels(operation="create_pricebook", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        pricing_operations_total.labels(operation="create_pricebook", status="fail").inc()
-        logger.error("Pricebook creation failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await create_pricebook(req, db, uctx)
 
 @app.get("/pricebooks")
 async def list_pricebooks(
     tenant_id: str = Query(...),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
-    db: SessionLocal = Depends(get_db_with_rls)
+    db: Session = Depends(get_db_with_rls)
 ):
     """List pricebooks for a tenant"""
-    try:
-        pricebooks = db.execute(
-            text("SELECT * FROM pricebooks_v2 WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT :limit OFFSET :offset"),
-            {"tenant_id": tenant_id, "limit": limit, "offset": offset}
-        ).fetchall()
-        
-        return [dict(pricebook._mapping) for pricebook in pricebooks]
-        
-    except Exception as e:
-        logger.error("Failed to list pricebooks", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_pricebooks(tenant_id, limit, offset, db)
 
 @app.post("/pricebooks/{pricebook_id}/rules")
-async def create_price_rule(
+async def create_price_rule_route(
     pricebook_id: str,
     req: PriceRuleRequest,
-    db: SessionLocal = Depends(get_db_with_rls),
+    db: Session = Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
 ):
     """Create a price rule"""
-    try:
-        rule_id = uuid.uuid4()
-        rule = PriceRuleV2(
-            rule_id=rule_id,
-            pricebook_id=pricebook_id,
-            product_id=req.product_id,
-            variant_id=req.variant_id,
-            rule_type=req.rule_type,
-            rule_value=req.rule_value,
-            min_quantity=req.min_quantity,
-            max_quantity=req.max_quantity,
-            valid_from=req.valid_from,
-            valid_until=req.valid_until
-        )
-        db.add(rule)
-        db.commit()
-        
-        # Audit log
-        audit(db, uctx["tenant_id"], uctx["user_id"], "CREATE", "price_rule", str(rule_id), req.dict())
-        
-        return {"rule_id": str(rule_id), "created": True}
-        
-    except Exception as e:
-        logger.error("Failed to create price rule", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await create_price_rule(pricebook_id, req, db, uctx)
 
 @app.post("/calculate")
 async def calculate_price_endpoint(
     req: PriceCalculationRequest,
-    db: SessionLocal = Depends(get_db_with_rls)
+    db: Session = Depends(get_db_with_rls)
 ):
     """Calculate price for a product"""
-    try:
-        # Check cache first
-        cached = db.execute(text("""
-            SELECT * FROM calculated_prices_v2 
-            WHERE product_id = :product_id 
-            AND (variant_id = :variant_id OR variant_id IS NULL)
-            AND pricebook_id = :pricebook_id 
-            AND quantity = :quantity
-            AND expires_at > NOW()
-            ORDER BY calculated_at DESC LIMIT 1
-        """), {
-            "product_id": req.product_id,
-            "variant_id": req.variant_id,
-            "pricebook_id": req.pricebook_id,
-            "quantity": req.quantity
-        }).fetchone()
-        
-        if cached:
-            return PriceCalculationResponse(
-                product_id=req.product_id,
-                variant_id=req.variant_id,
-                pricebook_id=req.pricebook_id,
-                quantity=req.quantity,
-                base_price_minor=req.base_price_minor,
-                calculated_price_minor=cached.calculated_price_minor,
-                currency="GBP",
-                applied_rules=[]
-            )
-        
-        # Calculate price
-        calculated_price, applied_rules = calculate_price(
-            db, req.product_id, req.variant_id, req.pricebook_id, req.quantity, req.base_price_minor
-        )
-        
-        return PriceCalculationResponse(
-            product_id=req.product_id,
-            variant_id=req.variant_id,
-            pricebook_id=req.pricebook_id,
-            quantity=req.quantity,
-            base_price_minor=req.base_price_minor,
-            calculated_price_minor=calculated_price,
-            currency="GBP",
-            applied_rules=applied_rules
-        )
-        
-    except Exception as e:
-        logger.error("Price calculation failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await calculate_price_service(req, db)
 
 
 if __name__ == "__main__":
