@@ -5,388 +5,58 @@ import os
 import uuid
 import time
 import json
-import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
-from celery import Celery
-import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+from sqlalchemy import  text
+
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
-    """Get user context from JWT or API key"""
-    # Try API key first (simplified for demo)
-    if x_api_key:
-        allow_demo = os.getenv("ALLOW_DEMO", "false").lower() == "true"
-        if allow_demo or x_api_key.startswith('zq_'):
-            return {
-                "user_id": "550e8400-e29b-41d4-a716-446655440004",  # Valid UUID
-                "tenant_id": "550e8400-e29b-41d4-a716-446655440000",  # Valid UUID
-                "permissions": ["payments.create", "payments.refund", "payments.adjust", "pricing.create", "pricing.calculate"]
-            }
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    # Try JWT
-    if authorization and "Bearer " in authorization:
-        try:
-            token = authorization.replace("Bearer ", "")
-            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return claims
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
-    
-    # Demo mode (dev only)
-    allow_demo_mode = os.getenv("ALLOW_DEMO", "false").lower() == "true"
-    if allow_demo_mode:
-        logger.warning("Using demo mode - not for production!")
-        return {"tenant_id": "550e8400-e29b-41d4-a716-446655440000", "user_id": "550e8400-e29b-41d4-a716-446655440004", "permissions": ["*"]}
-    
-    raise HTTPException(status_code=401, detail="Authentication required")
+from core.config import get_settings
+from .utils.pricing_logger import logger
+from .core.celery_config import celery_app
+from .utils.metrics import saga_total, saga_duration, pricing_operations_total, pricing_operation_duration
+from .repositories.db_config import engine, SessionLocal
+from .models import Base, PriceRuleV2, CalculatedPriceV2, OutboxEvent, AuditLog
+from .schemas import PricebookRequest, PriceRuleRequest, PriceCalculationRequest, PriceCalculationResponse
+from .utils.user_auth import get_user_context
+from .repositories.pricing_saga import PricebookSaga
 
-import pybreaker
 
-# =============================================================================
-# CONFIGURATION & LOGGING
-# =============================================================================
-
-class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev"
-    REDIS_URL: str = "redis://localhost:6379/0"
-    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672//"
-    ENVIRONMENT: str = "development"
-    SERVICE_PORT: int = 8226
-    ALLOW_DEMO: bool = False
-
-    class Config:
-        env_file = ".env"
-
-SETTINGS = Settings()
-
+# Configuration
 SERVICE_NAME = "pricing"
 SERVICE_VERSION = "4.1.0"
 
-# Configuration
-DATABASE_URL = SETTINGS.DATABASE_URL
-REDIS_URL = SETTINGS.REDIS_URL
-RABBITMQ_URL = SETTINGS.RABBITMQ_URL
-ENVIRONMENT = SETTINGS.ENVIRONMENT
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
+import pybreaker
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
-
-# Prometheus metrics - clear registry to avoid duplicates
-from prometheus_client import REGISTRY
-try:
-    REGISTRY._collector_to_names.clear()
-    REGISTRY._names_to_collectors.clear()
-except:
-    pass
-
-pricing_operations_total = Counter('pricing_operations_total', 'Total pricing operations', ['operation', 'status'])
-pricing_operation_duration = Histogram('pricing_operation_duration_seconds', 'Pricing operation duration', ['operation'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
 
 # External service URLs
 CATALOG_BASE = os.getenv("CATALOG_BASE", "http://localhost:8008")
 ORDERS_BASE = os.getenv("ORDERS_BASE", "http://localhost:8003")
 
-# Logging configuration
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
-
-# Note: Prometheus metrics are defined earlier in the file after clearing the registry
-
 # Circuit breaker for external services
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# =============================================================================
-# MODELS (SQLAlchemy)
-# =============================================================================
-
-class PricebookV2(Base):
-    """Pricebook entity for V2 architecture"""
-    __tablename__ = "pricebooks_v2"
-    
-    pricebook_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    name = Column(String(100), nullable=False)
-    description = Column(Text, nullable=True)
-    currency = Column(String(3), nullable=False, default='GBP')
-    is_active = Column(Boolean, nullable=False, default=True)
-    custom_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class PriceRuleV2(Base):
-    """Price rule entity"""
-    __tablename__ = "price_rules_v2"
-    
-    rule_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    pricebook_id = Column(UUID(as_uuid=True), ForeignKey('pricebooks_v2.pricebook_id'), nullable=False)
-    product_id = Column(UUID(as_uuid=True), nullable=True)
-    variant_id = Column(UUID(as_uuid=True), nullable=True)
-    rule_type = Column(String(20), nullable=False)  # fixed, percentage, formula
-    rule_value = Column(Numeric(10, 2), nullable=False)
-    min_quantity = Column(Integer, nullable=True)
-    max_quantity = Column(Integer, nullable=True)
-    valid_from = Column(DateTime(timezone=True), nullable=True)
-    valid_until = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    custom_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class CalculatedPriceV2(Base):
-    """Calculated price cache"""
-    __tablename__ = "calculated_prices_v2"
-    
-    price_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    product_id = Column(UUID(as_uuid=True), nullable=False)
-    variant_id = Column(UUID(as_uuid=True), nullable=True)
-    pricebook_id = Column(UUID(as_uuid=True), nullable=False)
-    base_price_minor = Column(Integer, nullable=False)
-    calculated_price_minor = Column(Integer, nullable=False)
-    currency = Column(String(3), nullable=False)
-    quantity = Column(Integer, nullable=False, default=1)
-    calculated_at = Column(DateTime(timezone=True), server_default=func.now())
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-
-class OutboxEvent(Base):
-    """Outbox pattern for event publishing"""
-    __tablename__ = "outbox_events"
-    
-    event_id = Column(String(50), primary_key=True)
-    event_type = Column(String(50), nullable=False)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class AuditLog(Base):
-    """Audit logging"""
-    __tablename__ = "audit_logs"
-    
-    log_id = Column(String(50), primary_key=True)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(String(50), nullable=False)
-    action = Column(String(20), nullable=False)
-    entity_type = Column(String(50), nullable=False)
-    entity_id = Column(UUID(as_uuid=True), nullable=False)
-    changes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class PricebookRequest(BaseModel):
-    """Pricebook creation request"""
-    name: str
-    description: Optional[str] = None
-    currency: str = "GBP"
-    metadata: Optional[Dict[str, Any]] = None
-
-class PriceRuleRequest(BaseModel):
-    """Price rule creation request"""
-    pricebook_id: str
-    product_id: Optional[str] = None
-    variant_id: Optional[str] = None
-    rule_type: str  # fixed, percentage, formula
-    rule_value: float
-    min_quantity: Optional[int] = None
-    max_quantity: Optional[int] = None
-    valid_from: Optional[datetime] = None
-    valid_until: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-class PriceCalculationRequest(BaseModel):
-    """Price calculation request"""
-    product_id: str
-    variant_id: Optional[str] = None
-    pricebook_id: str
-    quantity: int = 1
-    base_price_minor: int
-
-class PriceCalculationResponse(BaseModel):
-    """Price calculation response"""
-    product_id: str
-    variant_id: Optional[str] = None
-    pricebook_id: str
-    quantity: int
-    base_price_minor: int
-    calculated_price_minor: int
-    currency: str
-    applied_rules: List[Dict[str, Any]] = []
-
-# =============================================================================
-# SAGA PATTERN IMPLEMENTATION
-# =============================================================================
-
-class PricebookSaga:
-    """Saga for pricebook creation with compensation"""
-    
-    def __init__(self, db):
-        self.db = db
-        self.pricebook = None
-        self.eid = None
-    
-    async def exec(self, pricebook_id, tenant_id, req, uctx):
-        """Execute pricebook creation saga"""
-        start = time.time()
-        try:
-            # Create pricebook
-            self.pricebook = PricebookV2(
-                pricebook_id=pricebook_id,
-                tenant_id=tenant_id,
-                name=req.name,
-                description=req.description,
-                currency=req.currency,
-                metadata=req.metadata
-            )
-            self.db.add(self.pricebook)
-            self.db.commit()
-            self.db.refresh(self.pricebook)
-            
-            # Store outbox event (DISABLED - fix core functionality first)
-            # self.eid = store_outbox(self.db, "PRICEBOOK_CREATED", str(tenant_id), str(pricebook_id), {
-            #     "pricebook_id": str(pricebook_id),
-            #     "name": req.name,
-            #     "currency": req.currency
-            # })
-            
-            # Publish event
-            # publish_outbox_events.delay()
-            
-            # Audit log (DISABLED - fix core functionality first)
-            # audit(self.db, str(tenant_id), uctx["user_id"], "CREATE", "pricebook", str(pricebook_id), {
-            #     "name": req.name,
-            #     "currency": req.currency
-            # })
-            
-            saga_total.labels(type="pricebook", status="ok").inc()
-            saga_duration.labels(type="pricebook").observe(time.time() - start)
-            
-            return {
-                "pricebook_id": str(pricebook_id),
-                "name": req.name,
-                "currency": req.currency,
-                "created": True
-            }
-            
-        except Exception as e:
-            await self.comp()
-            saga_total.labels(type="pricebook", status="fail").inc()
-            raise
-    
-    async def comp(self):
-        """Compensation logic"""
-        try:
-            if self.eid:
-                self.db.execute(text("DELETE FROM outbox_events WHERE event_id = :id"), {"id": self.eid})
-                self.db.commit()
-            
-            if self.pricebook:
-                self.db.delete(self.pricebook)
-                self.db.commit()
-                
-        except Exception as e:
-            logger.error("Compensation failed", error=str(e))
-            self.db.rollback()
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def get_db():
-    """Database dependency"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # Authentication is handled by the first get_user_context function above
 
@@ -442,14 +112,14 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
         # Skip RLS in demo mode to avoid transaction issues
         allow_demo_mode = os.getenv("ALLOW_DEMO", "false").lower() == "true"
         if not allow_demo_mode:
-            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
+            set_rls_context(db, uctx["tenant_id"])
         yield db
     finally:
         db.close()
 
     """Best-effort RLS context setter. Tenant-aware DBs may ignore this."""
     try:
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
+        db.execute(text("SET app.current_tenant = :tid"), {"tid": uctx["tenant_id"]})
     except Exception:
         try:
             db.rollback()
