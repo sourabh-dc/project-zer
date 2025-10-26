@@ -2,30 +2,24 @@
 # Production-ready orders service with Celery, RabbitMQ, and saga patterns
 
 import os
-import uuid
-import time
-import json
 from datetime import datetime, timezone
 from typing import Dict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
-from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
+from sqlalchemy.orm import Session
 
+from services.orders.services.order_services import create_order, get_orders, get_order, update_order, cancel_order
 from .utils.orders_logger import logger
 from core.config import get_settings
-from .repositories.db_config import SessionLocal
-from .utils.metrics import *
 from .schemas import OrderRequest, OrderUpdateRequest
-from .repositories.order_saga import OrderSaga
 from .repositories.db_config import get_db
 from .utils.user_auth import get_user_context
-from .repositories.database_ops import audit
 
 # =============================================================================
 # CONFIGURATION
@@ -95,151 +89,45 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/orders")
-async def create_order(
+async def create_order_route(
     req: OrderRequest,
-    db: SessionLocal = Depends(get_db),
+    db: Session = Depends(get_db),
     uctx: Dict = Depends(get_user_context)
 ):
-    """Create a new order"""
-    start = time.time()
-    try:
-        orders_requests_total.labels(endpoint="create_order", status="start").inc()
-        
-        order_id = uuid.uuid4()
-        tenant_id = uctx["tenant_id"]
-        
-        saga = OrderSaga(db)
-        result = await saga.exec(order_id, tenant_id, req, uctx)
-        
-        orders_requests_total.labels(endpoint="create_order", status="ok").inc()
-        orders_request_duration.labels(endpoint="create_order").observe(time.time() - start)
-        
-        return result
-        
-    except ValueError as e:
-        orders_requests_total.labels(endpoint="create_order", status="fail").inc()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        orders_requests_total.labels(endpoint="create_order", status="fail").inc()
-        logger.error("Order creation failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await create_order(req, db=db, uctx=uctx)
 
 @app.get("/orders")
 async def list_orders(
     tenant_id: str = Query(...),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
-    db: SessionLocal = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
     """List orders for a tenant"""
-    try:
-        orders = db.execute(
-            text("SELECT * FROM orders_v2 WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT :limit OFFSET :offset"),
-            {"tenant_id": tenant_id, "limit": limit, "offset": offset}
-        ).fetchall()
-        
-        return [dict(order._mapping) for order in orders]
-        
-    except Exception as e:
-        logger.error("Failed to list orders", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_orders(tenant_id, limit, offset, db=db)
 
 @app.get("/orders/{order_id}")
-async def get_order(
+async def get_order_route(
     order_id: str,
-    db: SessionLocal = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
     """Get order by ID"""
-    try:
-        order = db.execute(
-            text("SELECT * FROM orders_v2 WHERE order_id = :id"),
-            {"id": order_id}
-        ).fetchone()
-        
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-        
-        return dict(order._mapping)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get order", order_id=order_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_order(order_id, db=db)
 
 @app.put("/orders/{order_id}")
-async def update_order(
-    order_id: str,
-    req: OrderUpdateRequest,
-    db: SessionLocal = Depends(get_db),
-    uctx: Dict = Depends(get_user_context)
+async def update_order_route(order_id: str, req: OrderUpdateRequest, db: Session = Depends(get_db), uctx: Dict = Depends(get_user_context)
 ):
     """Update order"""
-    try:
-        # Build update query
-        updates = []
-        params = {"id": order_id}
-        
-        if req.order_status:
-            updates.append("order_status = :order_status")
-            params["order_status"] = req.order_status
-        
-        if req.payment_status:
-            updates.append("payment_status = :payment_status")
-            params["payment_status"] = req.payment_status
-        
-        if req.fulfillment_status:
-            updates.append("fulfillment_status = :fulfillment_status")
-            params["fulfillment_status"] = req.fulfillment_status
-        
-        if req.metadata:
-            updates.append("metadata = :metadata")
-            params["metadata"] = json.dumps(req.metadata)
-        
-        if not updates:
-            raise HTTPException(status_code=400, detail="No updates provided")
-        
-        updates.append("updated_at = NOW()")
-        
-        db.execute(
-            text(f"UPDATE orders_v2 SET {', '.join(updates)} WHERE order_id = :id"),
-            params
-        )
-        db.commit()
-        
-        # Audit log
-        audit(db, uctx["tenant_id"], uctx["user_id"], "UPDATE", "order", order_id, req.dict())
-        
-        return {"order_id": order_id, "updated": True}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to update order", order_id=order_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await update_order(order_id, req, db, uctx)
 
 @app.delete("/orders/{order_id}")
-async def cancel_order(
+async def cancel_order_route(
     order_id: str,
-    db: SessionLocal = Depends(get_db),
+    db: Session = Depends(get_db),
     uctx: Dict = Depends(get_user_context)
 ):
     """Cancel order"""
-    try:
-        db.execute(
-            text("UPDATE orders_v2 SET order_status = 'cancelled', updated_at = NOW() WHERE order_id = :id"),
-            {"id": order_id}
-        )
-        db.commit()
-        
-        # Audit log
-        audit(db, uctx["tenant_id"], uctx["user_id"], "CANCEL", "order", order_id, {})
-        
-        return {"order_id": order_id, "cancelled": True}
-        
-    except Exception as e:
-        logger.error("Failed to cancel order", order_id=order_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await cancel_order(order_id, db=db, uctx=uctx)
 
 # =============================================================================
 # MAIN EXECUTION

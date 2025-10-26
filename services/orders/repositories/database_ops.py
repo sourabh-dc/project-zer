@@ -1,6 +1,7 @@
 import json
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from services.orders.models import AuditLog
@@ -40,3 +41,62 @@ def audit(db, tenant_id, user_id, action, entity_type, entity_id, changes):
         db.commit()
     except Exception as e:
         logger.warning("Audit failed", error=str(e))
+
+def get_orders_from_db(db, tenant_id: str, limit: int = 50, offset: int = 0):
+    orders = db.execute(
+        text(
+            "SELECT * FROM orders_v2 WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT :limit OFFSET :offset"),
+        {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    ).fetchall()
+
+    return [dict(order._mapping) for order in orders]
+
+def get_order_by_id(db, order_id: str):
+    order = db.execute(
+        text("SELECT * FROM orders_v2 WHERE order_id = :id"),
+        {"id": order_id}
+    ).fetchone()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return dict(order._mapping)
+
+def update_order_db(req, order_id: str, db):
+    # Build update query
+    updates = []
+    params = {"id": order_id}
+
+    if req.order_status:
+        updates.append("order_status = :order_status")
+        params["order_status"] = req.order_status
+
+    if req.payment_status:
+        updates.append("payment_status = :payment_status")
+        params["payment_status"] = req.payment_status
+
+    if req.fulfillment_status:
+        updates.append("fulfillment_status = :fulfillment_status")
+        params["fulfillment_status"] = req.fulfillment_status
+
+    if req.metadata:
+        updates.append("metadata = :metadata")
+        params["metadata"] = json.dumps(req.metadata)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+
+    updates.append("updated_at = NOW()")
+
+    db.execute(
+        text(f"UPDATE orders_v2 SET {', '.join(updates)} WHERE order_id = :id"),
+        params
+    )
+    db.commit()
+
+def cancel_order_db(order_id: str, db):
+    db.execute(
+        text("UPDATE orders_v2 SET order_status = 'cancelled', updated_at = NOW() WHERE order_id = :id"),
+        {"id": order_id}
+    )
+    db.commit()
