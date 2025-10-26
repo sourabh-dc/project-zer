@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import jwt
 from fastapi import HTTPException, Header
@@ -43,3 +43,8 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
                 "permissions": ["*"]}
 
     raise HTTPException(status_code=401, detail="Authentication required")
+
+def check_permission(permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check if user has required permission"""
+    permissions = user_context.get("permissions", [])
+    return "*" in permissions or permission in permissions
