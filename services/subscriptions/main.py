@@ -1,74 +1,39 @@
 # services/subscriptions/main.py - ZeroQue Subscriptions Service v4.1 (Production-Ready)
 import os
-import uuid
-import json
-import logging
+
 import time
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header
+from fastapi import FastAPI, HTTPException, Depends, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
 
-# Request Models
-class CreatePlanRequest(BaseModel):
-    code: str
-    name: str
-    description: Optional[str] = None
-    price_yearly_minor: int
-    currency: str = "GBP"
-
-class CreateSubscriptionRequest(BaseModel):
-    tenant_id: str
-    plan_code: str
-    billing_cycle: str = "yearly"
-    auto_renew: bool = True
-from sqlalchemy import create_engine, text, Column, String, Integer, BigInteger, Boolean, DateTime, func, JSON, Text, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID as SQLUUID
-from sqlalchemy.orm import Session, sessionmaker, declarative_base
+from sqlalchemy import  text
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-import pika
+
 from celery import Celery
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response
-import httpx
-from tenacity import retry, stop_after_attempt, wait_fixed
+
 import pybreaker
-import jwt
+
 import redis
-import structlog
+
+from .utils.subsciptions_logger import logger
+from .models import PlanFeature, SubscriptionPlan, TenantSubscription, Feature, OutboxEvent, AuditLog
+from .schemas import CreatePlanRequest, CreateSubscriptionRequest, TenantSubscriptionPayload
+from .utils.metrics import saga_total, saga_duration
+from .utils.rabbitmq import publish_to_rabbitmq
+from .utils.user_auth import get_user_context, check_permission
+from .repositories.db_config import SessionLocal, set_rls_context
 
 # Config
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
-JWT_ALGORITHM = "HS256"
 SERVICE_NAME = "subscriptions"
 SERVICE_VERSION = "4.1.0"
 SUBSCRIPTION_CLEANUP_DAYS = 365
 RATE_LIMIT_REQUESTS_PER_MINUTE = 60
-
-# Logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer()
-    ],
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
-logger = structlog.get_logger(SERVICE_NAME)
-
-# DB
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Redis
 redis_client = None
@@ -77,197 +42,9 @@ redis_client = None
 celery_app = Celery(SERVICE_NAME, broker=RABBITMQ_URL, backend=REDIS_URL)
 celery_app.conf.update(task_serializer='json', accept_content=['json'], timezone='UTC', enable_utc=True)
 
-# Metrics
-sub_requests_total = Counter('sub_requests_total', 'Requests', ['endpoint', 'status'])
-sub_request_duration = Histogram('sub_request_duration_seconds', 'Duration', ['endpoint'])
-saga_total = Counter('sub_saga_total', 'Sagas', ['type', 'status'])
-saga_duration = Histogram('sub_saga_duration_seconds', 'Saga duration', ['type'])
 
 # Circuit Breaker
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
-
-# Models
-class SubscriptionPlan(Base):
-    __tablename__ = "subscription_plans"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=True)
-    name = Column(String(100), nullable=True)
-    description = Column(Text, nullable=True)
-    price_yearly_minor = Column(BigInteger, nullable=True)
-    currency = Column(String(3), nullable=True)
-    active = Column(Boolean, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-class Feature(Base):
-    __tablename__ = "features"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code = Column(String(50), unique=True, index=True, nullable=False)
-    name = Column(String(100), nullable=False)
-    description = Column(Text, nullable=True)
-    category = Column(String(50), nullable=True)
-    active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class PlanFeature(Base):
-    __tablename__ = "plan_features"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
-    feature_code = Column(String(50), ForeignKey("features.code"), nullable=False)
-    enabled = Column(Boolean, default=True, nullable=False)
-    limits = Column(JSON, nullable=True)  # e.g., {"rate_limit": 1000} or {"tier": "basic"}
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class TenantSubscription(Base):
-    __tablename__ = "tenant_subscriptions"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    tenant_id = Column(String(100), unique=True, index=True, nullable=True)
-    plan_code = Column(String(50), nullable=True)
-    payment_method = Column(String(20), nullable=True)
-    status = Column(String(50), nullable=True)
-    external_id = Column(String(100), index=True, nullable=True)
-    current_period_start = Column(DateTime(timezone=True), nullable=True)
-    current_period_end = Column(DateTime(timezone=True), nullable=True)
-    trial_end = Column(DateTime(timezone=True), nullable=True)
-    canceled_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-class SiteBillingAccount(Base):
-    __tablename__ = "site_billing_accounts"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), index=True, nullable=False)
-    site_id = Column(SQLUUID(as_uuid=True), index=True, nullable=False)
-    payment_method = Column(String(20), nullable=False)
-    external_id = Column(String(100), index=True, nullable=False)
-    active = Column(Boolean, default=True, nullable=False)
-    account_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class OutboxEvent(Base):
-    __tablename__ = "outbox_events"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    event_type = Column(String(100), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False, index=True)
-    aggregate_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    event_data = Column(JSON, nullable=False)
-    status = Column(String(50), default="pending", nullable=False)
-    retry_count = Column(Integer, default=0, nullable=False)
-    max_retries = Column(Integer, default=3, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False, index=True)
-    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(50), nullable=False)
-    resource_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    details = Column(JSON, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-# Pydantic Models
-class TenantSubscriptionPayload(BaseModel):
-    plan_code: str = Field(..., description="Subscription plan code")
-    payment_method: str = Field(..., description="Payment method: stripe, trade")
-    external_id: Optional[str] = Field(None, description="External subscription ID")
-    current_period_start: Optional[datetime] = Field(None)
-    current_period_end: Optional[datetime] = Field(None)
-    trial_end: Optional[datetime] = Field(None)
-
-class CreateBillingAccountPayload(BaseModel):
-    site_id: str = Field(..., description="Site ID")
-    payment_method: str = Field(..., description="Payment method: stripe, trade")
-    external_id: str = Field(..., description="External billing account ID")
-    metadata: Optional[Dict[str, Any]] = Field(None)
-
-# Security
-security = HTTPBearer(auto_error=False)  # Don't auto-raise 403, let us handle it
-
-def check_permission(user_context: Any, permission: str) -> bool:
-    """Check if user has required permission"""
-    if not user_context:
-        return False
-    # Handle case where user_context might be a string or non-dict
-    if not isinstance(user_context, dict):
-        return False
-    permissions = user_context.get("permissions", [])
-    return "*" in permissions or permission in permissions
-
-def set_rls_context(db, tenant_id: str):
-    """Set RLS context for database session"""
-    try:
-        db.execute(text("SET app.current_tenant = :tid"), {"tid": tenant_id})
-    except Exception:
-        pass
-
-def get_user_context(
-    authorization: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    x_api_key: Optional[str] = Header(None)
-) -> Dict[str, Any]:
-    # Try API key first (for Postman/demo)
-    if x_api_key:
-        allow_demo = os.getenv("ALLOW_DEMO", "false").lower() == "true"
-        if allow_demo or x_api_key.startswith('zq_'):
-            return {
-                "user_id": "550e8400-e29b-41d4-a716-446655440004",
-                "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
-                "roles": ["admin"],
-                "permissions": ["*"]  # Full permissions including subscriptions.admin
-            }
-    
-    # Try JWT
-    if authorization:
-        try:
-            token = authorization.credentials
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return {
-                "user_id": payload.get("user_id"),
-                "tenant_id": payload.get("tenant_id"),
-                "roles": payload.get("roles", []),
-                "permissions": payload.get("permissions", [])
-            }
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        except Exception as e:
-            logger.error(f"JWT validation error: {str(e)}")
-            raise HTTPException(status_code=401, detail="Invalid authentication")
-    
-    raise HTTPException(status_code=401, detail="Not authenticated")
-
-def get_db(user_context: Dict[str, Any] = Depends(get_user_context)):
-    db = SessionLocal()
-    try:
-        set_rls_context(db, user_context.get("tenant_id"))
-        yield db
-    finally:
-        db.close()
-
-# RabbitMQ Publishing
-def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str):
-    try:
-        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-        channel = connection.channel()
-        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
-        message = json.dumps({"event_type": event_type, "tenant_id": tenant_id, "timestamp": datetime.now().isoformat(), "data": event_data})
-        channel.basic_publish(exchange='zeroque_events', routing_key=event_type, body=message, properties=pika.BasicProperties(delivery_mode=2))
-        connection.close()
-        logger.info(f"Published {event_type}")
-        return True
-    except Exception as e:
-        logger.error(f"RabbitMQ publish failed: {e}")
-        return False
 
 # Outbox Pattern
 def store_outbox_event(db: Session, event_type: str, tenant_id: str, aggregate_id: Optional[str] = None, event_data: Dict[str, Any] = {}):
@@ -299,7 +76,6 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected")
     except Exception as e:
         logger.warning(f"Redis connection failed: {e}")
-    Base.metadata.create_all(bind=engine)
     yield
     logger.info("Shutting down Subscriptions Service v4.1")
 
