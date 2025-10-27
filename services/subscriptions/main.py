@@ -4,14 +4,16 @@ from typing import Optional, Dict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.exc import IntegrityError
 import pybreaker
+from sqlalchemy.orm import Session
 
+from services.subscriptions.services.subscription_services import create_feature, create_plan, add_feature_to_plan, \
+    remove_feature_from_plan, renew_subscription
 from .utils.subsciptions_logger import logger
 from .models import PlanFeature, SubscriptionPlan, TenantSubscription, Feature
 from .schemas import CreatePlanRequest, CreateSubscriptionRequest
 from .utils.user_auth import get_user_context, check_permission
-from .repositories.db_config import SessionLocal, set_rls_context
+from .repositories.db_config import SessionLocal, set_rls_context, get_db
 from core.config import get_settings
 from .core.redis_config import redis_client
 from .repositories.database_ops import audit_log
@@ -62,205 +64,38 @@ app.add_middleware(
 # =============================================================================
 
 @app.post("/subscriptions/v2/features")
-async def create_feature(
-    feature_data: Dict = Body(...),
-    user_context: Dict = Depends(get_user_context)
+async def create_feature_route(feature_data: Dict = Body(...), user_context: Dict = Depends(get_user_context), db: Session=get_db
 ):
     """Create a new feature"""
-    if not check_permission(user_context, "subscriptions.admin"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        with SessionLocal() as db:
-            feature = Feature(
-                code=feature_data["code"],
-                name=feature_data["name"],
-                description=feature_data.get("description"),
-                category=feature_data.get("category"),
-                active=True
-            )
-            db.add(feature)
-            db.commit()
-            db.refresh(feature)
-            
-            # Audit disabled for now - schema compatibility issue
-            # audit_log(db, user_context.get("tenant_id"), user_context.get("user_id"), "CREATE", "feature", str(feature.id), feature_data)
-            
-            return {
-                "feature_id": str(feature.id),
-                "code": feature.code,
-                "name": feature.name,
-                "created": True
-            }
-    except IntegrityError:
-        raise HTTPException(status_code=400, detail="Feature code already exists")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_feature(feature_data, user_context, db)
 
 @app.post("/subscriptions/v2/plans")
-async def create_plan(
-    req: CreatePlanRequest,
-    user_context: Dict = Depends(get_user_context)
+async def create_plan_route(req: CreatePlanRequest, user_context: Dict = Depends(get_user_context), db: Session=get_db
 ):
     """Create a new subscription plan"""
-    if not check_permission(user_context, "subscriptions.admin"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        with SessionLocal() as db:
-            plan = SubscriptionPlan(
-                code=req.code,
-                name=req.name,
-                description=req.description,
-                price_yearly_minor=req.price_yearly_minor,
-                currency=req.currency,
-                active=True
-            )
-            db.add(plan)
-            db.commit()
-            db.refresh(plan)
-            
-            # audit_log temporarily disabled due to schema issues
-            # audit_log(db, user_context.get("tenant_id"), user_context.get("user_id"), "CREATE", "plan", str(plan.id), req.dict())
-            
-            return {
-                "plan_id": str(plan.id),
-                "code": plan.code,
-                "name": plan.name,
-                "created": True
-            }
-    except IntegrityError:
-        raise HTTPException(status_code=400, detail="Plan code already exists")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_plan(req, user_context, db)
 
 @app.put("/subscriptions/v2/plans/{plan_code}/features/{feature_code}")
-async def add_feature_to_plan(
-    plan_code: str,
-    feature_code: str,
-    limits: Optional[Dict] = Body(None),
-    user_context: Dict = Depends(get_user_context)
-):
+async def add_feature_to_plan_route(plan_code: str, feature_code: str, limits: Optional[Dict] = Body(None),
+    user_context: Dict = Depends(get_user_context), db: Session=get_db):
     """Add a feature to a plan with optional limits"""
-    if not check_permission(user_context, "subscriptions.admin"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        with SessionLocal() as db:
-            # Check if plan and feature exist
-            plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == plan_code).first()
-            if not plan:
-                raise HTTPException(status_code=404, detail="Plan not found")
-            
-            feature = db.query(Feature).filter(Feature.code == feature_code).first()
-            if not feature:
-                raise HTTPException(status_code=404, detail="Feature not found")
-            
-            # Check if association already exists
-            existing = db.query(PlanFeature).filter(
-                PlanFeature.plan_code == plan_code,
-                PlanFeature.feature_code == feature_code
-            ).first()
-            
-            if existing:
-                # Update existing association
-                existing.enabled = True
-                existing.limits = limits or {}
-                db.commit()
-                action = "UPDATE"
-            else:
-                # Create new association
-                plan_feature = PlanFeature(
-                    plan_code=plan_code,
-                    feature_code=feature_code,
-                    enabled=True,
-                    limits=limits or {}
-                )
-                db.add(plan_feature)
-                db.commit()
-                action = "CREATE"
-            
-            audit_log(db, user_context.get("tenant_id"), user_context.get("user_id"), action, "plan_feature", f"{plan_code}:{feature_code}", {"limits": limits})
-            
-            return {
-                "plan_code": plan_code,
-                "feature_code": feature_code,
-                "limits": limits,
-                "action": action.lower()
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await add_feature_to_plan(plan_code, feature_code, limits, user_context, db)
 
 @app.delete("/subscriptions/v2/plans/{plan_code}/features/{feature_code}")
-async def remove_feature_from_plan(
-    plan_code: str,
-    feature_code: str,
-    user_context: Dict = Depends(get_user_context)
-):
+async def remove_feature_from_plan_route(plan_code: str, feature_code: str, user_context: Dict = Depends(get_user_context),
+                                        db:Session=get_db):
     """Remove a feature from a plan"""
-    if not check_permission("subscriptions.admin", user_context):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        with SessionLocal() as db:
-            # Find and disable the association
-            plan_feature = db.query(PlanFeature).filter(
-                PlanFeature.plan_code == plan_code,
-                PlanFeature.feature_code == feature_code
-            ).first()
-            
-            if not plan_feature:
-                raise HTTPException(status_code=404, detail="Feature not associated with plan")
-            
-            plan_feature.enabled = False
-            db.commit()
-            
-            audit_log(db, user_context.get("tenant_id"), user_context.get("user_id"), "DELETE", "plan_feature", f"{plan_code}:{feature_code}", {})
-            
-            return {"removed": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return remove_feature_from_plan(plan_code, feature_code, user_context, db)
 
 # =============================================================================
 # SUBSCRIPTION LIFECYCLE MANAGEMENT
 # =============================================================================
 
 @app.post("/subscriptions/v2/subscriptions/{tenant_id}/renew")
-async def renew_subscription(
-    tenant_id: str,
-    payment_method: str = Body(...),
-    user_context: Dict = Depends(get_user_context)
-):
+async def renew_subscription_route(tenant_id: str, payment_method: str = Body(...), user_context: Dict = Depends(get_user_context),
+                             db: Session=get_db):
     """Renew a subscription"""
-    if not check_permission("subscriptions.renew", user_context):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        with SessionLocal() as db:
-            subscription = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first()
-            if not subscription:
-                raise HTTPException(status_code=404, detail="Subscription not found")
-            
-            # Update subscription period
-            subscription.current_period_end = subscription.current_period_end + timedelta(days=365)  # 1 year renewal
-            subscription.status = "active"
-            subscription.updated_at = datetime.now(timezone.utc)
-            
-            db.commit()
-            
-            audit_log(db, tenant_id, user_context.get("user_id"), "RENEW", "subscription", str(subscription.id), {"payment_method": payment_method})
-            
-            return {
-                "subscription_id": str(subscription.id),
-                "new_period_end": subscription.current_period_end.isoformat(),
-                "renewed": True
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await renew_subscription(tenant_id, payment_method, user_context, db)
 
 @app.post("/subscriptions/v2/subscriptions/{tenant_id}/cancel")
 async def cancel_subscription(
