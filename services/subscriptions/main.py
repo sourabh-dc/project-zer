@@ -1,65 +1,31 @@
 # services/subscriptions/main.py - ZeroQue Subscriptions Service v4.1 (Production-Ready)
-import os
-
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-
-from sqlalchemy import  text
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-
-from celery import Celery
-
 import pybreaker
 
-import redis
-
 from .utils.subsciptions_logger import logger
-from .models import PlanFeature, SubscriptionPlan, TenantSubscription, Feature, OutboxEvent, AuditLog
-from .schemas import CreatePlanRequest, CreateSubscriptionRequest, TenantSubscriptionPayload
-from .utils.metrics import saga_total, saga_duration
-from .utils.rabbitmq import publish_to_rabbitmq
+from .models import PlanFeature, SubscriptionPlan, TenantSubscription, Feature
+from .schemas import CreatePlanRequest, CreateSubscriptionRequest
 from .utils.user_auth import get_user_context, check_permission
 from .repositories.db_config import SessionLocal, set_rls_context
+from core.config import get_settings
+from .core.redis_config import redis_client
+from .repositories.database_ops import audit_log
 
 # Config
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+DATABASE_URL = get_settings().DATABASE_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+REDIS_URL = get_settings().REDIS_URL
 SERVICE_NAME = "subscriptions"
 SERVICE_VERSION = "4.1.0"
-SUBSCRIPTION_CLEANUP_DAYS = 365
 RATE_LIMIT_REQUESTS_PER_MINUTE = 60
-
-# Redis
-redis_client = None
-
-# Celery
-celery_app = Celery(SERVICE_NAME, broker=RABBITMQ_URL, backend=REDIS_URL)
-celery_app.conf.update(task_serializer='json', accept_content=['json'], timezone='UTC', enable_utc=True)
-
 
 # Circuit Breaker
 circuit_breaker = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
-
-# Outbox Pattern
-def store_outbox_event(db: Session, event_type: str, tenant_id: str, aggregate_id: Optional[str] = None, event_data: Dict[str, Any] = {}):
-    outbox_event = OutboxEvent(
-        event_type=event_type,
-        tenant_id=tenant_id,
-        aggregate_id=aggregate_id or tenant_id,
-        event_data=event_data,
-        status="pending",
-        retry_count=0
-    )
-    db.add(outbox_event)
-    db.commit()
-    return str(outbox_event.id)
-
 
 # =============================================================================
 # APP INITIALIZATION
@@ -69,9 +35,7 @@ def store_outbox_event(db: Session, event_type: str, tenant_id: str, aggregate_i
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Subscriptions Service v4.1")
-    global redis_client
     try:
-        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
         logger.info("Redis connected")
     except Exception as e:
@@ -261,8 +225,6 @@ async def remove_feature_from_plan(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
 # =============================================================================
 # SUBSCRIPTION LIFECYCLE MANAGEMENT
 # =============================================================================
@@ -376,144 +338,6 @@ async def process_subscription_renewals(user_context: Dict = Depends(get_user_co
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@celery_app.task(bind=True, max_retries=3)
-def publish_outbox_events(self):
-    try:
-        with SessionLocal() as db:
-            events = db.query(OutboxEvent).filter(OutboxEvent.status == "pending", OutboxEvent.retry_count < 3).limit(100).all()
-            for event in events:
-                success = publish_to_rabbitmq(event.event_type, event.event_data, event.tenant_id)
-                if success:
-                    event.status = "published"
-                    event.published_at = datetime.now()
-                else:
-                    event.retry_count += 1
-                    if event.retry_count >= 3:
-                        event.status = "failed"
-                db.commit()
-    except Exception as e:
-        logger.error(f"Outbox publishing failed: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-# Audit Logging
-def audit_log(db: Session, tenant_id: str, user_id: Optional[str], action: str, resource_type: str, resource_id: Optional[str], details: Optional[Dict] = None, ip_address: Optional[str] = None, user_agent: Optional[str] = None):
-    audit_entry = AuditLog(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        action=action,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        details=details,
-        ip_address=ip_address,
-        user_agent=user_agent
-    )
-    db.add(audit_entry)
-    db.commit()
-
-# Saga for Subscription Creation
-class SubscriptionSaga:
-    def __init__(self, db: Session):
-        self.db = db
-        self.subscription = None
-        self.outbox_id = None
-    
-    async def execute(self, tenant_id: str, payload: TenantSubscriptionPayload, user_context: Dict[str, Any]) -> Dict:
-        start_time = time.time()
-        try:
-            # Step 1: Validate
-            if self.db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first():
-                raise ValueError("Subscription exists")
-            
-            # Step 2: Create subscription
-            self.subscription = TenantSubscription(
-                tenant_id=tenant_id,
-                plan_code=payload.plan_code,
-                payment_method=payload.payment_method,
-                status="active",
-                external_id=payload.external_id or f"sub_{tenant_id}_{int(time.time())}",
-                current_period_start=payload.current_period_start or datetime.now(),
-                current_period_end=payload.current_period_end or (datetime.now() + timedelta(days=365)),
-                trial_end=payload.trial_end
-            )
-            self.db.add(self.subscription)
-            self.db.commit()
-            self.db.refresh(self.subscription)
-            
-            # Step 3: Store outbox event
-            self.outbox_id = store_outbox_event(self.db, "PLAN_CREATED", tenant_id, str(self.subscription.id), {
-                "tenant_id": tenant_id,
-                "plan_code": payload.plan_code,
-                "subscription_id": str(self.subscription.id)
-            })
-            
-            # Step 4: Publish event
-            publish_outbox_events.delay()
-            
-            # Audit log
-            audit_log(self.db, tenant_id, user_context.get("user_id"), "CREATE", "subscription", str(self.subscription.id), payload.dict())
-            
-            saga_total.labels(type="subscription", status="success").inc()
-            saga_duration.labels(type="subscription").observe(time.time() - start_time)
-            
-            return {"subscription_id": str(self.subscription.id), "plan_code": payload.plan_code, "created": True}
-        
-        except Exception as e:
-            await self.compensate()
-            saga_total.labels(type="subscription", status="failed").inc()
-            raise
-    
-    async def compensate(self):
-        try:
-            if self.outbox_id:
-                self.db.execute(text("DELETE FROM outbox_events WHERE id = :id"), {"id": self.outbox_id})
-                self.db.commit()
-            
-            if self.subscription:
-                self.db.delete(self.subscription)
-                self.db.commit()
-        except Exception as e:
-            logger.error(f"Compensation failed: {e}")
-            self.db.rollback()
-
-# Celery Worker for TENANT_CREATED
-@celery_app.task(name='subscriptions.process_tenant_created')
-def process_tenant_created(event_data: Dict):
-    try:
-        tenant_id = event_data['tenant_id']
-        with SessionLocal() as db:
-            # Auto-create default subscription (e.g., Core plan)
-            subscription = TenantSubscription(
-                tenant_id=tenant_id,
-                plan_code="core",
-                payment_method="trade",
-                status="active",
-                external_id=f"sub_{tenant_id}_{int(time.time())}",
-                current_period_start=datetime.now(),
-                current_period_end=datetime.now() + timedelta(days=365)
-            )
-            db.add(subscription)
-            db.commit()
-            logger.info(f"Auto-created Core subscription for tenant {tenant_id}")
-            # Publish PLAN_CREATED
-            store_outbox_event(db, "PLAN_CREATED", tenant_id, tenant_id, {"tenant_id": tenant_id, "plan_code": "core"})
-            publish_outbox_events.delay()
-        return {"status": "processed"}
-    except Exception as e:
-        logger.error(f"Failed to process TENANT_CREATED: {e}")
-        raise
-
-@celery_app.task(name='subscriptions.cleanup_old_subscriptions')
-def cleanup_old_subscriptions():
-    try:
-        with SessionLocal() as db:
-            cutoff = datetime.now() - timedelta(days=SUBSCRIPTION_CLEANUP_DAYS)
-            deleted = db.execute(text("DELETE FROM tenant_subscriptions WHERE canceled_at < :cutoff AND status = 'canceled'"), {"cutoff": cutoff})
-            db.commit()
-            logger.info(f"Cleaned {deleted.rowcount} old subscriptions")
-    except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
 
 # =============================================================================
 # HEALTH AND METRICS ENDPOINTS
