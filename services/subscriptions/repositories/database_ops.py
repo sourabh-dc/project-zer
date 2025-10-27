@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from services.subscriptions.models import OutboxEvent, AuditLog, Feature, SubscriptionPlan, PlanFeature, \
     TenantSubscription
+from services.subscriptions.utils.subsciptions_logger import logger
 
 
 def store_outbox_event(db: Session, event_type: str, tenant_id: str, aggregate_id: Optional[str] = None, event_data: Dict[str, Any] = {}):
@@ -158,3 +159,106 @@ def renew_subscription_db(tenant_id: str, payment_method: str, db: Session, user
         "new_period_end": subscription.current_period_end.isoformat(),
         "renewed": True
     }
+
+def cancel_subscription_db(tenant_id: str, cancel_at_period_end: bool, user_context: Dict, db: Session) -> Dict:
+    subscription = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    if cancel_at_period_end:
+        subscription.canceled_at = datetime.now(timezone.utc)
+        subscription.status = "canceling"  # Will be canceled at period end
+    else:
+        subscription.status = "canceled"
+        subscription.canceled_at = datetime.now(timezone.utc)
+
+    db.commit()
+
+    audit_log(db, tenant_id, user_context.get("user_id"), "CANCEL", "subscription", str(subscription.id),
+              {"cancel_at_period_end": cancel_at_period_end})
+
+    return {
+        "subscription_id": str(subscription.id),
+        "status": subscription.status,
+        "canceled": True
+    }
+
+def process_subscription_renewals_db(db: Session, cutoff_date) -> Dict:
+    expiring_subscriptions = db.query(TenantSubscription).filter(
+        TenantSubscription.current_period_end <= cutoff_date,
+        TenantSubscription.status == "active",
+        TenantSubscription.canceled_at.is_(None)
+    ).all()
+
+    renewed_count = 0
+    for subscription in expiring_subscriptions:
+        try:
+            # Auto-renew subscription
+            subscription.current_period_end = subscription.current_period_end + timedelta(days=365)
+            subscription.updated_at = datetime.now(timezone.utc)
+
+            renewed_count += 1
+
+        except Exception as e:
+            logger.error(f"Failed to renew subscription {subscription.id}: {e}")
+
+    db.commit()
+
+    return {
+        "processed": len(expiring_subscriptions),
+        "renewed": renewed_count,
+        "message": f"Processed {len(expiring_subscriptions)} subscriptions, renewed {renewed_count}"
+    }
+
+def create_subscription_db(req, db: Session, user_context: Dict) -> Dict:
+    # Check if plan exists
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == req.plan_code).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    # Create subscription
+    subscription = TenantSubscription(
+        tenant_id=req.tenant_id,
+        plan_code=req.plan_code,
+        payment_method="stripe",
+        status="active",
+        current_period_start=datetime.now(),
+        current_period_end=datetime.now() + timedelta(days=365 if req.billing_cycle == "yearly" else 30)
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+
+    return {
+        "subscription_id": str(subscription.id),
+        "tenant_id": str(subscription.tenant_id),
+        "plan_code": subscription.plan_code,
+        "status": subscription.status,
+        "created": True
+    }
+
+def get_subscription_db(tenant_id: str, db: Session) -> Dict:
+    subscription = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    return {
+        "subscription_id": str(subscription.id),
+        "tenant_id": subscription.tenant_id,
+        "plan_code": subscription.plan_code,
+        "status": subscription.status,
+        "payment_method": subscription.payment_method,
+        "current_period_start": subscription.current_period_start.isoformat() if subscription.current_period_start else None,
+        "current_period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None
+    }
+
+def list_plans_db(active: Optional[bool], db: Session):
+    query = db.query(SubscriptionPlan)
+    if active is not None:
+        query = query.filter(SubscriptionPlan.active == active)
+    plans = query.all()
+    return [{"code": p.code, "name": p.name, "price_yearly_minor": p.price_yearly_minor} for p in plans]
+
+def list_plan_features_db(plan_code: str, db: Session):
+    features = db.query(PlanFeature, Feature).join(Feature).filter(PlanFeature.plan_code == plan_code).all()
+    return [{"feature_code": pf.feature_code, "limits": pf.limits or {}} for pf, f in features]
