@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from services.usage.models import AuditLog, OutboxEvent
+from services.usage.models import AuditLog, OutboxEvent, UsageEvent
 from ..utils.usage_logger import logger
 
 def audit_log(db, tenant_id, user_id, action, entity_type, entity_id, changes=None):
@@ -34,3 +34,22 @@ def store_outbox_event(db, event_type, tenant_id, entity_id, event_data):
     db.add(evt)
     db.commit()
     return str(evt.event_id)
+
+def insert_usage(db, request, event_id):
+    event = UsageEvent(
+        event_id=event_id,
+        tenant_id=request.tenant_id,
+        user_id=request.user_id,
+        meter_code=request.meter_code,
+        quantity=request.quantity,
+        metadata_json=request.metadata
+    )
+    db.add(event)
+    db.commit()
+    return event
+
+def get_usage_events(db, tenant_id, limit):
+    events = db.query(UsageEvent).filter(
+        UsageEvent.tenant_id == tenant_id
+    ).order_by(UsageEvent.recorded_at.desc()).limit(limit).all()
+    return events

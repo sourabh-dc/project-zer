@@ -1,11 +1,12 @@
 import time
-
 from sqlalchemy import text
 
 from services.usage.models import UsageEvent
 from services.usage.repositories.database_ops import store_outbox_event, audit_log
 from services.usage.utils.user_auth import check_permission
 from ..utils.usage_logger import logger
+from ..utils.rabbitmq import publish_to_rabbitmq
+from ..utils.metrics import saga_total, saga_duration
 
 class UsageRecordSaga:
     """Saga for usage event recording with compensation"""
