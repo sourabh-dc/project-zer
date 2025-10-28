@@ -6,6 +6,7 @@ import uuid
 import json
 import asyncio
 import structlog
+import hashlib
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
@@ -82,6 +83,50 @@ ledger_saga_failures = Counter(
     ['saga_type', 'step']
 )
 
+# Idempotency metrics
+ledger_idempotency_requests_total = Counter(
+    'ledger_idempotency_requests_total_v2',
+    'Total idempotency requests',
+    ['operation', 'status']  # cached, new, conflict
+)
+
+ledger_idempotency_cache_hits = Counter(
+    'ledger_idempotency_cache_hits_total_v2',
+    'Total idempotency cache hits',
+    ['operation']
+)
+
+ledger_idempotency_cleanup_total = Counter(
+    'ledger_idempotency_cleanup_total_v2',
+    'Total idempotency records cleaned up'
+)
+
+# Daily rollup metrics
+ledger_daily_rollups_total = Counter(
+    'ledger_daily_rollups_total_v2',
+    'Total daily rollups generated',
+    ['rollup_type', 'status']
+)
+
+ledger_financial_reports_total = Counter(
+    'ledger_financial_reports_total_v2',
+    'Total financial reports generated',
+    ['report_type', 'status']
+)
+
+# Usage metering metrics
+ledger_usage_events_total = Counter(
+    'ledger_usage_events_total_v2',
+    'Total usage events generated',
+    ['meter_code', 'status']
+)
+
+ledger_usage_processing_total = Counter(
+    'ledger_usage_processing_total_v2',
+    'Total usage processing operations',
+    ['status']
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -121,6 +166,15 @@ try:
     celery_app.config_from_object('celeryconfig')
 except ImportError:
     logger.warning("Celery config not found, using defaults")
+    # Set default configuration
+    celery_app.conf.update(
+        result_expires=3600,  # 1 hour
+        task_serializer='json',
+        accept_content=['json'],
+        result_serializer='json',
+        timezone='UTC',
+        enable_utc=True,
+    )
 
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
@@ -199,6 +253,20 @@ class AuditLog(Base):
     category = Column(String(50), nullable=False, default="system")  # system, security, business, compliance
     retention_until = Column(DateTime(timezone=True), nullable=True)  # For data retention policies
 
+class IdempotencyRecord(Base):
+    """Idempotency records to prevent duplicate operations"""
+    __tablename__ = "idempotency_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=True)
+    request_hash = Column(String(255), nullable=False)  # Hash of request body
+    response_data = Column(JSONB, nullable=False)  # Cached response
+    status_code = Column(Integer, nullable=False)  # HTTP status code
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)  # Auto-expire after 24 hours
+
 # =============================================================================
 # PYDANTIC MODELS
 # =============================================================================
@@ -217,7 +285,8 @@ class LedgerEntryRequest(BaseModel):
     reference_id: Optional[str] = None
     description: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    
+    idempotency_key: Optional[str] = Field(None, description="Idempotency key to prevent duplicate entries")
+
     @field_validator('entry_type')
     @classmethod
     def validate_entry_type(cls, v):
@@ -258,6 +327,7 @@ class LedgerAdjustmentRequest(BaseModel):
     reason: str = Field(..., description="Reason for adjustment")
     reference_type: Optional[str] = None
     reference_id: Optional[str] = None
+    idempotency_key: Optional[str] = Field(None, description="Idempotency key to prevent duplicate adjustments")
 
 class LedgerReportRequest(BaseModel):
     """Request model for ledger reports"""
@@ -439,9 +509,9 @@ async def log_audit(
     db.commit()
 
 async def publish_event(
-    db: Session, 
-    event_type: str, 
-    event_data: dict, 
+    db: Session,
+    event_type: str,
+    event_data: dict,
     tenant_id: str = None
 ):
     """Publish event using outbox pattern"""
@@ -452,6 +522,150 @@ async def publish_event(
     )
     db.add(outbox_event)
     db.commit()
+
+# =============================================================================
+# IDEMPOTENCY UTILITIES
+# =============================================================================
+
+def generate_request_hash(request_data: dict) -> str:
+    """Generate a hash of the request data for idempotency checking"""
+    # Remove idempotency_key from hash calculation to avoid infinite loops
+    hash_data = {k: v for k, v in request_data.items() if k != 'idempotency_key'}
+    request_str = json.dumps(hash_data, sort_keys=True, default=str)
+    return hashlib.sha256(request_str.encode()).hexdigest()
+
+def get_or_create_idempotency_record(
+    db: Session,
+    idempotency_key: str,
+    tenant_id: str,
+    user_id: str,
+    request_hash: str,
+    request_data: dict
+) -> tuple:
+    """Get existing idempotency record or create new one"""
+    # Check if record exists
+    record = db.query(IdempotencyRecord).filter(
+        IdempotencyRecord.idempotency_key == idempotency_key,
+        IdempotencyRecord.tenant_id == tenant_id
+    ).first()
+
+    if record:
+        # Check if request hash matches (same request)
+        if record.request_hash == request_hash:
+            # Same request, return cached response
+            return record, True, record.response_data, record.status_code
+        else:
+            # Different request with same key - this is an error
+            raise HTTPException(
+                status_code=400,
+                detail=f"Idempotency key '{idempotency_key}' already used for different request"
+            )
+
+    # Create new record
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hour expiry
+    new_record = IdempotencyRecord(
+        idempotency_key=idempotency_key,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        request_hash=request_hash,
+        response_data={},  # Will be updated after successful operation
+        status_code=0,     # Will be updated after successful operation
+        expires_at=expires_at
+    )
+    db.add(new_record)
+    db.flush()  # Get the ID without committing
+
+    return new_record, False, None, None
+
+def update_idempotency_record(
+    db: Session,
+    record: IdempotencyRecord,
+    response_data: dict,
+    status_code: int
+):
+    """Update idempotency record with response data"""
+    record.response_data = response_data
+    record.status_code = status_code
+    db.commit()
+
+def cleanup_expired_idempotency_records(db: Session):
+    """Clean up expired idempotency records"""
+    try:
+        expired_count = db.query(IdempotencyRecord).filter(
+            IdempotencyRecord.expires_at < datetime.now(timezone.utc)
+        ).delete(synchronize_session=False)
+        if expired_count > 0:
+            db.commit()
+            ledger_idempotency_cleanup_total.inc(expired_count)
+            logger.info(f"Cleaned up {expired_count} expired idempotency records")
+        return expired_count
+    except Exception as e:
+        logger.error(f"Failed to cleanup expired idempotency records: {e}")
+        db.rollback()
+        return 0
+
+async def check_idempotency_and_execute(
+    db: Session,
+    idempotency_key: str,
+    tenant_id: str,
+    user_id: str,
+    request_data: dict,
+    operation_func,
+    operation_name: str
+) -> dict:
+    """Check idempotency and execute operation with caching"""
+    if not idempotency_key:
+        # No idempotency key provided, execute normally
+        return await operation_func()
+
+    # Generate request hash
+    request_hash = generate_request_hash(request_data)
+
+    try:
+        # Check or create idempotency record
+        record, is_existing, cached_response, cached_status = get_or_create_idempotency_record(
+            db, idempotency_key, tenant_id, user_id, request_hash, request_data
+        )
+
+        if is_existing:
+            # Return cached response
+            ledger_idempotency_requests_total.labels(
+                operation=operation_name, status="cached"
+            ).inc()
+            ledger_idempotency_cache_hits.labels(operation=operation_name).inc()
+            logger.info(f"Returning cached response for idempotency key: {idempotency_key}")
+            return cached_response
+
+        # Execute the operation
+        try:
+            result = await operation_func()
+
+            # Update the idempotency record with successful result
+            update_idempotency_record(db, record, result, 200)
+
+            ledger_idempotency_requests_total.labels(
+                operation=operation_name, status="new"
+            ).inc()
+
+            return result
+
+        except Exception as e:
+            # Update the idempotency record with error result
+            error_response = {"error": str(e), "detail": "Operation failed"}
+            update_idempotency_record(db, record, error_response, 500)
+
+            ledger_idempotency_requests_total.labels(
+                operation=operation_name, status="error"
+            ).inc()
+
+            raise e
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Idempotency check failed: {e}")
+        # Fallback: execute operation without idempotency
+        return await operation_func()
 
 # =============================================================================
 # SAGA PATTERN
@@ -723,7 +937,7 @@ async def create_ledger_entry(
     user_context: Dict[str, Any] = Depends(get_user_context),
     db = Depends(get_db_with_rls)
 ):
-    """Create ledger entry with saga pattern"""
+    """Create ledger entry with saga pattern and idempotency support"""
     # Check rate limit
     if not await check_rate_limit(user_context["user_id"]):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -731,54 +945,64 @@ async def create_ledger_entry(
     # Check permissions
     if not check_permission("ledger.create", user_context):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
+
     # Update metrics
     ledger_requests_total.labels(
         method="POST", endpoint="/ledger/v4/entries", status="started"
     ).inc()
-    
+
     start_time = datetime.now()
-    
-    try:
+
+    async def execute_ledger_creation():
+        """Inner function to execute the ledger creation logic"""
         set_rls_context(db, request.tenant_id)
-        
+
         # Execute saga
         saga = LedgerEntrySaga(db, request)
         result = await saga.execute()
-        
+
         # Update metrics
         duration = (datetime.now() - start_time).total_seconds()
         ledger_request_duration.labels(
             method="POST", endpoint="/ledger/v4/entries"
         ).observe(duration)
-        
+
         ledger_saga_duration.labels(saga_type="create_entry").observe(duration)
-        
+
         ledger_entries_created_total.labels(
             entry_type=request.entry_type,
             account=request.account,
             currency=request.currency
         ).inc()
-        
-        ledger_requests_total.labels(
-            method="POST", endpoint="/ledger/v4/entries", status="success"
-        ).inc()
-        
+
         return result
-        
+
+    try:
+        # Use idempotency wrapper
+        result = await check_idempotency_and_execute(
+            db=db,
+            idempotency_key=request.idempotency_key,
+            tenant_id=request.tenant_id,
+            user_id=user_context.get("user_id"),
+            request_data=request.dict(),
+            operation_func=execute_ledger_creation,
+            operation_name="entries"
+        )
+
+        return result
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like idempotency conflicts)
+        raise
     except Exception as e:
-        # Update metrics
+        # Update metrics for errors
         duration = (datetime.now() - start_time).total_seconds()
         ledger_request_duration.labels(
             method="POST", endpoint="/ledger/v4/entries"
         ).observe(duration)
-        
+
         ledger_saga_failures.labels(saga_type="create_entry", step="execute").inc()
-        
-        ledger_requests_total.labels(
-            method="POST", endpoint="/ledger/v4/entries", status="error"
-        ).inc()
-        
+
         raise HTTPException(status_code=500, detail=f"Failed to create ledger entry: {str(e)}")
 
 @app.get("/ledger/v4/entries")
@@ -905,22 +1129,23 @@ async def create_ledger_adjustment(
     db: Session = Depends(get_db),
     user_context: dict = Depends(get_user_context)
 ):
-    """Create ledger adjustment for disputes/reconciliation"""
+    """Create ledger adjustment for disputes/reconciliation with idempotency support"""
     # Check permissions
     if not await check_permission(user_context, "ledger.admin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
+
+    async def execute_adjustment():
+        """Inner function to execute the adjustment logic"""
         # Get original entry
         original_entry = db.query(LedgerEntryNew).filter(
             LedgerEntryNew.id == request.entry_id
         ).first()
-        
+
         if not original_entry:
             raise HTTPException(status_code=404, detail="Entry not found")
-        
+
         set_rls_context(db, original_entry.tenant_id)
-        
+
         # Create adjustment entry
         adjustment_request = LedgerEntryRequest(
             tenant_id=original_entry.tenant_id,
@@ -941,11 +1166,11 @@ async def create_ledger_adjustment(
                 "adjusted_by": user_context.get("user_id")
             }
         )
-        
+
         # Execute saga
         saga = LedgerEntrySaga(db, adjustment_request)
         result = await saga.execute()
-        
+
         # Log audit
         await log_audit(
             db,
@@ -960,14 +1185,31 @@ async def create_ledger_adjustment(
             user_id=user_context.get("user_id"),
             tenant_id=original_entry.tenant_id
         )
-        
+
         return {
             "ok": True,
             "adjustment_entry_id": result["entry_id"],
             "original_entry_id": request.entry_id,
             "adjustment_amount_minor": request.adjustment_amount_minor
         }
-        
+
+    try:
+        # Use idempotency wrapper
+        result = await check_idempotency_and_execute(
+            db=db,
+            idempotency_key=request.idempotency_key,
+            tenant_id=user_context.get("tenant_id"),
+            user_id=user_context.get("user_id"),
+            request_data=request.dict(),
+            operation_func=execute_adjustment,
+            operation_name="adjustments"
+        )
+
+        return result
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like idempotency conflicts)
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create adjustment: {str(e)}")
 
@@ -1146,7 +1388,19 @@ async def handle_order_completed(
         result = await saga.execute()
 
         # Audit log
-        await log_audit(db, "create_ledger_entry", "ledger_entries", result["entry_id"], user_context, request.dict(), 201)
+        await log_audit(
+            db,
+            "create_ledger_entry",
+            "ledger_entry",
+            result["entry_id"],
+            details={
+                "tenant_id": tenant_id,
+                "amount_minor": amount_minor,
+                "currency": currency,
+                "event_source": "order_completed"
+            },
+            tenant_id=tenant_id
+        )
 
         return {"ok": True, "ledger_entry_id": result["entry_id"]}
 
@@ -1593,7 +1847,7 @@ async def get_integration_status():
             "billing_service": {"status": "unknown", "url": "http://localhost:8083"},
             "cv_gateway_service": {"status": "unknown", "url": "http://localhost:8101"}
         }
-        
+
         # Test each service connectivity
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -1608,15 +1862,446 @@ async def get_integration_status():
                 except Exception as e:
                     config["status"] = "unreachable"
                     config["error"] = str(e)
-        
+
         return {
             "integration_status": integration_status,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Error getting integration status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
+
+@app.post("/ledger/v4/idempotency/cleanup")
+async def cleanup_idempotency_records(
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Clean up expired idempotency records - Admin only"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        expired_count = cleanup_expired_idempotency_records(db)
+
+        # Log audit trail
+        await log_audit(
+            db,
+            "cleanup_idempotency_records",
+            "idempotency_records",
+            details={"expired_records_cleaned": expired_count},
+            user_id=user_context.get("user_id"),
+            tenant_id=user_context.get("tenant_id")
+        )
+
+        return {
+            "ok": True,
+            "expired_records_cleaned": expired_count,
+            "message": f"Successfully cleaned up {expired_count} expired idempotency records"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup idempotency records: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup idempotency records: {str(e)}")
+
+@app.get("/ledger/v4/idempotency/status")
+async def get_idempotency_status(
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get idempotency records status - Admin only"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Get total count of idempotency records
+        total_records = db.query(IdempotencyRecord).count()
+
+        # Get count of expired records
+        expired_records = db.query(IdempotencyRecord).filter(
+            IdempotencyRecord.expires_at < datetime.now(timezone.utc)
+        ).count()
+
+        # Get count of records expiring in next hour
+        next_hour = datetime.now(timezone.utc) + timedelta(hours=1)
+        expiring_soon = db.query(IdempotencyRecord).filter(
+            IdempotencyRecord.expires_at < next_hour,
+            IdempotencyRecord.expires_at >= datetime.now(timezone.utc)
+        ).count()
+
+        # Get oldest and newest record timestamps
+        oldest_record = db.query(IdempotencyRecord).order_by(
+            IdempotencyRecord.created_at.asc()
+        ).first()
+
+        newest_record = db.query(IdempotencyRecord).order_by(
+            IdempotencyRecord.created_at.desc()
+        ).first()
+
+        return {
+            "total_records": total_records,
+            "expired_records": expired_records,
+            "active_records": total_records - expired_records,
+            "expiring_soon": expiring_soon,
+            "oldest_record_created_at": oldest_record.created_at.isoformat() if oldest_record else None,
+            "newest_record_created_at": newest_record.created_at.isoformat() if newest_record else None,
+            "cleanup_recommended": expired_records > 0
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get idempotency status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get idempotency status: {str(e)}")
+
+# =============================================================================
+# DAILY ROLLUPS API ENDPOINTS
+# =============================================================================
+
+@app.get("/ledger/v4/rollups/daily/{date}")
+async def get_daily_rollups(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    account: Optional[str] = Query(None, description="Filter by account"),
+    currency: Optional[str] = Query(None, description="Filter by currency"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get daily ledger rollups for the specified date"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+
+        # Get rollup data (in production, this would come from dedicated rollup tables)
+        rollup_manager = DailyRollupManager(db)
+        rollup_data = rollup_manager.create_daily_ledger_rollup(target_date)
+        metrics_data = rollup_manager.create_daily_tenant_metrics(target_date)
+        api_data = rollup_manager.create_daily_api_metrics(target_date)
+
+        # Apply filters
+        if tenant_id:
+            rollup_data = [r for r in rollup_data if r['tenant_id'] == tenant_id]
+            metrics_data = [m for m in metrics_data if m['tenant_id'] == tenant_id]
+            api_data = [a for a in api_data if a.get('tenant_id') == tenant_id]
+
+        if account:
+            rollup_data = [r for r in rollup_data if r['account'] == account]
+
+        if currency:
+            rollup_data = [r for r in rollup_data if r['currency'] == currency]
+
+        return {
+            "date": date,
+            "ledger_rollups": rollup_data,
+            "tenant_metrics": metrics_data,
+            "api_metrics": api_data,
+            "summary": {
+                "total_ledger_rollups": len(rollup_data),
+                "total_tenant_metrics": len(metrics_data),
+                "total_api_metrics": len(api_data)
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get daily rollups: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get daily rollups: {str(e)}")
+
+@app.post("/ledger/v4/rollups/generate/{date}")
+async def generate_rollups_for_date(
+    date: str,
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Manually trigger rollup generation for a specific date - Admin only"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Trigger Celery task for rollup generation
+        generate_daily_ledger_rollups.delay(date)
+
+        return {
+            "ok": True,
+            "message": f"Rollup generation triggered for {date}",
+            "task": "generate_daily_ledger_rollups"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger rollup generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to trigger rollup generation: {str(e)}")
+
+# =============================================================================
+# ADVANCED FINANCIAL REPORTS API ENDPOINTS
+# =============================================================================
+
+@app.get("/ledger/v4/reports/pnl/{date}")
+async def get_pnl_report(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    currency: Optional[str] = Query(None, description="Filter by currency"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get Profit & Loss report for the specified date"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+
+        # Generate P&L data
+        pnl_data = generate_pnl_summary(db, target_date)
+
+        # Apply filters
+        if tenant_id:
+            pnl_data = [p for p in pnl_data if p['tenant_id'] == tenant_id]
+
+        if currency:
+            pnl_data = [p for p in pnl_data if p['currency'] == currency]
+
+        return {
+            "date": date,
+            "pnl_report": pnl_data,
+            "summary": {
+                "total_tenants": len(set(p['tenant_id'] for p in pnl_data)),
+                "total_currencies": len(set(p['currency'] for p in pnl_data)),
+                "total_revenue_minor": sum(p['revenue_minor'] for p in pnl_data),
+                "total_expenses_minor": sum(p['expenses_minor'] for p in pnl_data),
+                "total_net_profit_minor": sum(p['net_profit_minor'] for p in pnl_data)
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate P&L report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate P&L report: {str(e)}")
+
+@app.get("/ledger/v4/reports/cashflow/{date}")
+async def get_cash_flow_report(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    currency: Optional[str] = Query(None, description="Filter by currency"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get Cash Flow report for the specified date"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+
+        # Generate cash flow data
+        cash_flow_data = generate_cash_flow_summary(db, target_date)
+
+        # Apply filters
+        if tenant_id:
+            cash_flow_data = [c for c in cash_flow_data if c['tenant_id'] == tenant_id]
+
+        if currency:
+            cash_flow_data = [c for c in cash_flow_data if c['currency'] == currency]
+
+        return {
+            "date": date,
+            "cash_flow_report": cash_flow_data,
+            "summary": {
+                "total_tenants": len(set(c['tenant_id'] for c in cash_flow_data)),
+                "total_currencies": len(set(c['currency'] for c in cash_flow_data)),
+                "total_inflow_minor": sum(c['cash_inflow_minor'] for c in cash_flow_data),
+                "total_outflow_minor": sum(c['cash_outflow_minor'] for c in cash_flow_data),
+                "net_cash_flow_minor": sum(c['net_cash_flow_minor'] for c in cash_flow_data)
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate cash flow report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate cash flow report: {str(e)}")
+
+@app.get("/ledger/v4/reports/compliance/{date}")
+async def get_compliance_report(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    currency: Optional[str] = Query(None, description="Filter by currency"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get Compliance report for the specified date"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+
+        # Generate compliance data
+        compliance_data = generate_compliance_summary(db, target_date)
+
+        # Apply filters
+        if tenant_id:
+            compliance_data = [c for c in compliance_data if c['tenant_id'] == tenant_id]
+
+        if currency:
+            compliance_data = [c for c in compliance_data if c['currency'] == currency]
+
+        return {
+            "date": date,
+            "compliance_report": compliance_data,
+            "summary": {
+                "total_tenants": len(set(c['tenant_id'] for c in compliance_data)),
+                "total_transactions": sum(c['total_transactions'] for c in compliance_data),
+                "total_volume_minor": sum(c['total_volume_minor'] for c in compliance_data),
+                "unique_references": sum(c['unique_references'] for c in compliance_data),
+                "avg_transaction_size_minor": sum(c['avg_transaction_size_minor'] for c in compliance_data) // len(compliance_data) if compliance_data else 0
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate compliance report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate compliance report: {str(e)}")
+
+@app.get("/ledger/v4/reports/comprehensive/{date}")
+async def get_comprehensive_financial_report(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    currency: Optional[str] = Query(None, description="Filter by currency"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get comprehensive financial report combining P&L, Cash Flow, and Compliance"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+
+        # Generate all report types
+        pnl_data = generate_pnl_summary(db, target_date)
+        cash_flow_data = generate_cash_flow_summary(db, target_date)
+        compliance_data = generate_compliance_summary(db, target_date)
+
+        # Apply filters
+        if tenant_id:
+            pnl_data = [p for p in pnl_data if p['tenant_id'] == tenant_id]
+            cash_flow_data = [c for c in cash_flow_data if c['tenant_id'] == tenant_id]
+            compliance_data = [c for c in compliance_data if c['tenant_id'] == tenant_id]
+
+        if currency:
+            pnl_data = [p for p in pnl_data if p['currency'] == currency]
+            cash_flow_data = [c for c in cash_flow_data if c['currency'] == currency]
+            compliance_data = [c for c in compliance_data if c['currency'] == currency]
+
+        return {
+            "date": date,
+            "comprehensive_report": {
+                "pnl": pnl_data,
+                "cash_flow": cash_flow_data,
+                "compliance": compliance_data
+            },
+            "executive_summary": {
+                "total_tenants": len(set(p['tenant_id'] for p in pnl_data)),
+                "total_revenue_minor": sum(p['revenue_minor'] for p in pnl_data),
+                "total_expenses_minor": sum(p['expenses_minor'] for p in pnl_data),
+                "net_profit_minor": sum(p['net_profit_minor'] for p in pnl_data),
+                "net_cash_flow_minor": sum(c['net_cash_flow_minor'] for c in cash_flow_data),
+                "total_transactions": sum(c['total_transactions'] for c in compliance_data),
+                "compliance_score": "High" if len(compliance_data) > 0 else "No Data"
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate comprehensive report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate comprehensive report: {str(e)}")
+
+# =============================================================================
+# USAGE METERING API ENDPOINTS
+# =============================================================================
+
+@app.get("/ledger/v4/usage/events/{date}")
+async def get_usage_events(
+    date: str,
+    tenant_id: Optional[str] = Query(None, description="Filter by tenant"),
+    meter_code: Optional[str] = Query(None, description="Filter by meter code"),
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Get usage events generated from ledger activity for the specified date"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.read"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Parse date
+        target_date = datetime.fromisoformat(date).date()
+        start_of_day = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        # Get usage events from ledger entries
+        usage_manager = UsageMeteringManager(db)
+        usage_events = usage_manager.process_ledger_entries_for_usage(start_of_day, end_of_day)
+
+        # Apply filters
+        if tenant_id:
+            usage_events = [e for e in usage_events if e['tenant_id'] == tenant_id]
+
+        if meter_code:
+            usage_events = [e for e in usage_events if e['meter_code'] == meter_code]
+
+        return {
+            "date": date,
+            "usage_events": usage_events,
+            "summary": {
+                "total_events": len(usage_events),
+                "unique_tenants": len(set(e['tenant_id'] for e in usage_events)),
+                "meter_codes": list(set(e['meter_code'] for e in usage_events)),
+                "total_quantity": sum(e['quantity'] for e in usage_events)
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get usage events: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get usage events: {str(e)}")
+
+@app.post("/ledger/v4/usage/process/{date}")
+async def process_usage_for_date(
+    date: str,
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_user_context)
+):
+    """Manually trigger usage processing for a specific date - Admin only"""
+    # Check permissions
+    if not await check_permission(user_context, "ledger.admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Trigger Celery task for usage processing
+        process_usage_metering.delay(date)
+
+        return {
+            "ok": True,
+            "message": f"Usage processing triggered for {date}",
+            "task": "process_usage_metering"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger usage processing: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to trigger usage processing: {str(e)}")
 
 # =============================================================================
 # CELERY TASKS
@@ -1666,26 +2351,554 @@ def cleanup_old_ledger_data(self):
     try:
         with SessionLocal() as db:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
-            
+
             # Clean up old journal entries
             journal_result = db.execute(text("""
-                DELETE FROM journal_entries_new 
+                DELETE FROM journal_entries_new
                 WHERE created_at < :cutoff_date AND status IN ('posted', 'cancelled')
             """), {"cutoff_date": cutoff_date})
-            
+
             # Clean up old account balances
             balance_result = db.execute(text("""
-                DELETE FROM account_balances_new 
+                DELETE FROM account_balances_new
                 WHERE created_at < :cutoff_date AND status = 'closed'
             """), {"cutoff_date": cutoff_date})
-            
+
             db.commit()
-            
+
             logger.info(f"Cleaned up {journal_result.rowcount} old journal entries and {balance_result.rowcount} old account balances")
-            
+
     except Exception as e:
         logger.error(f"Failed to cleanup old ledger data: {e}")
         raise self.retry(exc=e, countdown=300)
+
+@celery_app.task(bind=True, max_retries=3)
+def cleanup_expired_idempotency_records_task(self):
+    """Clean up expired idempotency records"""
+    try:
+        with SessionLocal() as db:
+            expired_count = cleanup_expired_idempotency_records(db)
+
+            if expired_count > 0:
+                ledger_idempotency_cleanup_total.inc(expired_count)
+                logger.info(f"Cleaned up {expired_count} expired idempotency records")
+
+            # Update metrics
+            ledger_requests_total.labels(method="POST", endpoint="cleanup", status="success").inc()
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup expired idempotency records: {e}")
+        ledger_requests_total.labels(method="POST", endpoint="cleanup", status="error").inc()
+        raise self.retry(exc=e, countdown=300)
+
+# =============================================================================
+# DAILY ROLLUPS AND MATERIALIZATION
+# =============================================================================
+
+class DailyRollupManager:
+    """Manager for daily rollups and materialization"""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_daily_ledger_rollup(self, date: datetime.date) -> dict:
+        """Create daily rollup of ledger entries"""
+        start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        # Get all entries for the day
+        day_entries = self.db.query(LedgerEntryNew).filter(
+            LedgerEntryNew.created_at >= start_of_day,
+            LedgerEntryNew.created_at < end_of_day
+        ).all()
+
+        # Aggregate in Python (simpler for testing)
+        rollup_dict = {}
+        for entry in day_entries:
+            key = (entry.tenant_id, entry.account, entry.currency)
+
+            if key not in rollup_dict:
+                rollup_dict[key] = {
+                    'tenant_id': entry.tenant_id,
+                    'account': entry.account,
+                    'currency': entry.currency,
+                    'total_debits': 0,
+                    'total_credits': 0,
+                    'entry_count': 0
+                }
+
+            rollup_dict[key]['entry_count'] += 1
+
+            if entry.entry_type == 'debit':
+                rollup_dict[key]['total_debits'] += entry.amount_minor
+            elif entry.entry_type == 'credit':
+                rollup_dict[key]['total_credits'] += entry.amount_minor
+
+        rollup_data = []
+        for data in rollup_dict.values():
+            rollup_data.append({
+                'date': date,
+                'tenant_id': str(data['tenant_id']),
+                'account': data['account'],
+                'currency': data['currency'],
+                'total_debits_minor': data['total_debits'],
+                'total_credits_minor': data['total_credits'],
+                'net_amount_minor': data['total_credits'] - data['total_debits'],
+                'entry_count': data['entry_count'],
+                'created_at': datetime.now(timezone.utc)
+            })
+
+        return rollup_data
+
+    def create_daily_tenant_metrics(self, date: datetime.date) -> dict:
+        """Create daily tenant metrics summary"""
+        start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        # Get all entries for the day and aggregate in Python
+        day_entries = self.db.query(LedgerEntryNew).filter(
+            LedgerEntryNew.created_at >= start_of_day,
+            LedgerEntryNew.created_at < end_of_day
+        ).all()
+
+        # Aggregate by tenant in Python
+        tenant_dict = {}
+        for entry in day_entries:
+            tenant_id = entry.tenant_id
+
+            if tenant_id not in tenant_dict:
+                tenant_dict[tenant_id] = {
+                    'tenant_id': tenant_id,
+                    'active_accounts': set(),
+                    'total_entries': 0,
+                    'total_volume_minor': 0,
+                    'active_vendors': set()
+                }
+
+            tenant_data = tenant_dict[tenant_id]
+            tenant_data['active_accounts'].add(entry.account)
+            tenant_data['total_entries'] += 1
+            tenant_data['total_volume_minor'] += entry.amount_minor
+            if entry.vendor_id:
+                tenant_data['active_vendors'].add(entry.vendor_id)
+
+        metrics_data = []
+        for tenant_id, data in tenant_dict.items():
+            metrics_data.append({
+                'date': date,
+                'tenant_id': str(tenant_id),
+                'active_accounts': len(data['active_accounts']),
+                'total_entries': data['total_entries'],
+                'total_volume_minor': data['total_volume_minor'],
+                'active_vendors': len(data['active_vendors']),
+                'created_at': datetime.now(timezone.utc)
+            })
+
+        return metrics_data
+
+    def create_daily_api_metrics(self, date: datetime.date) -> dict:
+        """Create daily API usage metrics"""
+        start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        # Get API metrics from audit logs (simplified for testing)
+        day_audits = self.db.query(AuditLog).filter(
+            AuditLog.created_at >= start_of_day,
+            AuditLog.created_at < end_of_day,
+            AuditLog.category == 'system'
+        ).all()
+
+        # Aggregate by endpoint in Python
+        endpoint_dict = {}
+        for audit in day_audits:
+            endpoint = audit.resource_type
+
+            if endpoint not in endpoint_dict:
+                endpoint_dict[endpoint] = {
+                    'tenant_id': str(audit.tenant_id) if audit.tenant_id else None,
+                    'endpoint': endpoint,
+                    'request_count': 0,
+                    'first_request': None,
+                    'last_request': None
+                }
+
+            endpoint_data = endpoint_dict[endpoint]
+            endpoint_data['request_count'] += 1
+
+            if endpoint_data['first_request'] is None or audit.created_at < endpoint_data['first_request']:
+                endpoint_data['first_request'] = audit.created_at
+            if endpoint_data['last_request'] is None or audit.created_at > endpoint_data['last_request']:
+                endpoint_data['last_request'] = audit.created_at
+
+        api_data = []
+        for data in endpoint_dict.values():
+            api_data.append({
+                'date': date,
+                'tenant_id': data['tenant_id'],
+                'endpoint': data['endpoint'],
+                'request_count': data['request_count'],
+                'first_request': data['first_request'],
+                'last_request': data['last_request'],
+                'created_at': datetime.now(timezone.utc)
+            })
+
+        return api_data
+
+# Celery Beat Tasks for Daily Rollups
+@celery_app.task(bind=True, max_retries=3)
+def generate_daily_ledger_rollups(self, date_str: str = None):
+    """Generate daily rollups for ledger entries"""
+    try:
+        # Default to yesterday if no date provided
+        if date_str:
+            target_date = datetime.fromisoformat(date_str).date()
+        else:
+            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+
+        with SessionLocal() as db:
+            rollup_manager = DailyRollupManager(db)
+
+            # Generate ledger rollups
+            rollup_data = rollup_manager.create_daily_ledger_rollup(target_date)
+
+            # Generate tenant metrics
+            metrics_data = rollup_manager.create_daily_tenant_metrics(target_date)
+
+            # Generate API metrics
+            api_data = rollup_manager.create_daily_api_metrics(target_date)
+
+            # Store rollup data (in production, these would go to dedicated rollup tables)
+            logger.info(f"Generated rollups for {target_date}: {len(rollup_data)} ledger, {len(metrics_data)} tenant, {len(api_data)} API metrics")
+
+            # Update metrics
+            ledger_requests_total.labels(method="POST", endpoint="rollups", status="success").inc()
+            ledger_daily_rollups_total.labels(rollup_type="ledger", status="success").inc()
+            ledger_daily_rollups_total.labels(rollup_type="tenant", status="success").inc()
+            ledger_daily_rollups_total.labels(rollup_type="api", status="success").inc()
+
+    except Exception as e:
+        logger.error(f"Failed to generate daily rollups: {e}")
+        ledger_requests_total.labels(method="POST", endpoint="rollups", status="error").inc()
+        raise self.retry(exc=e, countdown=3600)  # Retry in 1 hour
+
+@celery_app.task(bind=True, max_retries=3)
+def generate_daily_financial_reports(self, date_str: str = None):
+    """Generate daily financial reports and summaries"""
+    try:
+        if date_str:
+            target_date = datetime.fromisoformat(date_str).date()
+        else:
+            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+
+        with SessionLocal() as db:
+            # Generate P&L summary
+            pnl_data = generate_pnl_summary(db, target_date)
+
+            # Generate cash flow summary
+            cash_flow_data = generate_cash_flow_summary(db, target_date)
+
+            # Generate compliance summary
+            compliance_data = generate_compliance_summary(db, target_date)
+
+            logger.info(f"Generated financial reports for {target_date}")
+
+    except Exception as e:
+        logger.error(f"Failed to generate daily financial reports: {e}")
+        raise self.retry(exc=e, countdown=3600)
+
+# Celery Beat Configuration
+from celery.schedules import crontab
+
+# Configure Celery Beat schedule
+celery_app.conf.beat_schedule = {
+    'daily-ledger-rollups': {
+        'task': 'services.ledger.main.generate_daily_ledger_rollups',
+        'schedule': crontab(hour=2, minute=0),  # Run at 2 AM daily
+    },
+    'daily-financial-reports': {
+        'task': 'services.ledger.main.generate_daily_financial_reports',
+        'schedule': crontab(hour=3, minute=0),  # Run at 3 AM daily
+    },
+    'cleanup-idempotency-records': {
+        'task': 'services.ledger.main.cleanup_expired_idempotency_records_task',
+        'schedule': crontab(hour=1, minute=0),  # Run at 1 AM daily
+    },
+}
+
+celery_app.conf.timezone = 'UTC'
+
+# =============================================================================
+# FINANCIAL REPORTING FUNCTIONS
+# =============================================================================
+
+def generate_pnl_summary(db: Session, date: datetime.date) -> dict:
+    """Generate Profit & Loss summary for the given date"""
+    start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    # Revenue accounts (credits)
+    revenue_accounts = ['Revenue', 'Sales', 'Income', 'TenantRevenue']
+    # Expense accounts (debits)
+    expense_accounts = ['CostCentreSpend', 'VendorExpenses', 'MarketplaceFees', 'OperatingExpenses']
+
+    # Get all entries for the day
+    day_entries = db.query(LedgerEntryNew).filter(
+        LedgerEntryNew.created_at >= start_of_day,
+        LedgerEntryNew.created_at < end_of_day,
+        LedgerEntryNew.account.in_(revenue_accounts + expense_accounts)
+    ).all()
+
+    # Aggregate in Python
+    pnl_dict = {}
+    for entry in day_entries:
+        key = (entry.tenant_id, entry.currency)
+
+        if key not in pnl_dict:
+            pnl_dict[key] = {
+                'tenant_id': entry.tenant_id,
+                'currency': entry.currency,
+                'revenue_minor': 0,
+                'expenses_minor': 0
+            }
+
+        if entry.entry_type == 'credit' and entry.account in revenue_accounts:
+            pnl_dict[key]['revenue_minor'] += entry.amount_minor
+        elif entry.entry_type == 'debit' and entry.account in expense_accounts:
+            pnl_dict[key]['expenses_minor'] += entry.amount_minor
+
+    pnl_data = []
+    for key, data in pnl_dict.items():
+        pnl_data.append({
+            'date': date,
+            'tenant_id': str(data['tenant_id']),
+            'currency': data['currency'],
+            'revenue_minor': data['revenue_minor'],
+            'expenses_minor': data['expenses_minor'],
+            'net_profit_minor': data['revenue_minor'] - data['expenses_minor']
+        })
+
+    return pnl_data
+
+def generate_cash_flow_summary(db: Session, date: datetime.date) -> dict:
+    """Generate Cash Flow summary for the given date"""
+    start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    # Cash flow categories
+    cash_in_accounts = ['Cash', 'AccountsReceivable', 'Revenue', 'Sales']
+    cash_out_accounts = ['CostCentreSpend', 'VendorExpenses', 'OperatingExpenses', 'AccountsPayable']
+
+    # Get all entries for the day
+    day_entries = db.query(LedgerEntryNew).filter(
+        LedgerEntryNew.created_at >= start_of_day,
+        LedgerEntryNew.created_at < end_of_day,
+        LedgerEntryNew.account.in_(cash_in_accounts + cash_out_accounts)
+    ).all()
+
+    # Aggregate in Python
+    cash_flow_dict = {}
+    for entry in day_entries:
+        key = (entry.tenant_id, entry.currency)
+
+        if key not in cash_flow_dict:
+            cash_flow_dict[key] = {
+                'tenant_id': entry.tenant_id,
+                'currency': entry.currency,
+                'cash_inflow_minor': 0,
+                'cash_outflow_minor': 0
+            }
+
+        if entry.entry_type == 'credit' and entry.account in cash_in_accounts:
+            cash_flow_dict[key]['cash_inflow_minor'] += entry.amount_minor
+        elif entry.entry_type == 'debit' and entry.account in cash_out_accounts:
+            cash_flow_dict[key]['cash_outflow_minor'] += entry.amount_minor
+
+    cash_flow_data = []
+    for key, data in cash_flow_dict.items():
+        cash_flow_data.append({
+            'date': date,
+            'tenant_id': str(data['tenant_id']),
+            'currency': data['currency'],
+            'cash_inflow_minor': data['cash_inflow_minor'],
+            'cash_outflow_minor': data['cash_outflow_minor'],
+            'net_cash_flow_minor': data['cash_inflow_minor'] - data['cash_outflow_minor']
+        })
+
+    return cash_flow_data
+
+def generate_compliance_summary(db: Session, date: datetime.date) -> dict:
+    """Generate compliance summary for the given date"""
+    start_of_day = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    # Get all entries for the day
+    day_entries = db.query(LedgerEntryNew).filter(
+        LedgerEntryNew.created_at >= start_of_day,
+        LedgerEntryNew.created_at < end_of_day
+    ).all()
+
+    # Aggregate by tenant and currency in Python
+    compliance_dict = {}
+    for entry in day_entries:
+        key = (entry.tenant_id, entry.currency)
+
+        if key not in compliance_dict:
+            compliance_dict[key] = {
+                'tenant_id': entry.tenant_id,
+                'currency': entry.currency,
+                'total_transactions': 0,
+                'total_volume_minor': 0,
+                'unique_references': set(),
+                'first_transaction': None,
+                'last_transaction': None
+            }
+
+        data = compliance_dict[key]
+        data['total_transactions'] += 1
+        data['total_volume_minor'] += entry.amount_minor
+        if entry.reference_id:
+            data['unique_references'].add(entry.reference_id)
+
+        if data['first_transaction'] is None or entry.created_at < data['first_transaction']:
+            data['first_transaction'] = entry.created_at
+        if data['last_transaction'] is None or entry.created_at > data['last_transaction']:
+            data['last_transaction'] = entry.created_at
+
+    compliance_data = []
+    for key, data in compliance_dict.items():
+        compliance_data.append({
+            'date': date,
+            'tenant_id': str(data['tenant_id']),
+            'currency': data['currency'],
+            'total_transactions': data['total_transactions'],
+            'total_volume_minor': data['total_volume_minor'],
+            'unique_references': len(data['unique_references']),
+            'first_transaction': data['first_transaction'],
+            'last_transaction': data['last_transaction'],
+            'avg_transaction_size_minor': data['total_volume_minor'] // data['total_transactions'] if data['total_transactions'] > 0 else 0,
+            'created_at': datetime.now(timezone.utc)
+        })
+
+    return compliance_data
+
+# =============================================================================
+# AUTOMATED USAGE METERING
+# =============================================================================
+
+class UsageMeteringManager:
+    """Manager for automated usage metering from ledger activity"""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def process_ledger_entries_for_usage(self, start_date: datetime, end_date: datetime):
+        """Process ledger entries and generate usage events"""
+        # Get all ledger entries in the time range
+        entries = self.db.query(LedgerEntryNew).filter(
+            LedgerEntryNew.created_at >= start_date,
+            LedgerEntryNew.created_at < end_date
+        ).all()
+
+        usage_events = []
+
+        for entry in entries:
+            # Map ledger accounts to usage meters
+            meter_code = self._map_account_to_meter(entry.account)
+
+            if meter_code:
+                usage_event = {
+                    'event_id': str(uuid.uuid4()),
+                    'tenant_id': str(entry.tenant_id),
+                    'user_id': None,  # Would be derived from audit logs in production
+                    'meter_code': meter_code,
+                    'quantity': self._calculate_usage_quantity(entry),
+                    'metadata_json': {
+                        'ledger_entry_id': str(entry.id),
+                        'account': entry.account,
+                        'entry_type': entry.entry_type,
+                        'amount_minor': entry.amount_minor,
+                        'currency': entry.currency,
+                        'reference_type': entry.reference_type,
+                        'reference_id': entry.reference_id
+                    },
+                    'recorded_at': entry.created_at
+                }
+                usage_events.append(usage_event)
+
+        return usage_events
+
+    def _map_account_to_meter(self, account: str) -> Optional[str]:
+        """Map ledger account to usage meter code"""
+        meter_mapping = {
+            'CostCentreSpend': 'orders_processed',
+            'Revenue': 'revenue_generated',
+            'AccountsReceivable': 'invoices_generated',
+            'VendorExpenses': 'vendor_payments',
+            'BudgetAllocation': 'budget_allocated',
+            'Cash': 'cash_transactions',
+            'TenantClearing': 'clearing_operations'
+        }
+        return meter_mapping.get(account)
+
+    def _calculate_usage_quantity(self, entry: LedgerEntryNew) -> int:
+        """Calculate usage quantity from ledger entry"""
+        # Default to 1 for most operations, or calculate based on amount
+        if entry.account in ['CostCentreSpend', 'Revenue', 'AccountsReceivable']:
+            # For financial accounts, use transaction count
+            return 1
+        elif entry.entry_type == 'debit' and entry.amount_minor > 0:
+            # For debit operations, count as usage
+            return 1
+        elif entry.entry_type == 'credit' and entry.amount_minor > 0:
+            # For credit operations, count as usage
+            return 1
+        else:
+            return 0
+
+@celery_app.task(bind=True, max_retries=3)
+def process_usage_metering(self, date_str: str = None):
+    """Process usage metering from ledger entries"""
+    try:
+        if date_str:
+            target_date = datetime.fromisoformat(date_str).date()
+        else:
+            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+
+        start_of_day = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        with SessionLocal() as db:
+            usage_manager = UsageMeteringManager(db)
+            usage_events = usage_manager.process_ledger_entries_for_usage(start_of_day, end_of_day)
+
+            # In production, these would be sent to the Usage service
+            if usage_events:
+                logger.info(f"Generated {len(usage_events)} usage events for {target_date}")
+
+                # Send to usage service (mock implementation)
+                for event in usage_events:
+                    # In production: send to actual usage service
+                    # await send_to_usage_service(event)
+                    # For now, just log the event
+                    logger.info(f"Usage event: {event['meter_code']} - {event['quantity']} for tenant {event['tenant_id']}")
+                    # Update usage event metrics
+                    ledger_usage_events_total.labels(meter_code=event['meter_code'], status="generated").inc()
+
+            # Update metrics
+            ledger_requests_total.labels(method="POST", endpoint="usage", status="success").inc()
+            ledger_usage_processing_total.labels(status="success").inc()
+
+    except Exception as e:
+        logger.error(f"Failed to process usage metering: {e}")
+        ledger_requests_total.labels(method="POST", endpoint="usage", status="error").inc()
+        ledger_usage_processing_total.labels(status="error").inc()
+        raise self.retry(exc=e, countdown=1800)  # Retry in 30 minutes
+
+# Add usage metering to beat schedule
+celery_app.conf.beat_schedule['daily-usage-metering'] = {
+    'task': 'services.ledger.main.process_usage_metering',
+    'schedule': crontab(hour=4, minute=0),  # Run at 4 AM daily
+}
 
 # =============================================================================
 # PHASE 7: AUDIT LOG VIEWER ENDPOINTS (Pro/Enterprise Feature)
