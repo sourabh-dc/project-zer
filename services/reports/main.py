@@ -5,17 +5,15 @@ Comprehensive analytics, reporting, and business intelligence platform
 """
 import uuid
 import os
-import json
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional, Any
+from typing import Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-import pandas as pd
 import io
 import redis
 import pybreaker
@@ -23,12 +21,13 @@ import pybreaker
 from core.config import get_settings
 from .utils.reports_logger import logger
 from .models import ReportJob, Dashboard, DashboardAccess
-from .utils.report_enums import ReportType, ReportFormat, ReportStatus, DashboardType
+from .utils.report_enums import ReportStatus, DashboardType
 from .schemas import ReportRequest, ReportResponse, DashboardCreateRequest, DashboardResponse, \
     PowerBIEmbedResponse, PowerBIEmbedRequest, DashboardDataRefresh
 from .repositories.report_generator_saga import ReportGenerator
-from .repositories.db_config import SessionLocal
+from .repositories.db_config import SessionLocal, get_db
 from .utils.metrics import report_requests_total, report_generation_duration
+from .services.reports_services import generate_report_background
 
 # Service configuration
 SERVICE_NAME = "reports"
@@ -84,11 +83,10 @@ async def health():
     }
 
 @app.get("/readiness")
-async def readiness():
+async def readiness(db=Depends(get_db)):
     """Readiness check endpoint"""
     try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return {
             "service": SERVICE_NAME,
             "status": "ready",
@@ -100,7 +98,6 @@ async def readiness():
 @app.get("/metrics")
 async def metrics():
     """Prometheus metrics endpoint"""
-    from fastapi.responses import Response
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ---- Report Generation Endpoints ----
@@ -641,62 +638,6 @@ async def get_refresh_status(
     except Exception as e:
         logger.error(f"Failed to get refresh status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# ---- Background Tasks ----
-async def generate_report_background(job_id: str, report_type: str, parameters: Dict[str, Any], format: ReportFormat, cache_ttl_minutes: int):
-    """Background task to generate reports"""
-    try:
-        with SessionLocal() as db:
-            generator = ReportGenerator(db)
-            
-            # Generate report data based on type
-            if report_type == ReportType.SALES_ANALYTICS:
-                data = await generator.generate_sales_analytics(parameters)
-            elif report_type == ReportType.INVENTORY_ANALYTICS:
-                data = await generator.generate_inventory_analytics(parameters)
-            elif report_type == ReportType.CUSTOMER_ANALYTICS:
-                data = await generator.generate_customer_analytics(parameters)
-            elif report_type == ReportType.OPERATIONAL_ANALYTICS:
-                data = await generator.generate_operational_analytics(parameters)
-            else:
-                raise ValueError(f"Unsupported report type: {report_type}")
-            
-            # Save report data to file
-            file_path = f"/tmp/reports/{job_id}.{format}"
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            if format == ReportFormat.JSON:
-                with open(file_path, 'w') as f:
-                    json.dump(data, f, indent=2, default=str)
-            elif format == ReportFormat.CSV:
-                # Convert to CSV format (simplified)
-                df = pd.json_normalize(data)
-                df.to_csv(file_path, index=False)
-            
-            # Update job status
-            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
-            if job:
-                job.status = ReportStatus.COMPLETED
-                job.file_path = file_path
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
-            
-            logger.info("Report generation completed", job_id=job_id, report_type=report_type)
-            
-    except Exception as e:
-        logger.error("Report generation failed", job_id=job_id, error=str(e))
-        
-        # Update job status to failed
-        try:
-            with SessionLocal() as db:
-                job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
-                if job:
-                    job.status = ReportStatus.FAILED
-                    job.error_message = str(e)
-                    job.completed_at = datetime.now(timezone.utc)
-                    db.commit()
-        except Exception:
-            pass
 
 # =============================================================================
 # MAIN EXECUTION

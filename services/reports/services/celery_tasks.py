@@ -1,3 +1,12 @@
+from sqlalchemy import text
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any
+
+from ..core.celery_config import celery_app
+from ..repositories.db_config import SessionLocal
+from ..models import ReportJob
+from ..utils.metrics import report_requests_total
+from ..utils.reports_logger import logger
 # =============================================================================
 # CELERY TASKS
 # =============================================================================
