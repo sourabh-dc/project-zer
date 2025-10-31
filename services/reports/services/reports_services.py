@@ -1,7 +1,7 @@
 # ---- Background Tasks ----
 import io
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import json
 import os
 import pandas as pd
@@ -12,9 +12,9 @@ from starlette.responses import StreamingResponse
 
 from services.reports.repositories.report_generator_saga import ReportGenerator
 from services.reports.utils.report_enums import ReportType, ReportFormat, ReportStatus
-from ..repositories.database_ops import update_report_job_status, create_report_job, get_report_job
-from ..schemas import ReportRequest, ReportResponse
-from ..utils.metrics import report_requests_total
+from ..repositories.database_ops import update_report_job_status, create_report_job, get_report_job, create_dashboard_db
+from ..schemas import ReportRequest, ReportResponse, DashboardCreateRequest
+from ..utils.metrics import report_requests_total, report_generation_duration
 from ..utils.reports_logger import logger
 
 
@@ -145,4 +145,133 @@ async def download_report(job_id: str, db: Session):
 
     except Exception as e:
         logger.error("Failed to download report", job_id=job_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_sales_analytics(tenant_id: str, start_date: str, end_date: str, store_id: Optional[str], group_by: str, db: Session):
+    """Get sales analytics data"""
+    try:
+        start_time = datetime.now()
+        generator = ReportGenerator(db)
+        params = {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "store_id": store_id,
+            "group_by": group_by
+        }
+
+        data = await generator.generate_sales_analytics(params)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="sales_analytics").observe(duration)
+        report_requests_total.labels(report_type="sales_analytics", status="success").inc()
+
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+
+    except Exception as e:
+        logger.error("Failed to generate sales analytics", error=str(e))
+        report_requests_total.labels(report_type="sales_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_inventory_analytics(tenant_id: str, store_id: Optional[str], db: Session):
+    """Get inventory analytics data"""
+    try:
+        start_time = datetime.now()
+        generator = ReportGenerator(db)
+        params = {
+            "tenant_id": tenant_id,
+            "store_id": store_id
+        }
+
+        data = await generator.generate_inventory_analytics(params)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="inventory_analytics").observe(duration)
+        report_requests_total.labels(report_type="inventory_analytics", status="success").inc()
+
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+
+    except Exception as e:
+        logger.error("Failed to generate inventory analytics", error=str(e))
+        report_requests_total.labels(report_type="inventory_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def get_customer_analytics(tenant_id: str, start_date: str, end_date: str, db: Session):
+    """Get customer analytics data"""
+    try:
+        start_time = datetime.now()
+        generator = ReportGenerator(db)
+        params = {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+
+        data = await generator.generate_customer_analytics(params)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="customer_analytics").observe(duration)
+        report_requests_total.labels(report_type="customer_analytics", status="success").inc()
+
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+
+    except Exception as e:
+        logger.error("Failed to generate customer analytics", error=str(e))
+        report_requests_total.labels(report_type="customer_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_operational_analytics(tenant_id: str, start_date: str, end_date: str, db: Session):
+    """Get operational analytics data"""
+    try:
+        start_time = datetime.now()
+
+        generator = ReportGenerator(db)
+        params = {
+            "tenant_id": tenant_id,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+
+        data = await generator.generate_operational_analytics(params)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        report_generation_duration.labels(report_type="operational_analytics").observe(duration)
+        report_requests_total.labels(report_type="operational_analytics", status="success").inc()
+
+        return {
+            "data": data,
+            "generated_at": datetime.now(timezone.utc),
+            "generation_time_seconds": duration
+        }
+
+    except Exception as e:
+        logger.error("Failed to generate operational analytics", error=str(e))
+        report_requests_total.labels(report_type="operational_analytics", status="failed").inc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def create_dashboard(request: DashboardCreateRequest, tenant_id: str, user_id: str, db: Session
+):
+    """Create a new dashboard - Phase 6"""
+    try:
+        dashboard = create_dashboard_db(db=db, tenant_id=tenant_id, user_id=user_id, request=request)
+        return dashboard
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create dashboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))

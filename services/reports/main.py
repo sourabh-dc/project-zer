@@ -11,25 +11,24 @@ from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import Response
 from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-import io
 import redis
 import pybreaker
 from sqlalchemy.orm import Session
-from watchfiles import awatch
 
 from core.config import get_settings
 from .utils.reports_logger import logger
-from .models import ReportJob, Dashboard, DashboardAccess
-from .utils.report_enums import ReportStatus, DashboardType
+from .models import Dashboard, DashboardAccess
+from .utils.report_enums import DashboardType
 from .schemas import ReportRequest, ReportResponse, DashboardCreateRequest, DashboardResponse, \
     PowerBIEmbedResponse, PowerBIEmbedRequest, DashboardDataRefresh
 from .repositories.report_generator_saga import ReportGenerator
 from .repositories.db_config import SessionLocal, get_db
 from .utils.metrics import report_requests_total, report_generation_duration
-from .services.reports_services import generate_report_background, generate_report, fetch_report_status, download_report
+from .services.reports_services import generate_report, fetch_report_status, download_report, get_sales_analytics, \
+    get_inventory_analytics, get_customer_analytics, get_operational_analytics, create_dashboard
 
 # Service configuration
 SERVICE_NAME = "reports"
@@ -120,234 +119,35 @@ async def download_report_route(job_id: str, db: Session=Depends(get_db)):
 
 # ---- Analytics Endpoints ----
 @app.get("/analytics/v4/sales")
-async def get_sales_analytics(
-    tenant_id: str = Query(...),
-    start_date: str = Query(...),
-    end_date: str = Query(...),
-    store_id: Optional[str] = Query(None),
-    group_by: str = Query("day")
-):
+async def get_sales_analytics_route(tenant_id: str = Query(...), start_date: str = Query(...), end_date: str = Query(...),
+                              store_id: Optional[str] = Query(None), group_by: str = Query("day"), db: Session=Depends(get_db)):
     """Get sales analytics data"""
-    try:
-        start_time = datetime.now()
-        
-        with SessionLocal() as db:
-            generator = ReportGenerator(db)
-            params = {
-                "tenant_id": tenant_id,
-                "start_date": start_date,
-                "end_date": end_date,
-                "store_id": store_id,
-                "group_by": group_by
-            }
-            
-            data = await generator.generate_sales_analytics(params)
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        report_generation_duration.labels(report_type="sales_analytics").observe(duration)
-        report_requests_total.labels(report_type="sales_analytics", status="success").inc()
-        
-        return {
-            "data": data,
-            "generated_at": datetime.now(timezone.utc),
-            "generation_time_seconds": duration
-        }
-        
-    except Exception as e:
-        logger.error("Failed to generate sales analytics", error=str(e))
-        report_requests_total.labels(report_type="sales_analytics", status="failed").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_sales_analytics(tenant_id, start_date, end_date, store_id, group_by, db)
 
 @app.get("/analytics/v4/inventory")
-async def get_inventory_analytics(
-    tenant_id: str = Query(...),
-    store_id: Optional[str] = Query(None)
-):
+async def get_inventory_analytics_route(tenant_id: str = Query(...), store_id: Optional[str] = Query(None),
+                                  db: Session=Depends(get_db)):
     """Get inventory analytics data"""
-    try:
-        start_time = datetime.now()
-        
-        with SessionLocal() as db:
-            generator = ReportGenerator(db)
-            params = {
-                "tenant_id": tenant_id,
-                "store_id": store_id
-            }
-            
-            data = await generator.generate_inventory_analytics(params)
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        report_generation_duration.labels(report_type="inventory_analytics").observe(duration)
-        report_requests_total.labels(report_type="inventory_analytics", status="success").inc()
-        
-        return {
-            "data": data,
-            "generated_at": datetime.now(timezone.utc),
-            "generation_time_seconds": duration
-        }
-        
-    except Exception as e:
-        logger.error("Failed to generate inventory analytics", error=str(e))
-        report_requests_total.labels(report_type="inventory_analytics", status="failed").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_inventory_analytics(tenant_id, store_id, db)
 
 @app.get("/analytics/v4/customers")
-async def get_customer_analytics(
-    tenant_id: str = Query(...),
-    start_date: str = Query(...),
-    end_date: str = Query(...)
-):
+async def get_customer_analytics_route(tenant_id: str = Query(...), start_date: str = Query(...), end_date: str = Query(...),
+                                 db: Session=Depends(get_db)):
     """Get customer analytics data"""
-    try:
-        start_time = datetime.now()
-        
-        with SessionLocal() as db:
-            generator = ReportGenerator(db)
-            params = {
-                "tenant_id": tenant_id,
-                "start_date": start_date,
-                "end_date": end_date
-            }
-            
-            data = await generator.generate_customer_analytics(params)
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        report_generation_duration.labels(report_type="customer_analytics").observe(duration)
-        report_requests_total.labels(report_type="customer_analytics", status="success").inc()
-        
-        return {
-            "data": data,
-            "generated_at": datetime.now(timezone.utc),
-            "generation_time_seconds": duration
-        }
-        
-    except Exception as e:
-        logger.error("Failed to generate customer analytics", error=str(e))
-        report_requests_total.labels(report_type="customer_analytics", status="failed").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_customer_analytics(tenant_id, start_date, end_date, db)
 
 @app.get("/analytics/v4/operational")
-async def get_operational_analytics(
-    tenant_id: str = Query(...),
-    start_date: str = Query(...),
-    end_date: str = Query(...)
-):
+async def get_operational_analytics_route(tenant_id: str = Query(...), start_date: str = Query(...),
+                                    end_date: str = Query(...), db: Session=Depends(get_db)):
     """Get operational analytics data"""
-    try:
-        start_time = datetime.now()
-        
-        with SessionLocal() as db:
-            generator = ReportGenerator(db)
-            params = {
-                "tenant_id": tenant_id,
-                "start_date": start_date,
-                "end_date": end_date
-            }
-            
-            data = await generator.generate_operational_analytics(params)
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        report_generation_duration.labels(report_type="operational_analytics").observe(duration)
-        report_requests_total.labels(report_type="operational_analytics", status="success").inc()
-        
-        return {
-            "data": data,
-            "generated_at": datetime.now(timezone.utc),
-            "generation_time_seconds": duration
-        }
-        
-    except Exception as e:
-        logger.error("Failed to generate operational analytics", error=str(e))
-        report_requests_total.labels(report_type="operational_analytics", status="failed").inc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_operational_analytics(tenant_id, start_date, end_date, db)
 
 # Phase 6: Dashboard Management Endpoints (Power BI Integration)
 @app.post("/dashboards", response_model=DashboardResponse)
-async def create_dashboard(
-    request: DashboardCreateRequest,
-    tenant_id: str = Query(...),
-    user_id: str = Query(...)
-):
+async def create_dashboard_route(request: DashboardCreateRequest, tenant_id: str = Query(...),
+                                 user_id: str = Query(...), db: Session=Depends(get_db)):
     """Create a new dashboard - Phase 6"""
-    try:
-        start_time = datetime.now()
-
-        with SessionLocal() as db:
-            # Check if dashboard name already exists for tenant
-            existing = db.query(Dashboard).filter(
-                Dashboard.tenant_id == tenant_id,
-                Dashboard.name == request.name
-            ).first()
-
-            if existing:
-                raise HTTPException(status_code=409, detail="Dashboard name already exists")
-
-            # Create dashboard
-            dashboard_id = str(uuid.uuid4())
-            dashboard = Dashboard(
-                dashboard_id=dashboard_id,
-                tenant_id=tenant_id,
-                name=request.name,
-                description=request.description,
-                dashboard_type=request.dashboard_type.value,
-                powerbi_workspace_id=request.powerbi_workspace_id,
-                powerbi_report_id=request.powerbi_report_id,
-                powerbi_dataset_id=request.powerbi_dataset_id,
-                embed_config=request.embed_config,
-                data_sources=request.data_sources,
-                refresh_schedule=request.refresh_schedule,
-                filters=request.filters,
-                is_public=request.is_public
-            )
-
-            db.add(dashboard)
-
-            # Create default access for creator
-            access_id = str(uuid.uuid4())
-            access = DashboardAccess(
-                id=access_id,
-                dashboard_id=dashboard_id,
-                user_id=user_id,
-                permissions=["read", "write", "admin"]  # Full access for creator
-            )
-            db.add(access)
-
-            # Create initial data refresh record
-            refresh_id = str(uuid.uuid4())
-            refresh = DashboardDataRefresh(
-                id=refresh_id,
-                dashboard_id=dashboard_id,
-                status="pending"
-            )
-            db.add(refresh)
-
-            db.commit()
-
-        duration = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Dashboard created: {dashboard_id} for tenant {tenant_id}")
-
-        return DashboardResponse(
-            dashboard_id=dashboard_id,
-            name=request.name,
-            description=request.description,
-            dashboard_type=request.dashboard_type,
-            powerbi_workspace_id=request.powerbi_workspace_id,
-            powerbi_report_id=request.powerbi_report_id,
-            powerbi_dataset_id=request.powerbi_dataset_id,
-            embed_config=request.embed_config,
-            data_sources=request.data_sources,
-            refresh_schedule=request.refresh_schedule,
-            filters=request.filters,
-            is_public=request.is_public,
-            created_at=dashboard.created_at,
-            updated_at=dashboard.updated_at
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to create dashboard: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_dashboard(request, tenant_id, user_id, db)
 
 @app.get("/dashboards")
 async def list_dashboards(
