@@ -17,7 +17,7 @@ from ..models import Dashboard
 from ..repositories.database_ops import update_report_job_status, create_report_job, get_report_job, \
     create_dashboard_db, list_dashboards_db, get_dashboard_db, get_dashboard_refresh, update_dashboard_refresh
 from ..schemas import ReportRequest, ReportResponse, DashboardCreateRequest, DashboardResponse, PowerBIEmbedRequest, \
-    PowerBIEmbedResponse
+    PowerBIEmbedResponse, DashboardDataRefresh
 from ..utils.metrics import report_requests_total, report_generation_duration
 from ..utils.reports_logger import logger
 
@@ -410,4 +410,26 @@ async def refresh_dashboard_data_service( dashboard_id: str, tenant_id: str, use
                 update_dashboard_refresh(db, refresh, status, error_message=str(e))
         except:
             pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def get_refresh_status(dashboard_id: str, db: Session):
+    """Get dashboard refresh status - Phase 6"""
+    try:
+        refresh = get_dashboard_refresh(db, dashboard_id)
+
+        if not refresh:
+            raise HTTPException(status_code=404, detail="Refresh status not found")
+
+        return DashboardDataRefresh(
+            dashboard_id=refresh.dashboard_id,
+            status=refresh.status,
+            last_refresh=refresh.last_refresh,
+            next_refresh=refresh.next_refresh,
+            error_message=refresh.error_message
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get refresh status: {e}")
         raise HTTPException(status_code=500, detail=str(e))

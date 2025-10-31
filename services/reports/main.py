@@ -30,7 +30,7 @@ from .repositories.db_config import SessionLocal, get_db
 from .utils.metrics import report_requests_total, report_generation_duration
 from .services.reports_services import generate_report, fetch_report_status, download_report, get_sales_analytics, \
     get_inventory_analytics, get_customer_analytics, get_operational_analytics, create_dashboard, list_dashboards, \
-    get_dashboard, generate_embed_token_service, refresh_dashboard_data_service
+    get_dashboard, generate_embed_token_service, refresh_dashboard_data_service, get_refresh_status
 
 # Service configuration
 SERVICE_NAME = "reports"
@@ -176,30 +176,9 @@ async def refresh_dashboard_data( dashboard_id: str, tenant_id: str = Query(...)
     return await refresh_dashboard_data_service(dashboard_id, tenant_id, user_id, db)
 
 @app.get("/dashboards/{dashboard_id}/refresh-status")
-async def get_refresh_status(dashboard_id: str, tenant_id: str = Query(...), user_id: str = Query(...), db: Session=Depends(get_db)):
+async def get_refresh_status_route(dashboard_id: str, db: Session=Depends(get_db)):
     """Get dashboard refresh status - Phase 6"""
-    try:
-        with SessionLocal() as db:
-            refresh = db.query(DashboardDataRefresh).filter(
-                DashboardDataRefresh.dashboard_id == dashboard_id
-            ).first()
-
-            if not refresh:
-                raise HTTPException(status_code=404, detail="Refresh status not found")
-
-            return DashboardDataRefresh(
-                dashboard_id=refresh.dashboard_id,
-                status=refresh.status,
-                last_refresh=refresh.last_refresh,
-                next_refresh=refresh.next_refresh,
-                error_message=refresh.error_message
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get refresh status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_refresh_status(dashboard_id, db)
 
 # =============================================================================
 # MAIN EXECUTION
