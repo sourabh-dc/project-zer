@@ -17,6 +17,8 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import io
 import redis
 import pybreaker
+from sqlalchemy.orm import Session
+from watchfiles import awatch
 
 from core.config import get_settings
 from .utils.reports_logger import logger
@@ -27,7 +29,7 @@ from .schemas import ReportRequest, ReportResponse, DashboardCreateRequest, Dash
 from .repositories.report_generator_saga import ReportGenerator
 from .repositories.db_config import SessionLocal, get_db
 from .utils.metrics import report_requests_total, report_generation_duration
-from .services.reports_services import generate_report_background
+from .services.reports_services import generate_report_background, generate_report, fetch_report_status, download_report
 
 # Service configuration
 SERVICE_NAME = "reports"
@@ -102,102 +104,19 @@ async def metrics():
 
 # ---- Report Generation Endpoints ----
 @app.post("/reports/v4/generate", response_model=ReportResponse)
-async def generate_report(request: ReportRequest, background_tasks: BackgroundTasks):
+async def generate_report_route(request: ReportRequest, background_tasks: BackgroundTasks, db: Session=Depends(get_db)):
     """Generate a new report"""
-    try:
-        job_id = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{request.report_type}"
-        
-        # Check cache first
-        cache_key = f"{request.tenant_id}:{request.report_type}:{hash(str(request.parameters))}"
-        
-        with SessionLocal() as db:
-            # Create report job
-            job = ReportJob(
-                id=job_id,
-                tenant_id=request.tenant_id,
-                user_id=request.user_id,
-                report_type=request.report_type,
-                report_name=request.report_name,
-                parameters=request.parameters,
-                status=ReportStatus.GENERATING,
-                expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
-            )
-            db.add(job)
-            db.commit()
-            
-            # Start background report generation
-            background_tasks.add_task(
-                generate_report_background,
-                job_id,
-                request.report_type,
-                request.parameters,
-                request.format,
-                request.cache_ttl_minutes
-            )
-        
-        report_requests_total.labels(report_type=request.report_type, status="initiated").inc()
-        
-        return ReportResponse(
-            job_id=job_id,
-            status=ReportStatus.GENERATING,
-            message="Report generation initiated",
-            estimated_completion=datetime.now(timezone.utc) + timedelta(minutes=5)
-        )
-        
-    except Exception as e:
-        logger.error("Failed to initiate report generation", error=str(e))
-        report_requests_total.labels(report_type=request.report_type, status="failed").inc()
-        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+    return await generate_report(request, background_tasks, db)
 
 @app.get("/reports/v4/status/{job_id}")
-async def get_report_status(job_id: str):
+async def get_report_status(job_id: str, db:Session=Depends(get_db)):
     """Get report generation status"""
-    try:
-        with SessionLocal() as db:
-            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
-            if not job:
-                raise HTTPException(status_code=404, detail="Report job not found")
-            
-            return {
-                "job_id": job.id,
-                "status": job.status,
-                "created_at": job.created_at,
-                "completed_at": job.completed_at,
-                "error_message": job.error_message,
-                "file_path": job.file_path
-            }
-    except Exception as e:
-        logger.error("Failed to get report status", job_id=job_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return await fetch_report_status(job_id, db)
 
 @app.get("/reports/v4/download/{job_id}")
-async def download_report(job_id: str):
+async def download_report_route(job_id: str, db: Session=Depends(get_db)):
     """Download completed report"""
-    try:
-        with SessionLocal() as db:
-            job = db.query(ReportJob).filter(ReportJob.id == job_id).first()
-            if not job:
-                raise HTTPException(status_code=404, detail="Report job not found")
-            
-            if job.status != ReportStatus.COMPLETED:
-                raise HTTPException(status_code=400, detail="Report not ready for download")
-            
-            if not job.file_path or not os.path.exists(job.file_path):
-                raise HTTPException(status_code=404, detail="Report file not found")
-            
-            # Return file based on format
-            with open(job.file_path, 'rb') as f:
-                content = f.read()
-            
-            return StreamingResponse(
-                io.BytesIO(content),
-                media_type="application/octet-stream",
-                headers={"Content-Disposition": f"attachment; filename={job.report_name}.{job.parameters.get('format', 'json')}"}
-            )
-            
-    except Exception as e:
-        logger.error("Failed to download report", job_id=job_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return await download_report(job_id, db)
 
 # ---- Analytics Endpoints ----
 @app.get("/analytics/v4/sales")
