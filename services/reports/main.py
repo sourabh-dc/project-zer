@@ -3,10 +3,7 @@
 ZeroQue Reports Service V4.1
 Comprehensive analytics, reporting, and business intelligence platform
 """
-import uuid
 import os
-import asyncio
-from datetime import datetime, timezone, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
@@ -17,17 +14,12 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pybreaker
 from sqlalchemy.orm import Session
-from sqlalchemy.util import await_only
 
 from core.config import get_settings
 from .utils.reports_logger import logger
-from .models import Dashboard, DashboardAccess
-from .utils.report_enums import DashboardType
 from .schemas import ReportRequest, ReportResponse, DashboardCreateRequest, DashboardResponse, \
-    PowerBIEmbedResponse, PowerBIEmbedRequest, DashboardDataRefresh
-from .repositories.report_generator_saga import ReportGenerator
-from .repositories.db_config import SessionLocal, get_db
-from .utils.metrics import report_requests_total, report_generation_duration
+    PowerBIEmbedResponse, PowerBIEmbedRequest
+from .repositories.db_config import get_db
 from .services.reports_services import generate_report, fetch_report_status, download_report, get_sales_analytics, \
     get_inventory_analytics, get_customer_analytics, get_operational_analytics, create_dashboard, list_dashboards, \
     get_dashboard, generate_embed_token_service, refresh_dashboard_data_service, get_refresh_status
