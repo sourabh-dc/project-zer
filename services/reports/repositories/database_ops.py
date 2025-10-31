@@ -111,3 +111,35 @@ def create_dashboard_db(db, tenant_id: str, user_id: str, request: DashboardCrea
         created_at=dashboard.created_at,
         updated_at=dashboard.updated_at
     )
+
+def list_dashboards_db(db, tenant_id: str, dashboard_type):
+    query = db.query(Dashboard).filter(
+        Dashboard.tenant_id == tenant_id
+    )
+
+    if dashboard_type:
+        query = query.filter(Dashboard.dashboard_type == dashboard_type)
+
+    dashboards = query.all()
+    return dashboards
+
+def get_dashboard_db(db, dashboard_id: str, tenant_id: str):
+    dashboard = db.query(Dashboard).filter(
+        Dashboard.dashboard_id == dashboard_id,
+        Dashboard.tenant_id == tenant_id
+    ).first()
+
+    return dashboard
+
+def get_dashboard_refresh(db, dashboard_id):
+    refresh = db.query(DashboardDataRefresh).filter(
+        DashboardDataRefresh.dashboard_id == dashboard_id
+    ).first()
+    return refresh
+
+def update_dashboard_refresh(db, refresh, status, last_refresh=None, error_message=None):
+    refresh.status = status
+    refresh.last_refresh = last_refresh
+    refresh.error_message = error_message
+    refresh.updated_at = datetime.now(timezone.utc)
+    db.commit()

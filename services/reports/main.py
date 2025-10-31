@@ -17,6 +17,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pybreaker
 from sqlalchemy.orm import Session
+from sqlalchemy.util import await_only
 
 from core.config import get_settings
 from .utils.reports_logger import logger
@@ -28,7 +29,8 @@ from .repositories.report_generator_saga import ReportGenerator
 from .repositories.db_config import SessionLocal, get_db
 from .utils.metrics import report_requests_total, report_generation_duration
 from .services.reports_services import generate_report, fetch_report_status, download_report, get_sales_analytics, \
-    get_inventory_analytics, get_customer_analytics, get_operational_analytics, create_dashboard
+    get_inventory_analytics, get_customer_analytics, get_operational_analytics, create_dashboard, list_dashboards, \
+    get_dashboard, generate_embed_token_service, refresh_dashboard_data_service
 
 # Service configuration
 SERVICE_NAME = "reports"
@@ -150,190 +152,31 @@ async def create_dashboard_route(request: DashboardCreateRequest, tenant_id: str
     return await create_dashboard(request, tenant_id, user_id, db)
 
 @app.get("/dashboards")
-async def list_dashboards(
-    tenant_id: str = Query(...),
-    dashboard_type: Optional[str] = Query(None),
-    user_id: str = Query(...)
-):
+async def list_dashboards_route(tenant_id: str = Query(...), dashboard_type: Optional[str] = Query(None),
+                          user_id: str = Query(...), db: Session=Depends(get_db)):
     """List dashboards for tenant - Phase 6"""
-    try:
-        with SessionLocal() as db:
-            query = db.query(Dashboard).filter(
-                Dashboard.tenant_id == tenant_id
-            )
-
-            if dashboard_type:
-                query = query.filter(Dashboard.dashboard_type == dashboard_type)
-
-            dashboards = query.all()
-
-            return {
-                "dashboards": [
-                    {
-                        "dashboard_id": d.dashboard_id,
-                        "name": d.name,
-                        "description": d.description,
-                        "dashboard_type": d.dashboard_type,
-                        "is_public": d.is_public,
-                        "created_at": d.created_at.isoformat(),
-                        "updated_at": d.updated_at.isoformat() if d.updated_at else None
-                    }
-                    for d in dashboards
-                ],
-                "total": len(dashboards)
-            }
-
-    except Exception as e:
-        logger.error(f"Failed to list dashboards: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await list_dashboards(tenant_id, dashboard_type, db)
 
 @app.get("/dashboards/{dashboard_id}")
-async def get_dashboard(
-    dashboard_id: str,
-    tenant_id: str = Query(...),
-    user_id: str = Query(...)
-):
+async def get_dashboard_route(dashboard_id: str, tenant_id: str = Query(...), user_id: str = Query(...), db: Session=Depends(get_db)):
     """Get dashboard details - Phase 6"""
-    try:
-        with SessionLocal() as db:
-            dashboard = db.query(Dashboard).filter(
-                Dashboard.dashboard_id == dashboard_id,
-                Dashboard.tenant_id == tenant_id
-            ).first()
-
-            if not dashboard:
-                raise HTTPException(status_code=404, detail="Dashboard not found")
-
-            # Check access permissions (simplified - in production, check against DashboardAccess table)
-            return DashboardResponse(
-                dashboard_id=dashboard.dashboard_id,
-                name=dashboard.name,
-                description=dashboard.description,
-                dashboard_type=DashboardType(dashboard.dashboard_type),
-                powerbi_workspace_id=dashboard.powerbi_workspace_id,
-                powerbi_report_id=dashboard.powerbi_report_id,
-                powerbi_dataset_id=dashboard.powerbi_dataset_id,
-                embed_config=dashboard.embed_config,
-                data_sources=dashboard.data_sources,
-                refresh_schedule=dashboard.refresh_schedule,
-                filters=dashboard.filters,
-                is_public=dashboard.is_public,
-                created_at=dashboard.created_at,
-                updated_at=dashboard.updated_at
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get dashboard: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_dashboard(dashboard_id, tenant_id, user_id, db)
 
 @app.post("/dashboards/{dashboard_id}/embed-token", response_model=PowerBIEmbedResponse)
-async def generate_embed_token(
-    dashboard_id: str,
-    request: PowerBIEmbedRequest,
-    tenant_id: str = Query(...),
-    user_id: str = Query(...)
+async def generate_embed_token(dashboard_id: str, request: PowerBIEmbedRequest, tenant_id: str = Query(...),
+                               user_id: str = Query(...), db: Session=Depends(get_db)
 ):
     """Generate Power BI embed token - Phase 6"""
-    try:
-        with SessionLocal() as db:
-            dashboard = db.query(Dashboard).filter(
-                Dashboard.dashboard_id == dashboard_id,
-                Dashboard.tenant_id == tenant_id
-            ).first()
-
-            if not dashboard:
-                raise HTTPException(status_code=404, detail="Dashboard not found")
-
-            # Check access permissions (simplified)
-            # In production: verify user has access to dashboard
-
-            # Generate mock Power BI embed token (in production, integrate with Power BI API)
-            import secrets
-            embed_token = secrets.token_urlsafe(64)
-            embed_url = f"https://app.powerbi.com/reportEmbed?reportId={dashboard.powerbi_report_id}&groupId={dashboard.powerbi_workspace_id}"
-            expiry = datetime.now(timezone.utc) + timedelta(hours=1)
-
-            return PowerBIEmbedResponse(
-                embed_token=embed_token,
-                embed_url=embed_url,
-                expiry=expiry,
-                permissions=request.permissions
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to generate embed token: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await generate_embed_token_service(dashboard_id, request, tenant_id, user_id, db)
 
 @app.post("/dashboards/{dashboard_id}/refresh")
-async def refresh_dashboard_data(
-    dashboard_id: str,
-    tenant_id: str = Query(...),
-    user_id: str = Query(...)
-):
+async def refresh_dashboard_data( dashboard_id: str, tenant_id: str = Query(...), user_id: str = Query(...),
+                                  db: Session=Depends(get_db)):
     """Trigger dashboard data refresh - Phase 6"""
-    try:
-        with SessionLocal() as db:
-            dashboard = db.query(Dashboard).filter(
-                Dashboard.dashboard_id == dashboard_id,
-                Dashboard.tenant_id == tenant_id
-            ).first()
-
-            if not dashboard:
-                raise HTTPException(status_code=404, detail="Dashboard not found")
-
-            # Update refresh status
-            refresh = db.query(DashboardDataRefresh).filter(
-                DashboardDataRefresh.dashboard_id == dashboard_id
-            ).first()
-
-            if refresh:
-                refresh.status = "running"
-                refresh.updated_at = datetime.now(timezone.utc)
-                db.commit()
-
-            # In production: trigger actual data refresh from data sources
-            # For now, just mark as completed after a delay (simulate async refresh)
-            await asyncio.sleep(2)  # Simulate refresh time
-
-            if refresh:
-                refresh.status = "completed"
-                refresh.last_refresh = datetime.now(timezone.utc)
-                refresh.updated_at = datetime.now(timezone.utc)
-                db.commit()
-
-            logger.info(f"Dashboard data refresh completed: {dashboard_id}")
-
-            return {"message": "Dashboard data refresh completed", "dashboard_id": dashboard_id}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to refresh dashboard data: {e}")
-        # Mark refresh as failed
-        try:
-            with SessionLocal() as db:
-                refresh = db.query(DashboardDataRefresh).filter(
-                    DashboardDataRefresh.dashboard_id == dashboard_id
-                ).first()
-                if refresh:
-                    refresh.status = "failed"
-                    refresh.error_message = str(e)
-                    refresh.updated_at = datetime.now(timezone.utc)
-                    db.commit()
-        except:
-            pass
-        raise HTTPException(status_code=500, detail=str(e))
+    return await refresh_dashboard_data_service(dashboard_id, tenant_id, user_id, db)
 
 @app.get("/dashboards/{dashboard_id}/refresh-status")
-async def get_refresh_status(
-    dashboard_id: str,
-    tenant_id: str = Query(...),
-    user_id: str = Query(...)
-):
+async def get_refresh_status(dashboard_id: str, tenant_id: str = Query(...), user_id: str = Query(...), db: Session=Depends(get_db)):
     """Get dashboard refresh status - Phase 6"""
     try:
         with SessionLocal() as db:
