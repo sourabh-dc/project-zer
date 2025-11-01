@@ -1,7 +1,12 @@
+import json
 from typing import Dict, Any
+
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from services.payments.models import AuditLog, CustomerNew, PaymentTransactionNew, PaymentRefund
+from services.payments.repositories.payment_saga import PaymentIntentSaga
+from services.payments.utils.payments_logger import logger
 
 
 async def log_audit(db: Session, action: str, resource_type: str, resource_id: str = None,
@@ -57,3 +62,126 @@ async def store_refund(db, transaction, refund_id, refund_amount, request):
 async def update_transaction_status(db, transaction, status):
     transaction.status = status
     db.commit()
+
+async def handle_payment_success(db: Session, tenant_id: str, result: Dict[str, Any]):
+    """Handle successful payment"""
+    try:
+        # Update transaction status
+        db.execute(text("""
+                        UPDATE payment_transactions_new
+                        SET status     = 'succeeded',
+                            updated_at = NOW()
+                        WHERE payment_intent_id = :payment_intent_id
+                          AND tenant_id = :tenant_id
+                        """), {
+                       "payment_intent_id": result["payment_intent_id"],
+                       "tenant_id": tenant_id
+                   })
+
+        db.commit()
+
+        # Publish PAYMENT_PAID event
+        await PaymentIntentSaga(db)._publish_event(
+            tenant_id,
+            "PAYMENT_PAID",
+            result
+        )
+
+        logger.info(f"Payment succeeded: {result['payment_intent_id']}")
+
+    except Exception as e:
+        logger.error(f"Failed to handle payment success: {str(e)}")
+        db.rollback()
+
+
+async def handle_payment_failure(db: Session, tenant_id: str, result: Dict[str, Any]):
+    """Handle failed payment"""
+    try:
+        # Update transaction status
+        db.execute(text("""
+                        UPDATE payment_transactions_new
+                        SET status     = 'failed',
+                            updated_at = NOW()
+                        WHERE payment_intent_id = :payment_intent_id
+                          AND tenant_id = :tenant_id
+                        """), {
+                       "payment_intent_id": result["payment_intent_id"],
+                       "tenant_id": tenant_id
+                   })
+
+        db.commit()
+
+        # Publish PAYMENT_FAILED event
+        await PaymentIntentSaga(db)._publish_event(
+            tenant_id,
+            "PAYMENT_FAILED",
+            result
+        )
+
+        logger.info(f"Payment failed: {result['payment_intent_id']}")
+
+    except Exception as e:
+        logger.error(f"Failed to handle payment failure: {str(e)}")
+        db.rollback()
+
+async def upsert_provider_config(db, request):
+    # Upsert provider configuration
+    db.execute(text("""
+                    INSERT INTO zeroque_rails (tenant_id, type, name, config, active, created_at, updated_at)
+                    VALUES (:tenant_id, :type, :name, :config, :active, NOW(), NOW()) ON CONFLICT (tenant_id, type, name)
+                DO
+                    UPDATE SET config = :config, active = :active, updated_at = NOW()
+                    """), {
+                   "tenant_id": request.tenant_id,
+                   "type": request.type,
+                   "name": request.name,
+                   "config": json.dumps(request.config),
+                   "active": request.active
+               })
+
+    db.commit()
+
+async def get_transactions(db, tenant_id: str, provider, status, limit, offset):
+    # Build query
+    query = text("""
+                 SELECT id, provider, payment_intent_id, charge_id, amount_minor, currency, status, order_id,
+                        site_id, store_id, user_id, created_at, updated_at
+                 FROM payment_transactions_new
+                 WHERE tenant_id = :tenant_id
+                 """)
+
+    params = {"tenant_id": tenant_id}
+
+    if provider:
+        query = text(str(query) + " AND provider = :provider")
+        params["provider"] = provider
+
+    if status:
+        query = text(str(query) + " AND status = :status")
+        params["status"] = status
+
+    query = text(str(query) + " ORDER BY created_at DESC LIMIT :limit OFFSET :offset")
+    params.update({"limit": limit, "offset": offset})
+
+    # Execute query
+    result = db.execute(query, params).fetchall()
+
+    transactions = []
+    for row in result:
+        transactions.append({
+            "id": str(row[0]),
+            "provider": row[1],
+            "payment_intent_id": row[2],
+            "charge_id": row[3],
+            "amount_minor": row[4],
+            "currency": row[5],
+            "status": row[6],
+            "order_id": str(row[7]) if row[7] else None,
+            "site_id": str(row[8]) if row[8] else None,
+            "store_id": str(row[9]) if row[9] else None,
+            "user_id": str(row[10]) if row[10] else None,
+            "created_at": row[11].isoformat(),
+            "updated_at": row[12].isoformat() if row[12] else None
+        })
+
+    return transactions

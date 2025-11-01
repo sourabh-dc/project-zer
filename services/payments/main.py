@@ -18,7 +18,8 @@ import pybreaker
 from core.config import get_settings
 from services.payments.repositories.database_ops import log_audit
 from services.payments.repositories.payment_provider import StripeProvider
-from services.payments.services.payment_services import create_payment_intent, create_customer, refund_payment
+from services.payments.services.payment_services import create_payment_intent, create_customer, refund_payment, \
+    process_webhook, configure_payment_provider, fetch_transactions
 from services.payments.utils.user_auth import get_user_context, check_permission
 from .models import TradeAccount, CurrencyRate, PaymentIntent
 from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest,\
@@ -26,7 +27,7 @@ from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailR
 from .repositories.db_config import get_db_with_rls, set_rls_context
 from .utils.payments_logger import logger
 from .repositories.payment_saga import PaymentIntentSaga
-from .utils.metrics import payment_requests_total, webhook_requests_total
+from .utils.metrics import payment_requests_total
 
 # Configuration
 DATABASE_URL = get_settings().DATABASE_URL
@@ -126,250 +127,34 @@ async def refund_payment_route(
     return await refund_payment(request, db, user_context)
 
 @app.post("/payments/v2/webhook/{provider}")
-async def process_webhook(
-    provider: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db_with_rls)
+async def process_webhook_route(provider: str, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db_with_rls)
 ):
     """Process webhook from payment providers"""
-    try:
-        payload = await request.json()
-        signature = request.headers.get("stripe-signature") if provider == "stripe" else None
-        
-        # Get provider config (use first available tenant for demo)
-        tenant_id = "demo_tenant_id"  # In production, determine from webhook payload
-        
-        provider_config = await PaymentIntentSaga(db)._get_provider_config(tenant_id, provider)
-        provider_instance = await PaymentIntentSaga(db)._get_provider(provider, provider_config)
-        
-        # Process webhook
-        result = await provider_instance.process_webhook(payload, signature)
-        
-        if not result.get("ok"):
-            webhook_requests_total.labels(
-                provider=provider,
-                event_type="unknown",
-                status="failure"
-            ).inc()
-            raise HTTPException(status_code=400, detail=result.get("error"))
-        
-        # Update metrics
-        webhook_requests_total.labels(
-            provider=provider,
-            event_type=result.get("event_type", "unknown"),
-            status="success"
-        ).inc()
-        
-        # If payment succeeded, update transaction and publish events
-        if result.get("status") == "succeeded":
-            background_tasks.add_task(
-                _handle_payment_success,
-                db, tenant_id, result
-            )
-        elif result.get("status") == "failed":
-            background_tasks.add_task(
-                _handle_payment_failure,
-                db, tenant_id, result
-            )
-        
-        return {"ok": True, "status": "processed"}
-        
-    except Exception as e:
-        logger.error(f"Webhook processing failed: {str(e)}")
-        webhook_requests_total.labels(
-            provider=provider,
-            event_type="unknown",
-            status="failure"
-        ).inc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
-
-async def _handle_payment_success(db: Session, tenant_id: str, result: Dict[str, Any]):
-    """Handle successful payment"""
-    try:
-        # Update transaction status
-        db.execute(text("""
-            UPDATE payment_transactions_new
-            SET status = 'succeeded', updated_at = NOW()
-            WHERE payment_intent_id = :payment_intent_id AND tenant_id = :tenant_id
-        """), {
-            "payment_intent_id": result["payment_intent_id"],
-            "tenant_id": tenant_id
-        })
-        
-        db.commit()
-        
-        # Publish PAYMENT_PAID event
-        await PaymentIntentSaga(db)._publish_event(
-            tenant_id,
-            "PAYMENT_PAID",
-            result
-        )
-        
-        logger.info(f"Payment succeeded: {result['payment_intent_id']}")
-        
-    except Exception as e:
-        logger.error(f"Failed to handle payment success: {str(e)}")
-        db.rollback()
-
-async def _handle_payment_failure(db: Session, tenant_id: str, result: Dict[str, Any]):
-    """Handle failed payment"""
-    try:
-        # Update transaction status
-        db.execute(text("""
-            UPDATE payment_transactions_new
-            SET status = 'failed', updated_at = NOW()
-            WHERE payment_intent_id = :payment_intent_id AND tenant_id = :tenant_id
-        """), {
-            "payment_intent_id": result["payment_intent_id"],
-            "tenant_id": tenant_id
-        })
-        
-        db.commit()
-        
-        # Publish PAYMENT_FAILED event
-        await PaymentIntentSaga(db)._publish_event(
-            tenant_id,
-            "PAYMENT_FAILED",
-            result
-        )
-        
-        logger.info(f"Payment failed: {result['payment_intent_id']}")
-        
-    except Exception as e:
-        logger.error(f"Failed to handle payment failure: {str(e)}")
-        db.rollback()
+    return await process_webhook(provider, request, background_tasks, db)
 
 # =============================================================================
 # ADMIN ENDPOINTS
 # =============================================================================
 
 @app.post("/payments/v2/admin/rails/payment")
-async def configure_payment_provider(
+async def configure_payment_provider_route(
     request: RailRequest,
     db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Configure payment provider for a tenant"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, request.tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.admin.configure", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Upsert provider configuration
-        db.execute(text("""
-            INSERT INTO zeroque_rails (tenant_id, type, name, config, active, created_at, updated_at)
-            VALUES (:tenant_id, :type, :name, :config, :active, NOW(), NOW())
-            ON CONFLICT (tenant_id, type, name)
-            DO UPDATE SET config = :config, active = :active, updated_at = NOW()
-        """), {
-            "tenant_id": request.tenant_id,
-            "type": request.type,
-            "name": request.name,
-            "config": json.dumps(request.config),
-            "active": request.active
-        })
-        
-        db.commit()
-        
-        # Log audit
-        await log_audit(
-            db, "configure_payment_provider", "zeroque_rails",
-            f"{request.tenant_id}:{request.name}", request.dict(),
-            request.tenant_id, user_context.get("user_id")
-        )
-        
-        return {"ok": True, "message": f"Provider {request.name} configured successfully"}
-        
-    except Exception as e:
-        logger.error(f"Provider configuration failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await configure_payment_provider(request, db, user_context)
 
 # =============================================================================
 # QUERY ENDPOINTS
 # =============================================================================
 
 @app.get("/payments/v2/transactions")
-async def list_transactions(
-    tenant_id: str = Query(...),
-    provider: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db_with_rls),
-    user_context: Dict[str, Any] = Depends(get_user_context)
-):
+async def list_transactions(tenant_id: str = Query(...), provider: Optional[str] = Query(None), status: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000), offset: int = Query(0, ge=0), db: Session = Depends(get_db_with_rls),
+    user_context: Dict[str, Any] = Depends(get_user_context)):
     """List payment transactions with filters"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.view_transactions", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Build query
-        query = text("""
-            SELECT id, provider, payment_intent_id, charge_id, amount_minor, currency, status,
-                   order_id, site_id, store_id, user_id, created_at, updated_at
-            FROM payment_transactions_new
-            WHERE tenant_id = :tenant_id
-        """)
-        
-        params = {"tenant_id": tenant_id}
-        
-        if provider:
-            query = text(str(query) + " AND provider = :provider")
-            params["provider"] = provider
-        
-        if status:
-            query = text(str(query) + " AND status = :status")
-            params["status"] = status
-        
-        query = text(str(query) + " ORDER BY created_at DESC LIMIT :limit OFFSET :offset")
-        params.update({"limit": limit, "offset": offset})
-        
-        # Execute query
-        result = db.execute(query, params).fetchall()
-        
-        transactions = []
-        for row in result:
-            transactions.append({
-                "id": str(row[0]),
-                "provider": row[1],
-                "payment_intent_id": row[2],
-                "charge_id": row[3],
-                "amount_minor": row[4],
-                "currency": row[5],
-                "status": row[6],
-                "order_id": str(row[7]) if row[7] else None,
-                "site_id": str(row[8]) if row[8] else None,
-                "store_id": str(row[9]) if row[9] else None,
-                "user_id": str(row[10]) if row[10] else None,
-                "created_at": row[11].isoformat(),
-                "updated_at": row[12].isoformat() if row[12] else None
-            })
-        
-        return {
-            "ok": True,
-            "transactions": transactions,
-            "total": len(transactions),
-            "limit": limit,
-            "offset": offset
-        }
-        
-    except Exception as e:
-        logger.error(f"Transaction listing failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await fetch_transactions(tenant_id, provider, status, limit, offset, db, user_context)
 
 @app.get("/payments/v2/reports")
 async def get_payment_reports(
