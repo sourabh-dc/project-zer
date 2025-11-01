@@ -4,6 +4,7 @@
 import os
 import uuid
 import json
+import jwt
 import asyncio
 import structlog
 from typing import List, Optional, Dict, Any, Literal
@@ -12,19 +13,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends, Request, BackgroundTasks, Header
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Numeric, BigInteger
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.sql import func
-from sqlalchemy.exc import SQLAlchemyError
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 # Database imports
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
+from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, \
+    func, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, relationship
@@ -36,6 +33,22 @@ import redis
 import pika
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from core.config import get_settings
+from .models import (PaymentTransactionNew, CustomerNew, PaymentRefund, OutboxEvent, AuditLog, TradeAccount,
+                     CurrencyRate, Base, PaymentIntent)
+from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest, \
+    TradeAccountRequest, PaymentAdjustmentRequest, TradeAccountResponse, MultiCurrencyConversionRequest, \
+    MultiCurrencyConversionResponse, PaymentIntentResponse
+
+# Configuration
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
 
 def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
     """Get user context from JWT or API key"""
@@ -68,7 +81,6 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
     raise HTTPException(status_code=401, detail="Authentication required")
 
 import pybreaker
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # =============================================================================
@@ -77,12 +89,6 @@ from sqlalchemy.orm import sessionmaker
 
 SERVICE_NAME = "payments"
 SERVICE_VERSION = "4.1.0"
-
-# Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://sourabhagrawa@localhost:5432/zeroque_dev_fresh")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # Database setup
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
@@ -97,8 +103,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
         yield db
     finally:
         db.close()
-
-Base = declarative_base()
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -153,279 +157,6 @@ payments_operations_total = Counter('payments_operations_total', 'Total payments
 payments_request_duration = Histogram('payments_request_duration_seconds', 'Payments request duration', ['operation'])
 saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
 saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
-
-# =============================================================================
-# DATABASE MODELS
-# =============================================================================
-
-class PaymentTransactionNew(Base):
-    """V4.1 payment transactions table with multi-provider support"""
-    __tablename__ = "payment_transactions_new"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), ForeignKey('vendors.vendor_id'), nullable=True)
-    provider = Column(String(50), nullable=False, comment='stripe, adyen, paypal, etc.')
-    payment_intent_id = Column(String(255), nullable=True)
-    charge_id = Column(String(255), nullable=True)
-    amount_minor = Column(BigInteger, nullable=False, comment='Amount in minor units')
-    currency = Column(String(3), ForeignKey('currencies.code'), nullable=False, default='GBP')
-    status = Column(String(50), nullable=False, comment='pending, succeeded, failed, refunded')
-    order_id = Column(UUID(as_uuid=True), nullable=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
-    transaction_metadata = Column(JSONB, nullable=True)
-    raw_response = Column(JSONB, nullable=True, comment='Raw provider response')
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class CustomerNew(Base):
-    """V4.1 customers table with multi-provider support"""
-    __tablename__ = "customers_new"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    provider = Column(String(50), nullable=False, comment='stripe, adyen, paypal, etc.')
-    external_customer_id = Column(String(255), nullable=False, comment='Provider customer ID')
-    email = Column(String(255), nullable=True)
-    name = Column(String(255), nullable=True)
-    phone = Column(String(50), nullable=True)
-    transaction_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class PaymentRefund(Base):
-    """Payment refunds table"""
-    __tablename__ = "payment_refunds"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions_new.id'), nullable=False)
-    refund_id = Column(String(255), nullable=True, comment='Provider refund ID')
-    amount_minor = Column(BigInteger, nullable=False, comment='Refund amount in minor units')
-    currency = Column(String(3), nullable=False, default='GBP')
-    reason = Column(String(255), nullable=True, comment='Refund reason')
-    status = Column(String(50), nullable=False, comment='pending, succeeded, failed')
-    transaction_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class PaymentAdjustment(Base):
-    """Payment adjustments table"""
-    __tablename__ = "payment_adjustments"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions_new.id'), nullable=False)
-    adjustment_type = Column(String(50), nullable=False, comment='discount, fee, tax, etc.')
-    adjustment_amount_minor = Column(BigInteger, nullable=False, comment='Adjustment amount in minor units')
-    adjustment_reason = Column(Text, nullable=True)
-    currency = Column(String(3), nullable=False, default='GBP')
-    is_applied = Column(Boolean, nullable=False, default=False)
-    applied_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-# Phase 5: Trade Account & Multi-Currency Models
-class TradeAccount(Base):
-    """Trade account for business customers - Phase 5"""
-    __tablename__ = "trade_accounts"
-
-    trade_account_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    account_number = Column(String(100), nullable=False, unique=True)
-    company_name = Column(String(200), nullable=False)
-    contact_email = Column(String(255), nullable=False)
-    credit_limit_minor = Column(BigInteger, nullable=False, default=0)
-    available_credit_minor = Column(BigInteger, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    payment_terms_days = Column(Integer, nullable=False, default=30)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-class PaymentIntent(Base):
-    """Payment intent for transaction processing - Phase 5"""
-    __tablename__ = "payment_intents"
-
-    payment_intent_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    order_id = Column(UUID(as_uuid=True), nullable=True)
-    trade_account_id = Column(UUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
-    amount_minor = Column(BigInteger, nullable=False)
-    currency = Column(String(3), nullable=False, default='GBP')
-    status = Column(String(20), nullable=False, default='pending')  # pending, processing, succeeded, failed, cancelled
-    provider = Column(String(50), nullable=False)  # stripe, adyen, paypal, etc.
-    provider_intent_id = Column(String(255), nullable=True)
-    payment_method = Column(String(50), nullable=True)  # card, bank_transfer, etc.
-    payment_metadata = Column(JSONB, nullable=True)  # Renamed from metadata to avoid SQLAlchemy conflict
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    succeeded_at = Column(DateTime(timezone=True), nullable=True)
-    failed_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-class CurrencyRate(Base):
-    """Currency exchange rates - Phase 5"""
-    __tablename__ = "currency_rates"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    base_currency = Column(String(3), nullable=False)
-    target_currency = Column(String(3), nullable=False)
-    rate = Column(Numeric(15, 8), nullable=False)
-    source = Column(String(50), nullable=False, default='manual')  # manual, api, etc.
-    valid_from = Column(DateTime(timezone=True), nullable=False)
-    valid_to = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class PaymentWebhook(Base):
-    """Payment webhook events - Phase 5"""
-    __tablename__ = "payment_webhooks"
-
-    webhook_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    provider = Column(String(50), nullable=False)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    processed = Column(Boolean, nullable=False, default=False)
-    processed_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class AuditLog(Base):
-    """Audit logs table"""
-    __tablename__ = "audit_logs"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(100), nullable=False)
-    resource_id = Column(String(255), nullable=True)
-    details = Column(JSONB, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-class OutboxEvent(Base):
-    """Outbox events table for reliable event publishing"""
-    __tablename__ = "outbox_events"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    status = Column(String(50), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class PaymentIntentRequest(BaseModel):
-    """Request model for creating payment intents"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    order_id: Optional[str] = Field(None, description="Associated order ID")
-    amount_minor: int = Field(..., description="Amount in minor units")
-    currency: str = Field(default="GBP", description="Currency code")
-    provider: str = Field(default="stripe", description="Payment provider")
-    site_id: Optional[str] = Field(None, description="Site ID")
-    store_id: Optional[str] = Field(None, description="Store ID")
-    user_id: Optional[str] = Field(None, description="User ID")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-class CustomerRequest(BaseModel):
-    """Request model for customer operations"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    provider: str = Field(default="stripe", description="Payment provider")
-    email: Optional[str] = Field(None, description="Customer email")
-    name: Optional[str] = Field(None, description="Customer name")
-    phone: Optional[str] = Field(None, description="Customer phone")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-class RefundRequest(BaseModel):
-    """Request model for payment refunds"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    payment_intent_id: str = Field(..., description="Payment intent ID")
-    amount_minor: Optional[int] = Field(None, description="Refund amount in minor units (full if not specified)")
-    reason: Optional[str] = Field(None, description="Refund reason")
-
-class PaymentAdjustmentRequest(BaseModel):
-    """Request model for payment adjustments"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    payment_intent_id: str = Field(..., description="Payment intent ID")
-    adjustment_type: str = Field(..., description="Type of adjustment")
-    amount_minor: int = Field(..., description="Adjustment amount in minor units")
-    currency: str = Field(default="GBP", description="Currency code")
-    reason: Optional[str] = Field(None, description="Adjustment reason")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-class RailRequest(BaseModel):
-    """Request model for payment provider configuration"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    type: str = Field(default="payment", description="Rail type")
-    name: str = Field(..., description="Provider name (e.g., stripe, adyen)")
-    config: Dict[str, Any] = Field(..., description="Provider configuration")
-
-# Phase 5: Trade Account & Multi-Currency Models
-class TradeAccountRequest(BaseModel):
-    """Trade account creation request - Phase 5"""
-    company_name: str = Field(..., description="Company name", max_length=200)
-    contact_email: str = Field(..., description="Contact email", max_length=255)
-    credit_limit_minor: int = Field(..., description="Credit limit in minor units", ge=0)
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    payment_terms_days: int = Field(30, description="Payment terms in days", ge=0)
-
-class TradeAccountResponse(BaseModel):
-    """Trade account response model - Phase 5"""
-    trade_account_id: str
-    account_number: str
-    company_name: str
-    contact_email: str
-    credit_limit_minor: int
-    available_credit_minor: int
-    currency: str
-    payment_terms_days: int
-    is_active: bool
-    created_at: datetime
-
-class PaymentIntentRequest(BaseModel):
-    """Payment intent creation request - Phase 5"""
-    order_id: Optional[str] = Field(None, description="Associated order ID")
-    trade_account_id: Optional[str] = Field(None, description="Trade account ID")
-    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    payment_method: str = Field("card", description="Payment method", pattern="^(card|bank_transfer|wallet)$")
-    description: Optional[str] = Field(None, description="Payment description")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-class PaymentIntentResponse(BaseModel):
-    """Payment intent response model - Phase 5"""
-    payment_intent_id: str
-    client_secret: str
-    amount_minor: int
-    currency: str
-    status: str
-    provider: str
-    expires_at: Optional[datetime]
-
-class MultiCurrencyConversionRequest(BaseModel):
-    """Currency conversion request - Phase 5"""
-    from_currency: str = Field(..., description="Source currency", max_length=3)
-    to_currency: str = Field(..., description="Target currency", max_length=3)
-    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
-
-class MultiCurrencyConversionResponse(BaseModel):
-    """Currency conversion response - Phase 5"""
-    from_currency: str
-    to_currency: str
-    original_amount_minor: int
-    converted_amount_minor: int
-    exchange_rate: float
-    converted_at: datetime
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -1403,7 +1134,7 @@ async def create_trade_account(
 ):
     """Create a new trade account - Phase 5"""
     try:
-        payments_requests_total.labels(endpoint="create_trade_account", status="start").inc()
+        payment_requests_total.labels(endpoint="create_trade_account", status="start").inc()
 
         # Check permissions
         if not check_permission("payments.create", uctx):
@@ -1427,7 +1158,7 @@ async def create_trade_account(
         db.commit()
         db.refresh(trade_account)
 
-        payments_requests_total.labels(endpoint="create_trade_account", status="ok").inc()
+        payment_requests_total.labels(endpoint="create_trade_account", status="ok").inc()
 
         return TradeAccountResponse(
             trade_account_id=str(trade_account.trade_account_id),
@@ -1443,7 +1174,7 @@ async def create_trade_account(
         )
 
     except Exception as e:
-        payments_requests_total.labels(endpoint="create_trade_account", status="fail").inc()
+        payment_requests_total.labels(endpoint="create_trade_account", status="fail").inc()
         logger.error(f"Failed to create trade account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1496,7 +1227,7 @@ async def create_payment_intent(
 ):
     """Create a payment intent - Phase 5"""
     try:
-        payments_requests_total.labels(endpoint="create_payment_intent", status="start").inc()
+        payment_requests_total.labels(endpoint="create_payment_intent", status="start").inc()
 
         # Check permissions
         if not check_permission("payments.create", uctx):
@@ -1552,7 +1283,7 @@ async def create_payment_intent(
         payment_intent.status = "processing"
         db.commit()
 
-        payments_requests_total.labels(endpoint="create_payment_intent", status="ok").inc()
+        payment_requests_total.labels(endpoint="create_payment_intent", status="ok").inc()
 
         return PaymentIntentResponse(
             payment_intent_id=str(payment_intent.payment_intent_id),
@@ -1567,7 +1298,7 @@ async def create_payment_intent(
     except HTTPException:
         raise
     except Exception as e:
-        payments_requests_total.labels(endpoint="create_payment_intent", status="fail").inc()
+        payment_requests_total.labels(endpoint="create_payment_intent", status="fail").inc()
         logger.error(f"Failed to create payment intent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1578,7 +1309,7 @@ async def convert_currency(
 ):
     """Convert currency using stored exchange rates - Phase 5"""
     try:
-        payments_requests_total.labels(endpoint="convert_currency", status="start").inc()
+        payment_requests_total.labels(endpoint="convert_currency", status="start").inc()
 
         # Get current exchange rate
         rate_record = db.query(CurrencyRate).filter(
@@ -1597,7 +1328,7 @@ async def convert_currency(
 
         converted_amount = int(request.amount_minor * exchange_rate)
 
-        payments_requests_total.labels(endpoint="convert_currency", status="ok").inc()
+        payment_requests_total.labels(endpoint="convert_currency", status="ok").inc()
 
         return MultiCurrencyConversionResponse(
             from_currency=request.from_currency.upper(),
@@ -1609,7 +1340,7 @@ async def convert_currency(
         )
 
     except Exception as e:
-        payments_requests_total.labels(endpoint="convert_currency", status="fail").inc()
+        payment_requests_total.labels(endpoint="convert_currency", status="fail").inc()
         logger.error(f"Failed to convert currency: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1748,194 +1479,8 @@ async def get_integration_status():
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
 
 # =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_payment_intent(self, payment_intent_id: str, intent_data: Dict[str, Any]):
-    """Process payment intent asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Get payment intent
-            intent = db.execute(text("""
-                SELECT * FROM payment_intents_new WHERE id = :id
-            """), {"id": payment_intent_id}).fetchone()
-            
-            if not intent:
-                raise ValueError(f"Payment intent {payment_intent_id} not found")
-            
-            # Process payment logic here
-            logger.info(f"Processing payment intent {payment_intent_id}")
-            
-            # Update status
-            db.execute(text("""
-                UPDATE payment_intents_new 
-                SET status = 'processed', updated_at = NOW()
-                WHERE id = :id
-            """), {"id": payment_intent_id})
-            
-            db.commit()
-            
-            # Update metrics
-            payments_operations_total.labels(operation="intent", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process payment intent {payment_intent_id}: {e}")
-        payments_operations_total.labels(operation="intent", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_payment_refund(self, payment_id: str, refund_data: Dict[str, Any]):
-    """Process payment refund asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Get payment
-            payment = db.execute(text("""
-                SELECT * FROM payments_new WHERE id = :id
-            """), {"id": payment_id}).fetchone()
-            
-            if not payment:
-                raise ValueError(f"Payment {payment_id} not found")
-            
-            # Process refund logic here
-            logger.info(f"Processing payment refund for payment {payment_id}")
-            
-            # Update status
-            db.execute(text("""
-                UPDATE payments_new 
-                SET status = 'refunded', updated_at = NOW()
-                WHERE id = :id
-            """), {"id": payment_id})
-            
-            db.commit()
-            
-            # Update metrics
-            payments_operations_total.labels(operation="refund", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process payment refund for payment {payment_id}: {e}")
-        payments_operations_total.labels(operation="refund", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_payments(self):
-    """Clean up old payments"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
-            
-            # Clean up old payments
-            payment_result = db.execute(text("""
-                DELETE FROM payments_new 
-                WHERE created_at < :cutoff_date AND status IN ('completed', 'failed', 'refunded')
-            """), {"cutoff_date": cutoff_date})
-            
-            # Clean up old payment intents
-            intent_result = db.execute(text("""
-                DELETE FROM payment_intents_new 
-                WHERE created_at < :cutoff_date AND status IN ('completed', 'failed')
-            """), {"cutoff_date": cutoff_date})
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {payment_result.rowcount} old payments and {intent_result.rowcount} old payment intents")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup old payments: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-# =============================================================================
 # MAIN EXECUTION
 # =============================================================================
-
-
-# =============================================================================
-# CELERY WORKERS - Event Consumption
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3, name='payments.process_order_completed')
-def process_order_completed(self, event_data: Dict[str, Any]):
-    """Process ORDER_COMPLETED event from orders service"""
-    try:
-        tenant_id = event_data.get('tenant_id')
-        order_id = event_data.get('order_id')
-        total_amount = event_data.get('total_minor')
-
-        if not all([tenant_id, order_id, total_amount]):
-            logger.error('Missing required fields in ORDER_COMPLETED event')
-            return {'status': 'error', 'message': 'Missing required fields'}
-
-        with SessionLocal() as db:
-            # Create payment intent for the order
-            payment_intent_id = f"pi_{uuid.uuid4().hex[:12]}"
-            
-            payment_intent = PaymentTransaction(
-                transaction_id=payment_intent_id,
-                tenant_id=tenant_id,
-                order_id=order_id,
-                amount_minor=total_amount,
-                currency='GBP',
-                status='pending',
-                provider='stripe',
-                payment_method='card'
-            )
-            db.add(payment_intent)
-            db.commit()
-
-            logger.info(f"Created payment intent {payment_intent_id} for order {order_id}")
-
-        return {'status': 'ok', 'payment_intent_id': payment_intent_id}
-
-    except Exception as e:
-        logger.error(f"Failed to process ORDER_COMPLETED event: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-@celery_app.task(bind=True, max_retries=3, name='payments.cleanup_old_outbox_events')
-def cleanup_outbox_events(self):
-    """Clean up old outbox events"""
-    try:
-        with SessionLocal() as db:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-            result = db.execute(
-                text("DELETE FROM outbox_events WHERE created_at < :cutoff AND status IN ('published', 'failed')"),
-                {'cutoff': cutoff}
-            )
-            db.commit()
-            logger.info(f'Cleaned up {result.rowcount} old outbox events')
-            return {'deleted': result.rowcount}
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup outbox events: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-@celery_app.task(bind=True, max_retries=3, name='payments.cleanup_old_payments')
-def cleanup_old_payments(self):
-    """Clean up old payment transactions and refunds"""
-    try:
-        with SessionLocal() as db:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=365)
-            
-            # Clean old transactions
-            trans_result = db.execute(
-                text("DELETE FROM payment_transactions_new WHERE created_at < :cutoff AND status IN ('failed', 'canceled')"),
-                {'cutoff': cutoff}
-            )
-            
-            # Clean old refunds
-            refund_result = db.execute(
-                text("DELETE FROM payment_refunds WHERE created_at < :cutoff"),
-                {'cutoff': cutoff}
-            )
-            
-            db.commit()
-            logger.info(f"Cleaned {trans_result.rowcount} old transactions and {refund_result.rowcount} old refunds")
-            return {'transactions_deleted': trans_result.rowcount, 'refunds_deleted': refund_result.rowcount}
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup old payments: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("SERVICE_PORT", os.getenv("PORT", "8225")))
