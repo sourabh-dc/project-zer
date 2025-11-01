@@ -1,11 +1,22 @@
 # ---- Event Handlers ----
-from typing import Dict, Any
+import json
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional
 
+from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from services.notifications.repositories.database_ops import get_deliveries, get_total_count, get_provider, \
+    update_provider, create_provider
+from services.notifications.repositories.db_config import set_rls_context
+from services.notifications.repositories.reply_saga import ReplaySaga
 from services.notifications.repositories.send_notification_saga import SendNotificationSaga
-from services.notifications.schemas import SendNotificationRequest
+from services.notifications.schemas import SendNotificationRequest, NotificationResponse, ReplayRequest, \
+    NotificationHistoryResponse, RailRequest
+from services.notifications.utils.metrics import notification_operations_total, notification_failures_total
 from services.notifications.utils.notifications_logger import logger
+from services.notifications.utils.user_auth import check_permission
 
 
 async def handle_entry_granted(event_data: Dict[str, Any], db: Session):
@@ -122,3 +133,135 @@ async def handle_invoice_posted(event_data: Dict[str, Any], db: Session):
 
     except Exception as e:
         logger.error("Failed to handle INVOICE_POSTED event", error=str(e), event_data=event_data)
+
+
+async def send_notification(
+        request: SendNotificationRequest, db: Session, user_context: Dict[str, Any]):
+    """Send notification via configured provider"""
+    if not check_permission("notifications.send", user_context):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    # Set RLS context
+    set_rls_context(db, request.tenant_id, request.user_id)
+
+    try:
+        saga = SendNotificationSaga(db)
+        result = await saga.execute(request, user_context)
+
+        # Update metrics
+        if notification_operations_total:
+            notification_operations_total.labels(
+                channel=request.channel,
+                provider=result["provider"],
+                status="success"
+            ).inc()
+
+        return NotificationResponse(
+            delivery_id=result["delivery_id"],
+            status=result["status"],
+            provider=result["provider"],
+            channel=request.channel,
+            created_at=datetime.now(timezone.utc)
+        )
+
+    except Exception as e:
+        # Update failure metrics
+        if notification_failures_total:
+            notification_failures_total.labels(
+                channel=request.channel,
+                provider=request.provider or "unknown",
+                error_type=type(e).__name__
+            ).inc()
+
+        logger.error("Notification send failed", error=str(e), request=request.dict())
+        raise HTTPException(status_code=500, detail=f"Notification send failed: {str(e)}")
+
+
+async def replay_notification(request: ReplayRequest, db: Session, user_context: Dict[str, Any]):
+    """Replay failed notification"""
+    if not check_permission("notifications.send", user_context):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        saga = ReplaySaga(db)
+        result = await saga.execute(request, user_context)
+
+        return result
+
+    except Exception as e:
+        logger.error("Notification replay failed", error=str(e), request=request.dict())
+        raise HTTPException(status_code=500, detail=f"Notification replay failed: {str(e)}")
+
+
+async def get_notification_history(tenant_id: str, status: Optional[str], channel: Optional[str], limit: int,
+        page: int, db: Session, user_context: Dict[str, Any]):
+    """Get notification delivery history"""
+    if not check_permission("notifications.view", user_context):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    # Set RLS context
+    set_rls_context(db, tenant_id)
+
+    try:
+        offset = (page - 1) * limit
+
+        # Get deliveries
+        deliveries = await get_deliveries(db, tenant_id, status, channel, limit, offset)
+
+        # Get total count
+        total_count = await get_total_count(db, tenant_id, status, channel)
+
+        # Convert to dict format
+        delivery_list = []
+        for delivery in deliveries:
+            delivery_dict = dict(delivery._mapping)
+            delivery_dict["payload"] = json.loads(delivery_dict["payload"]) if delivery_dict["payload"] else {}
+            delivery_dict["error"] = json.loads(delivery_dict["error"]) if delivery_dict["error"] else None
+            delivery_list.append(delivery_dict)
+
+        return NotificationHistoryResponse(
+            deliveries=delivery_list,
+            count=total_count,
+            page=page,
+            limit=limit
+        )
+
+    except Exception as e:
+        logger.error("Failed to get notification history", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get notification history")
+
+
+async def configure_notification_provider(request: RailRequest, db: Session, user_context: Dict[str, Any]):
+    """Configure notification provider"""
+    if not check_permission("notifications.admin", user_context):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        tenant_id = user_context.get("tenant_id")
+
+        # Check if provider already exists
+        existing = await get_provider(db, tenant_id, request)
+
+        if existing:
+            # Update existing provider
+            await update_provider(db, request, existing)
+        else:
+            # Create new provider
+            await create_provider(db, tenant_id, request)
+
+        return {"message": f"Provider {request.name} configured successfully", "active": request.active}
+
+    except Exception as e:
+        logger.error("Failed to configure provider", error=str(e), request=request.dict())
+        raise HTTPException(status_code=500, detail="Failed to configure provider")
+
+
+async def replay_legacy(delivery_id: str, db: Session, user_context: Dict[str, Any]):
+    """Legacy replay endpoint - deprecated"""
+    logger.warning("Legacy replay endpoint used", delivery_id=delivery_id)
+
+    request = ReplayRequest(delivery_id=delivery_id)
+    saga = ReplaySaga(db)
+    result = await saga.execute(request, user_context)
+
+    return {"replayed": delivery_id, "status": result["status"]}
