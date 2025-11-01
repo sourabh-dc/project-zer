@@ -40,6 +40,10 @@ from .models import (PaymentTransactionNew, CustomerNew, PaymentRefund, OutboxEv
 from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest, \
     TradeAccountRequest, PaymentAdjustmentRequest, TradeAccountResponse, MultiCurrencyConversionRequest, \
     MultiCurrencyConversionResponse, PaymentIntentResponse
+from .repositories.db_config import get_db_with_rls, engine, set_rls_context
+from .utils.payments_logger import logger
+from .repositories.payment_saga import PaymentIntentSaga
+from .utils.metrics import payment_requests_total, webhook_requests_total
 
 # Configuration
 DATABASE_URL = get_settings().DATABASE_URL
@@ -50,35 +54,7 @@ ALLOW_DEMO = get_settings().ALLOW_DEMO
 JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
 
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)):
-    """Get user context from JWT or API key"""
-    # Try API key first (simplified for demo)
-    if x_api_key:
-        if ALLOW_DEMO or x_api_key.startswith('zq_'):
-            return {
-                "user_id": "demo_user",
-                "tenant_id": "demo_tenant",
-                "permissions": ["payments.create", "payments.refund", "payments.adjust", "pricing.create", "pricing.calculate"]
-            }
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    # Try JWT
-    if authorization and "Bearer " in authorization:
-        try:
-            token = authorization.replace("Bearer ", "")
-            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return claims
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
-    
-    # Demo mode (dev only)
-    if ALLOW_DEMO:
-        logger.warning("Using demo mode - not for production!")
-        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-    
-    raise HTTPException(status_code=401, detail="Authentication required")
+
 
 import pybreaker
 from sqlalchemy.orm import sessionmaker
@@ -90,19 +66,7 @@ from sqlalchemy.orm import sessionmaker
 SERVICE_NAME = "payments"
 SERVICE_VERSION = "4.1.0"
 
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
-    """Database dependency with RLS"""
-    db = SessionLocal()
-    try:
-        # Skip RLS in demo mode to avoid transaction issues
-        if not ALLOW_DEMO:
-            set_rls_context(db, uctx["tenant_id"], uctx.get("user_id"))
-        yield db
-    finally:
-        db.close()
+
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -124,26 +88,7 @@ except ImportError:
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
 
-logger = structlog.get_logger(__name__)
 
 # Prometheus metrics - Clear registry to avoid duplicates
 from prometheus_client import REGISTRY
@@ -152,47 +97,6 @@ try:
     REGISTRY._names_to_collectors.clear()
 except:
     pass
-
-payments_operations_total = Counter('payments_operations_total', 'Total payments operations', ['operation', 'status'])
-payments_request_duration = Histogram('payments_request_duration_seconds', 'Payments request duration', ['operation'])
-saga_total = Counter('saga_total', 'Total sagas', ['type', 'status'])
-saga_duration = Histogram('saga_duration_seconds', 'Saga duration', ['type'])
-
-# =============================================================================
-# PROMETHEUS METRICS
-# =============================================================================
-
-# Payment metrics
-payment_requests_total = Counter(
-    'payment_requests_total',
-    'Total payment requests',
-    ['provider', 'status', 'currency']
-)
-
-payment_amount_total = Counter(
-    'payment_amount_total',
-    'Total payment amounts',
-    ['provider', 'currency']
-)
-
-payment_duration_seconds = Histogram(
-    'payment_duration_seconds',
-    'Payment processing duration',
-    ['provider', 'operation']
-)
-
-webhook_requests_total = Counter(
-    'webhook_requests_total',
-    'Total webhook requests',
-    ['provider', 'event_type', 'status']
-)
-
-# Use unique metric name to avoid duplicate registration across services
-saga_duration_seconds = Histogram(
-    'payments_saga_duration_seconds',
-    'Saga processing duration',
-    ['saga_type', 'status']
-)
 
 # =============================================================================
 # PAYMENT PROVIDERS
@@ -334,142 +238,7 @@ class StripeProvider(BasePaymentProvider):
             logger.error(f"Stripe refund failed: {str(e)}")
             return {"ok": False, "error": str(e)}
 
-# =============================================================================
-# SAGA IMPLEMENTATION
-# =============================================================================
 
-class PaymentIntentSaga:
-    """Saga for payment intent creation with compensation"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-        self.steps = []
-        self.compensation_steps = []
-    
-    async def create_payment_intent(self, request: PaymentIntentRequest) -> Dict[str, Any]:
-        """Execute payment intent creation saga"""
-        start_time = datetime.now()
-        
-        try:
-            # Step 1: Validate tenant and get provider config
-            provider_config = await self._get_provider_config(request.tenant_id, request.provider)
-            if not provider_config:
-                return {"ok": False, "error": "Provider configuration not found"}
-            
-            # Step 2: Create payment intent with provider
-            provider = await self._get_provider(request.provider, provider_config)
-            provider_result = await provider.create_payment_intent(
-                request.amount_minor,
-                request.currency,
-                request.metadata
-            )
-            
-            if not provider_result.get("ok"):
-                return {"ok": False, "error": provider_result.get("error")}
-            
-            # Step 3: Store payment transaction
-            transaction = PaymentTransactionNew(
-                tenant_id=request.tenant_id,
-                vendor_id=request.metadata.get("vendor_id") if request.metadata else None,
-                provider=request.provider,
-                payment_intent_id=provider_result["payment_intent_id"],
-                amount_minor=request.amount_minor,
-                currency=request.currency,
-                status="pending",
-                order_id=request.order_id,
-                site_id=request.site_id,
-                store_id=request.store_id,
-                user_id=request.user_id,
-                transaction_metadata=request.metadata,
-                raw_response=provider_result
-            )
-            
-            self.db.add(transaction)
-            self.db.commit()
-            
-            # Step 4: Publish event
-            await self._publish_event(
-                request.tenant_id,
-                "PAYMENT_CREATED",
-                {
-                    "payment_intent_id": provider_result["payment_intent_id"],
-                    "amount_minor": request.amount_minor,
-                    "currency": request.currency,
-                    "provider": request.provider,
-                    "order_id": request.order_id
-                }
-            )
-            
-            # Update metrics
-            payment_requests_total.labels(
-                provider=request.provider,
-                status="success",
-                currency=request.currency
-            ).inc()
-            
-            payment_amount_total.labels(
-                provider=request.provider,
-                currency=request.currency
-            ).inc(request.amount_minor)
-            
-            duration = (datetime.now() - start_time).total_seconds()
-            payment_duration_seconds.labels(
-                provider=request.provider,
-                operation="create_intent"
-            ).observe(duration)
-            
-            return {
-                "ok": True,
-                "payment_intent_id": provider_result["payment_intent_id"],
-                "client_secret": provider_result.get("client_secret"),
-                "status": provider_result.get("status"),
-                "transaction_id": str(transaction.id)
-            }
-            
-        except Exception as e:
-            logger.error(f"Payment intent saga failed: {str(e)}")
-            await self._compensate()
-            
-            payment_requests_total.labels(
-                provider=request.provider,
-                status="failure",
-                currency=request.currency
-            ).inc()
-            
-            return {"ok": False, "error": str(e)}
-    
-    async def _get_provider_config(self, tenant_id: str, provider: str) -> Optional[Dict[str, Any]]:
-        """Get provider configuration from zeroque_rails"""
-        result = self.db.execute(text("""
-            SELECT config FROM zeroque_rails
-            WHERE tenant_id = :tenant_id AND type = 'payment' AND name = :provider AND active = true
-        """), {"tenant_id": tenant_id, "provider": provider}).first()
-        
-        return result[0] if result else None
-    
-    async def _get_provider(self, provider_name: str, config: Dict[str, Any]) -> BasePaymentProvider:
-        """Get provider instance based on name"""
-        if provider_name == "stripe":
-            return StripeProvider(config)
-        else:
-            raise ValueError(f"Unsupported payment provider: {provider_name}")
-    
-    async def _publish_event(self, tenant_id: str, event_type: str, event_data: Dict[str, Any]):
-        """Publish event to outbox"""
-        event = OutboxEvent(
-            tenant_id=tenant_id,
-            event_type=event_type,
-            event_data=event_data,
-            status="pending"
-        )
-        self.db.add(event)
-        self.db.commit()
-    
-    async def _compensate(self):
-        """Execute compensation steps"""
-        # Rollback any changes made during the saga
-        self.db.rollback()
-        logger.info("Payment intent saga compensation executed")
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -488,12 +257,6 @@ async def log_audit(db: Session, action: str, resource_type: str, resource_id: s
     )
     db.add(audit_log)
     db.commit()
-
-async def set_rls_context(db: Session, tenant_id: str, user_id: str = None):
-    """Set Row Level Security context"""
-    db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-    if user_id:
-        db.execute(text("SET app.current_user_id = :user_id"), {"user_id": user_id})
 
 def get_user_context(request: Request) -> Dict[str, Any]:
     """Get user context from request (demo implementation)"""
