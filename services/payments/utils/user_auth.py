@@ -1,5 +1,4 @@
-from typing import Optional
-
+from typing import Optional, Dict, Any
 import jwt
 from fastapi import Header, HTTPException
 
@@ -40,3 +39,17 @@ def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Opt
         return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
 
     raise HTTPException(status_code=401, detail="Authentication required")
+
+# def get_user_context(request: Request) -> Dict[str, Any]:
+#     """Get user context from request (demo implementation)"""
+#     # In production, extract from JWT token
+#     return {
+#         "user_id": "demo_user_id",
+#         "tenant_id": request.headers.get("x-tenant-id", "demo_tenant_id"),
+#         "role": "admin"
+#     }
+
+def check_permission(permission: str, user_context: Dict[str, Any]) -> bool:
+    """Check user permissions (demo implementation)"""
+    # In production, implement proper RBAC
+    return True

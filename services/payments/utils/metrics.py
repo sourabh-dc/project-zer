@@ -4,6 +4,7 @@
 from prometheus_client import Counter, Histogram
 
 # Payment metrics
+payments_operations_total = Counter('payments_operations_total', 'Total payments operations', ['operation', 'status'])
 payment_requests_total = Counter(
     'payment_requests_total',
     'Total payment requests',
@@ -34,3 +35,11 @@ saga_duration_seconds = Histogram(
     'Saga processing duration',
     ['saga_type', 'status']
 )
+
+# Prometheus metrics - Clear registry to avoid duplicates
+from prometheus_client import REGISTRY
+try:
+    REGISTRY._collector_to_names.clear()
+    REGISTRY._names_to_collectors.clear()
+except:
+    pass

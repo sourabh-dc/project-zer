@@ -8,7 +8,8 @@ from services.payments.models import PaymentTransactionNew
 from services.payments.schemas import PaymentIntentRequest
 from ..utils.metrics import payment_requests_total, payment_amount_total, payment_duration_seconds
 from ..utils.payments_logger import logger
-from ..models import OutboxEvent, TradeAccount
+from ..models import OutboxEvent
+from .payment_provider import BasePaymentProvider, StripeProvider
 
 
 # =============================================================================

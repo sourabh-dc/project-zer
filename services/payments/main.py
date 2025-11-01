@@ -4,43 +4,25 @@
 import os
 import uuid
 import json
-import jwt
-import asyncio
-import structlog
-from typing import List, Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, Body, HTTPException, Query, Path, Depends, Request, BackgroundTasks, Header
+from fastapi import FastAPI, Body, HTTPException, Query, Depends, Request, BackgroundTasks
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-
-# Prometheus metrics
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-
-# Database imports
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, \
-    func, or_
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
-from celery import Celery
-import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from sqlalchemy import text, or_
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
-import pika
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.config import get_settings
-from .models import (PaymentTransactionNew, CustomerNew, PaymentRefund, OutboxEvent, AuditLog, TradeAccount,
-                     CurrencyRate, Base, PaymentIntent)
-from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest, \
-    TradeAccountRequest, PaymentAdjustmentRequest, TradeAccountResponse, MultiCurrencyConversionRequest, \
-    MultiCurrencyConversionResponse, PaymentIntentResponse
-from .repositories.db_config import get_db_with_rls, engine, set_rls_context
+from services.payments.repositories.database_ops import log_audit
+from services.payments.repositories.payment_provider import StripeProvider
+from services.payments.utils.user_auth import get_user_context, check_permission
+from .models import (PaymentTransactionNew, CustomerNew, PaymentRefund, TradeAccount,
+                     CurrencyRate, PaymentIntent)
+from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest,\
+     TradeAccountResponse, MultiCurrencyConversionRequest, MultiCurrencyConversionResponse, PaymentIntentResponse
+from .repositories.db_config import get_db_with_rls, set_rls_context
 from .utils.payments_logger import logger
 from .repositories.payment_saga import PaymentIntentSaga
 from .utils.metrics import payment_requests_total, webhook_requests_total
@@ -54,10 +36,7 @@ ALLOW_DEMO = get_settings().ALLOW_DEMO
 JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
 
-
-
 import pybreaker
-from sqlalchemy.orm import sessionmaker
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -66,211 +45,11 @@ from sqlalchemy.orm import sessionmaker
 SERVICE_NAME = "payments"
 SERVICE_VERSION = "4.1.0"
 
-
-
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-
-
-# Prometheus metrics - Clear registry to avoid duplicates
-from prometheus_client import REGISTRY
-try:
-    REGISTRY._collector_to_names.clear()
-    REGISTRY._names_to_collectors.clear()
-except:
-    pass
-
-# =============================================================================
-# PAYMENT PROVIDERS
-# =============================================================================
-
-class BasePaymentProvider:
-    """Base class for payment providers"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.api_key = config.get('api_key')
-        self.base_url = config.get('base_url')
-    
-    async def create_payment_intent(self, amount_minor: int, currency: str, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Create a payment intent with the provider"""
-        raise NotImplementedError
-    
-    async def create_customer(self, email: str, name: str = None, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Create a customer with the provider"""
-        raise NotImplementedError
-    
-    async def process_webhook(self, payload: Dict[str, Any], signature: str = None) -> Dict[str, Any]:
-        """Process webhook from the provider"""
-        raise NotImplementedError
-    
-    async def refund_payment(self, payment_intent_id: str, amount_minor: int = None, reason: str = None) -> Dict[str, Any]:
-        """Refund a payment"""
-        raise NotImplementedError
-
-class StripeProvider(BasePaymentProvider):
-    """Stripe payment provider implementation"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-        import stripe
-        stripe.api_key = self.api_key
-        self.stripe = stripe
-    
-    async def create_payment_intent(self, intent_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Stripe payment intent - Phase 5"""
-        try:
-            # Demo mode: return mock response
-            if ALLOW_DEMO:
-                return {
-                    "id": f"pi_demo_{uuid.uuid4().hex[:16]}",
-                    "client_secret": f"pi_demo_{uuid.uuid4().hex[:16]}_secret_{uuid.uuid4().hex[:16]}",
-                    "amount": intent_data.get("amount", 0),
-                    "currency": intent_data.get("currency", "gbp"),
-                    "status": "requires_payment_method",
-                    "metadata": intent_data.get("metadata", {})
-                }
-
-            # Production: Create real Stripe payment intent
-            payment_intent = self.stripe.PaymentIntent.create(
-                amount=intent_data.get("amount", 0),
-                currency=intent_data.get("currency", "gbp").lower(),
-                payment_method_types=intent_data.get("payment_method_types", ["card"]),
-                metadata=intent_data.get("metadata", {})
-            )
-            return {
-                "id": payment_intent.id,
-                "client_secret": payment_intent.client_secret,
-                "amount": payment_intent.amount,
-                "currency": payment_intent.currency,
-                "status": payment_intent.status,
-                "metadata": payment_intent.payment_metadata
-            }
-        except Exception as e:
-            logger.error(f"Stripe payment intent creation failed: {str(e)}")
-            return {"ok": False, "error": str(e)}
-    
-    async def create_customer(self, email: str, name: str = None, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Create a Stripe customer"""
-        try:
-            customer = self.stripe.Customer.create(
-                email=email,
-                name=name,
-                metadata=metadata or {}
-            )
-            return {
-                "ok": True,
-                "customer_id": customer.id,
-                "email": customer.email,
-                "name": customer.name
-            }
-        except Exception as e:
-            logger.error(f"Stripe customer creation failed: {str(e)}")
-            return {"ok": False, "error": str(e)}
-    
-    async def process_webhook(self, payload: Dict[str, Any], signature: str = None) -> Dict[str, Any]:
-        """Process Stripe webhook"""
-        try:
-            # In production, verify webhook signature
-            event_type = payload.get('type')
-            data = payload.get('data', {}).get('object', {})
-            
-            if event_type == 'payment_intent.succeeded':
-                return {
-                    "ok": True,
-                    "event_type": event_type,
-                    "payment_intent_id": data.get('id'),
-                    "status": "succeeded",
-                    "amount_minor": data.get('amount'),
-                    "currency": data.get('currency')
-                }
-            elif event_type == 'payment_intent.payment_failed':
-                return {
-                    "ok": True,
-                    "event_type": event_type,
-                    "payment_intent_id": data.get('id'),
-                    "status": "failed",
-                    "error": data.get('last_payment_error', {}).get('message')
-                }
-            
-            return {"ok": True, "event_type": event_type, "status": "ignored"}
-            
-        except Exception as e:
-            logger.error(f"Stripe webhook processing failed: {str(e)}")
-            return {"ok": False, "error": str(e)}
-    
-    async def refund_payment(self, payment_intent_id: str, amount_minor: int = None, reason: str = None) -> Dict[str, Any]:
-        """Refund a Stripe payment"""
-        try:
-            refund_data = {
-                'payment_intent': payment_intent_id,
-                'reason': reason or 'requested_by_customer'
-            }
-            if amount_minor:
-                refund_data['amount'] = amount_minor
-            
-            refund = self.stripe.Refund.create(**refund_data)
-            return {
-                "ok": True,
-                "refund_id": refund.id,
-                "amount_minor": refund.amount,
-                "status": refund.status
-            }
-        except Exception as e:
-            logger.error(f"Stripe refund failed: {str(e)}")
-            return {"ok": False, "error": str(e)}
-
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-async def log_audit(db: Session, action: str, resource_type: str, resource_id: str = None, 
-                   details: Dict[str, Any] = None, tenant_id: str = None, user_id: str = None):
-    """Log audit event"""
-    audit_log = AuditLog(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        action=action,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        details=details
-    )
-    db.add(audit_log)
-    db.commit()
-
-def get_user_context(request: Request) -> Dict[str, Any]:
-    """Get user context from request (demo implementation)"""
-    # In production, extract from JWT token
-    return {
-        "user_id": "demo_user_id",
-        "tenant_id": request.headers.get("x-tenant-id", "demo_tenant_id"),
-        "role": "admin"
-    }
-
-def check_permission(permission: str, user_context: Dict[str, Any]) -> bool:
-    """Check user permissions (demo implementation)"""
-    # In production, implement proper RBAC
-    return True
 
 # =============================================================================
 # FASTAPI APPLICATION
@@ -281,16 +60,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
     logger.info("Starting Payments Service V2", version="2.0.0", environment="production")
-    
-    # Create tables if they don't exist
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
-    
     yield
-    
     # Shutdown
     logger.info("Shutting down Payments Service V2")
 
@@ -300,10 +70,6 @@ app = FastAPI(
     description="Multi-provider payment processing with V4.1 architecture",
     lifespan=lifespan
 )
-
-# Add middleware
-# add_api_call_meter(app)  # Temporarily disabled for debugging
-# add_idempotency_middleware(app, routes=[("POST", "/payments"), ("POST", "/payments/v2")])  # Temporarily disabled for debugging
 
 # =============================================================================
 # HEALTH AND STATUS ENDPOINTS
