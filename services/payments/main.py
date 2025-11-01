@@ -13,13 +13,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text, or_
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
+import pybreaker
 
 from core.config import get_settings
 from services.payments.repositories.database_ops import log_audit
 from services.payments.repositories.payment_provider import StripeProvider
+from services.payments.services.payment_services import create_payment_intent, create_customer, refund_payment
 from services.payments.utils.user_auth import get_user_context, check_permission
-from .models import (PaymentTransactionNew, CustomerNew, PaymentRefund, TradeAccount,
-                     CurrencyRate, PaymentIntent)
+from .models import TradeAccount, CurrencyRate, PaymentIntent
 from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest,\
      TradeAccountResponse, MultiCurrencyConversionRequest, MultiCurrencyConversionResponse, PaymentIntentResponse
 from .repositories.db_config import get_db_with_rls, set_rls_context
@@ -35,8 +36,6 @@ ENVIRONMENT = get_settings().ENVIRONMENT
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
-
-import pybreaker
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -104,197 +103,27 @@ async def metrics():
 # =============================================================================
 
 @app.post("/payments/v2/intent")
-async def create_payment_intent(
+async def create_payment_intent_route(
     request: PaymentIntentRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Create a payment intent with any supported provider"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, request.tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.create_intent", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Execute saga
-        saga = PaymentIntentSaga(db)
-        result = await saga.create_payment_intent(request)
-        
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error"))
-        
-        # Log audit
-        await log_audit(
-            db, "create_payment_intent", "payment_intent",
-            result.get("payment_intent_id"), request.dict(),
-            request.tenant_id, user_context.get("user_id")
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Payment intent creation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await create_payment_intent(request, db, user_context)
 
 @app.post("/payments/v2/customers")
-async def create_customer(
-    request: CustomerRequest,
-    db: Session = Depends(get_db_with_rls),
+async def create_customer_route(request: CustomerRequest, db: Session = Depends(get_db_with_rls),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Create or update a customer with any supported provider"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, request.tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.create_customer", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Get provider config
-        provider_config = await PaymentIntentSaga(db)._get_provider_config(request.tenant_id, request.provider)
-        if not provider_config:
-            raise HTTPException(status_code=400, detail="Provider configuration not found")
-        
-        # Create customer with provider
-        provider = await PaymentIntentSaga(db)._get_provider(request.provider, provider_config)
-        provider_result = await provider.create_customer(
-            request.email or "",
-            request.name,
-            request.metadata
-        )
-        
-        if not provider_result.get("ok"):
-            raise HTTPException(status_code=400, detail=provider_result.get("error"))
-        
-        # Store customer
-        customer = CustomerNew(
-            tenant_id=request.tenant_id,
-            provider=request.provider,
-            external_customer_id=provider_result["customer_id"],
-            email=request.email,
-            name=request.name,
-            phone=request.metadata.get("phone") if request.metadata else None,
-            metadata=request.metadata
-        )
-        
-        db.add(customer)
-        db.commit()
-
-        # Log audit
-        await log_audit(
-            db, "create_customer", "customer",
-            provider_result["customer_id"], request.dict(),
-            request.tenant_id, user_context.get("user_id")
-        )
-        
-        return {
-            "ok": True,
-            "customer_id": provider_result["customer_id"],
-            "email": provider_result.get("email"),
-            "name": provider_result.get("name")
-        }
-        
-    except Exception as e:
-        logger.error(f"Customer creation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await create_customer(request, db, user_context)
 
 @app.post("/payments/v2/refund")
-async def refund_payment(
-    request: RefundRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db_with_rls),
-    user_context: Dict[str, Any] = Depends(get_user_context)
+async def refund_payment_route(
+    request: RefundRequest, db: Session = Depends(get_db_with_rls), user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Refund a payment"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, request.tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.refund", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Get payment transaction
-        transaction = db.query(PaymentTransactionNew).filter(
-            PaymentTransactionNew.payment_intent_id == request.payment_intent_id,
-            PaymentTransactionNew.tenant_id == request.tenant_id
-        ).first()
-        
-        if not transaction:
-            raise HTTPException(status_code=404, detail="Payment transaction not found")
-        
-        # Get provider config and create provider instance
-        provider_config = await PaymentIntentSaga(db)._get_provider_config(request.tenant_id, transaction.provider)
-        provider = await PaymentIntentSaga(db)._get_provider(transaction.provider, provider_config)
-        
-        # Process refund with provider
-        refund_amount = request.amount_minor or transaction.amount_minor
-        provider_result = await provider.refund_payment(
-            request.payment_intent_id,
-            refund_amount,
-            request.reason
-        )
-        
-        if not provider_result.get("ok"):
-            raise HTTPException(status_code=400, detail=provider_result.get("error"))
-        
-        # Store refund record
-        refund = PaymentRefund(
-            tenant_id=request.tenant_id,
-            payment_transaction_id=transaction.id,
-            refund_id=provider_result["refund_id"],
-            amount_minor=refund_amount,
-            currency=transaction.currency,
-            reason=request.reason,
-            status="succeeded"
-        )
-        
-        db.add(refund)
-        
-        # Update transaction status
-        transaction.status = "refunded"
-        
-        db.commit()
-        
-        # Publish event
-        await PaymentIntentSaga(db)._publish_event(
-            request.tenant_id,
-            "PAYMENT_REFUNDED",
-            {
-                "payment_intent_id": request.payment_intent_id,
-                "refund_id": provider_result["refund_id"],
-                "amount_minor": refund_amount,
-                "currency": transaction.currency
-            }
-        )
-        
-        # Log audit
-        await log_audit(
-            db, "refund_payment", "payment_refund",
-            provider_result["refund_id"], request.dict(),
-            request.tenant_id, user_context.get("user_id")
-        )
-        
-        return {
-            "ok": True,
-            "refund_id": provider_result["refund_id"],
-            "amount_minor": refund_amount,
-            "status": "succeeded"
-        }
-        
-    except Exception as e:
-        logger.error(f"Payment refund failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await refund_payment(request, db, user_context)
 
 @app.post("/payments/v2/webhook/{provider}")
 async def process_webhook(
@@ -749,7 +578,7 @@ async def list_trade_accounts(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/payment-intents", response_model=PaymentIntentResponse)
-async def create_payment_intent(
+async def create_payment_intent2(
     request: PaymentIntentRequest,
     db = Depends(get_db_with_rls),
     uctx: Dict = Depends(get_user_context)
