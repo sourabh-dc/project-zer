@@ -1,10 +1,12 @@
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from services.payments.repositories.database_ops import log_audit, create_customer_db, get_transaction, store_refund, \
-    update_transaction_status, handle_payment_success, handle_payment_failure, upsert_provider_config, get_transactions
+    update_transaction_status, handle_payment_success, handle_payment_failure, upsert_provider_config, get_transactions, \
+    get_payment_summary, get_daily_payment
 from services.payments.repositories.db_config import  set_rls_context
 from services.payments.repositories.payment_saga import PaymentIntentSaga
 from services.payments.schemas import PaymentIntentRequest, CustomerRequest, RefundRequest
@@ -266,6 +268,67 @@ async def fetch_transactions(tenant_id: str, provider, status, limit, offset, db
 
     except Exception as e:
         logger.error(f"Transaction listing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+async def get_payment_reports(tenant_id: str, period_start: str, period_end: str,
+                              currency: Optional[str], db: Session, user_context: Dict[str, Any]
+                              ):
+    """Get payment reports and analytics (blueprint-inspired)"""
+    try:
+        # Set RLS context
+        await set_rls_context(db, tenant_id, user_context.get("user_id"))
+
+        # Check permissions
+        if not check_permission("payments.view_reports", user_context):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get payment summary by provider
+        summary_result = await get_payment_summary(db, tenant_id, currency, period_start, period_end)
+
+        # Get daily payment trends
+        daily_result = await get_daily_payment(db, tenant_id, currency, period_start, period_end)
+
+        # Format results
+        summary = {}
+        for row in summary_result:
+            provider = row[0]
+            status = row[1]
+            count = row[2]
+            amount = row[3]
+
+            if provider not in summary:
+                summary[provider] = {}
+
+            summary[provider][status] = {
+                "count": count,
+                "total_amount_minor": amount
+            }
+
+        daily_trends = []
+        for row in daily_result:
+            daily_trends.append({
+                "date": str(row[0]),
+                "count": row[1],
+                "total_amount_minor": row[2]
+            })
+
+        return {
+            "ok": True,
+            "period": {
+                "start": period_start,
+                "end": period_end,
+                "currency": currency
+            },
+            "summary": summary,
+            "daily_trends": daily_trends,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Payment reports failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()

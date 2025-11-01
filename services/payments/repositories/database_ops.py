@@ -185,3 +185,45 @@ async def get_transactions(db, tenant_id: str, provider, status, limit, offset):
         })
 
     return transactions
+
+async def get_payment_summary(db: Session, tenant_id: str, currency: str, period_start: str, period_end: str):
+    summary_query = text("""
+                         SELECT provider, status, COUNT(*) as count, SUM(amount_minor) as total_amount_minor
+                         FROM payment_transactions_new
+                         WHERE tenant_id = :tenant_id
+                           AND currency = :currency
+                           AND created_at >= :period_start
+                           AND created_at <= :period_end
+                         GROUP BY provider, status
+                         ORDER BY provider, status
+                         """)
+
+    summary_result = db.execute(summary_query, {
+        "tenant_id": tenant_id,
+        "currency": currency,
+        "period_start": period_start,
+        "period_end": period_end
+    }).fetchall()
+    return summary_result
+
+async def get_daily_payment(db, tenant_id: str, currency: str, period_start: str, period_end: str):
+    daily_query = text("""
+                       SELECT DATE (created_at) as date, COUNT (*) as count, SUM (amount_minor) as total_amount_minor
+                       FROM payment_transactions_new
+                       WHERE tenant_id = :tenant_id
+                         AND currency = :currency
+                         AND created_at >= :period_start
+                         AND created_at <= :period_end
+                         AND status = 'succeeded'
+                       GROUP BY DATE (created_at)
+                       ORDER BY date
+                       """)
+
+    daily_result = db.execute(daily_query, {
+        "tenant_id": tenant_id,
+        "currency": currency,
+        "period_start": period_start,
+        "period_end": period_end
+    }).fetchall()
+
+    return daily_result

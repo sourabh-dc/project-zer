@@ -19,7 +19,7 @@ from core.config import get_settings
 from services.payments.repositories.database_ops import log_audit
 from services.payments.repositories.payment_provider import StripeProvider
 from services.payments.services.payment_services import create_payment_intent, create_customer, refund_payment, \
-    process_webhook, configure_payment_provider, fetch_transactions
+    process_webhook, configure_payment_provider, fetch_transactions, get_payment_reports
 from services.payments.utils.user_auth import get_user_context, check_permission
 from .models import TradeAccount, CurrencyRate, PaymentIntent
 from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest,\
@@ -157,103 +157,11 @@ async def list_transactions(tenant_id: str = Query(...), provider: Optional[str]
     return await fetch_transactions(tenant_id, provider, status, limit, offset, db, user_context)
 
 @app.get("/payments/v2/reports")
-async def get_payment_reports(
-    tenant_id: str = Query(...),
-    period_start: str = Query(...),
-    period_end: str = Query(...),
-    currency: Optional[str] = Query("GBP"),
-    db: Session = Depends(get_db_with_rls),
-    user_context: Dict[str, Any] = Depends(get_user_context)
+async def get_payment_reports_route(tenant_id: str = Query(...), period_start: str = Query(...), period_end: str = Query(...),
+    currency: Optional[str] = Query("GBP"), db: Session = Depends(get_db_with_rls), user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Get payment reports and analytics (blueprint-inspired)"""
-    try:
-        # Set RLS context
-        await set_rls_context(db, tenant_id, user_context.get("user_id"))
-        
-        # Check permissions
-        if not check_permission("payments.view_reports", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Get payment summary by provider
-        summary_query = text("""
-            SELECT provider, status, COUNT(*) as count, SUM(amount_minor) as total_amount_minor
-            FROM payment_transactions_new
-            WHERE tenant_id = :tenant_id 
-              AND currency = :currency
-              AND created_at >= :period_start 
-              AND created_at <= :period_end
-            GROUP BY provider, status
-            ORDER BY provider, status
-        """)
-        
-        summary_result = db.execute(summary_query, {
-            "tenant_id": tenant_id,
-            "currency": currency,
-            "period_start": period_start,
-            "period_end": period_end
-        }).fetchall()
-        
-        # Get daily payment trends
-        daily_query = text("""
-            SELECT DATE(created_at) as date, COUNT(*) as count, SUM(amount_minor) as total_amount_minor
-            FROM payment_transactions_new
-            WHERE tenant_id = :tenant_id 
-              AND currency = :currency
-              AND created_at >= :period_start 
-              AND created_at <= :period_end
-              AND status = 'succeeded'
-            GROUP BY DATE(created_at)
-            ORDER BY date
-        """)
-        
-        daily_result = db.execute(daily_query, {
-            "tenant_id": tenant_id,
-            "currency": currency,
-            "period_start": period_start,
-            "period_end": period_end
-        }).fetchall()
-        
-        # Format results
-        summary = {}
-        for row in summary_result:
-            provider = row[0]
-            status = row[1]
-            count = row[2]
-            amount = row[3]
-            
-            if provider not in summary:
-                summary[provider] = {}
-            
-            summary[provider][status] = {
-                "count": count,
-                "total_amount_minor": amount
-            }
-        
-        daily_trends = []
-        for row in daily_result:
-            daily_trends.append({
-                "date": str(row[0]),
-                "count": row[1],
-                "total_amount_minor": row[2]
-            })
-        
-        return {
-            "ok": True,
-            "period": {
-                "start": period_start,
-                "end": period_end,
-                "currency": currency
-            },
-            "summary": summary,
-            "daily_trends": daily_trends,
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Payment reports failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    return await get_payment_reports(tenant_id, period_start, period_end, currency, db, user_context)
 
 # =============================================================================
 # LEGACY ENDPOINT DEPRECATION
