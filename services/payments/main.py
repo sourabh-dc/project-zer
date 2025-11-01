@@ -2,32 +2,25 @@
 # Multi-provider payment processing with sagas, events, and RLS
 
 import os
-import uuid
-import json
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Body, HTTPException, Query, Depends, Request, BackgroundTasks
+from fastapi import FastAPI, Body, Query, Depends, Request, BackgroundTasks
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import text, or_
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pybreaker
 
 from core.config import get_settings
-from services.payments.repositories.database_ops import log_audit
-from services.payments.repositories.payment_provider import StripeProvider
 from services.payments.services.payment_services import create_payment_intent, create_customer, refund_payment, \
-    process_webhook, configure_payment_provider, fetch_transactions, get_payment_reports
-from services.payments.utils.user_auth import get_user_context, check_permission
-from .models import TradeAccount, CurrencyRate, PaymentIntent
+    process_webhook, configure_payment_provider, fetch_transactions, get_payment_reports, create_trade_account, \
+    get_trade_accounts, create_payment_intent2, convert_currency, get_payment_intent, handle_payment_required_event, \
+    get_integration_status
+from services.payments.utils.user_auth import get_user_context
 from .schemas import PaymentIntentRequest, CustomerRequest, RefundRequest, RailRequest, TradeAccountRequest,\
      TradeAccountResponse, MultiCurrencyConversionRequest, MultiCurrencyConversionResponse, PaymentIntentResponse
-from .repositories.db_config import get_db_with_rls, set_rls_context
+from .repositories.db_config import get_db_with_rls
 from .utils.payments_logger import logger
-from .repositories.payment_saga import PaymentIntentSaga
-from .utils.metrics import payment_requests_total
 
 # Configuration
 DATABASE_URL = get_settings().DATABASE_URL
@@ -178,260 +171,32 @@ async def stripe_customers_legacy():
 
 # Phase 5: Trade Account & Multi-Currency Endpoints
 @app.post("/trade-accounts", response_model=TradeAccountResponse)
-async def create_trade_account(
-    request: TradeAccountRequest,
-    db = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
+async def create_trade_account_route(request: TradeAccountRequest, db = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)
 ):
     """Create a new trade account - Phase 5"""
-    try:
-        payment_requests_total.labels(endpoint="create_trade_account", status="start").inc()
-
-        # Check permissions
-        if not check_permission("payments.create", uctx):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-        # Generate account number
-        account_number = f"TA-{uuid.uuid4().hex[:8].upper()}"
-
-        trade_account = TradeAccount(
-            tenant_id=uuid.UUID(uctx["tenant_id"]),
-            account_number=account_number,
-            company_name=request.company_name,
-            contact_email=request.contact_email,
-            credit_limit_minor=request.credit_limit_minor,
-            available_credit_minor=request.credit_limit_minor,
-            currency=request.currency,
-            payment_terms_days=request.payment_terms_days
-        )
-
-        db.add(trade_account)
-        db.commit()
-        db.refresh(trade_account)
-
-        payment_requests_total.labels(endpoint="create_trade_account", status="ok").inc()
-
-        return TradeAccountResponse(
-            trade_account_id=str(trade_account.trade_account_id),
-            account_number=trade_account.account_number,
-            company_name=trade_account.company_name,
-            contact_email=trade_account.contact_email,
-            credit_limit_minor=trade_account.credit_limit_minor,
-            available_credit_minor=trade_account.available_credit_minor,
-            currency=trade_account.currency,
-            payment_terms_days=trade_account.payment_terms_days,
-            is_active=trade_account.is_active,
-            created_at=trade_account.created_at
-        )
-
-    except Exception as e:
-        payment_requests_total.labels(endpoint="create_trade_account", status="fail").inc()
-        logger.error(f"Failed to create trade account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_trade_account(request, db, uctx)
 
 @app.get("/trade-accounts")
-async def list_trade_accounts(
-    tenant_id: str = Query(...),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
-    db = Depends(get_db_with_rls)
-):
+async def list_trade_accounts(tenant_id: str = Query(...), limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0), db = Depends(get_db_with_rls)):
     """List trade accounts - Phase 5"""
-    try:
-        query = db.query(TradeAccount).filter(
-            TradeAccount.tenant_id == uuid.UUID(tenant_id),
-            TradeAccount.is_active == True
-        )
-
-        accounts = query.offset(offset).limit(limit).all()
-
-        return {
-            "trade_accounts": [
-                TradeAccountResponse(
-                    trade_account_id=str(acc.trade_account_id),
-                    account_number=acc.account_number,
-                    company_name=acc.company_name,
-                    contact_email=acc.contact_email,
-                    credit_limit_minor=acc.credit_limit_minor,
-                    available_credit_minor=acc.available_credit_minor,
-                    currency=acc.currency,
-                    payment_terms_days=acc.payment_terms_days,
-                    is_active=acc.is_active,
-                    created_at=acc.created_at
-                )
-                for acc in accounts
-            ],
-            "total": len(accounts),
-            "limit": limit,
-            "offset": offset
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to list trade accounts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_trade_accounts(tenant_id, limit, offset, db)
 
 @app.post("/payment-intents", response_model=PaymentIntentResponse)
-async def create_payment_intent2(
-    request: PaymentIntentRequest,
-    db = Depends(get_db_with_rls),
-    uctx: Dict = Depends(get_user_context)
+async def create_payment_intent_route2(request: PaymentIntentRequest, db = Depends(get_db_with_rls), uctx: Dict = Depends(get_user_context)
 ):
     """Create a payment intent - Phase 5"""
-    try:
-        payment_requests_total.labels(endpoint="create_payment_intent", status="start").inc()
-
-        # Check permissions
-        if not check_permission("payments.create", uctx):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-        # Check if trade account exists and has sufficient credit
-        if request.trade_account_id:
-            trade_account = db.query(TradeAccount).filter(
-                TradeAccount.trade_account_id == uuid.UUID(request.trade_account_id),
-                TradeAccount.tenant_id == uuid.UUID(uctx["tenant_id"]),
-                TradeAccount.is_active == True
-            ).first()
-
-            if not trade_account:
-                raise HTTPException(status_code=404, detail="Trade account not found")
-
-            if trade_account.available_credit_minor < request.amount_minor:
-                raise HTTPException(status_code=400, detail="Insufficient credit limit")
-
-        # Create payment intent
-        payment_intent = PaymentIntent(
-            tenant_id=uuid.UUID(uctx["tenant_id"]),
-            order_id=uuid.UUID(request.order_id) if request.order_id else None,
-            trade_account_id=uuid.UUID(request.trade_account_id) if request.trade_account_id else None,
-            amount_minor=request.amount_minor,
-            currency=request.currency,
-            provider="stripe",  # Default to Stripe for Phase 5
-            payment_method=request.payment_method,
-            metadata=request.metadata,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hour expiry
-        )
-
-        db.add(payment_intent)
-        db.commit()
-        db.refresh(payment_intent)
-
-        # Create Stripe payment intent
-        stripe_provider = StripeProvider({"api_key": os.getenv("STRIPE_SECRET_KEY", "sk_test_demo")})
-
-        stripe_intent = await stripe_provider.create_payment_intent({
-            "amount": request.amount_minor,
-            "currency": request.currency.lower(),
-            "payment_method_types": [request.payment_method],
-            "metadata": {
-                "payment_intent_id": str(payment_intent.payment_intent_id),
-                "tenant_id": uctx["tenant_id"],
-                "user_id": uctx["user_id"]
-            }
-        })
-
-        # Update payment intent with provider details
-        payment_intent.provider_intent_id = stripe_intent.get("id")
-        payment_intent.status = "processing"
-        db.commit()
-
-        payment_requests_total.labels(endpoint="create_payment_intent", status="ok").inc()
-
-        return PaymentIntentResponse(
-            payment_intent_id=str(payment_intent.payment_intent_id),
-            client_secret=stripe_intent.get("client_secret"),
-            amount_minor=payment_intent.amount_minor,
-            currency=payment_intent.currency,
-            status=payment_intent.status,
-            provider=payment_intent.provider,
-            expires_at=payment_intent.expires_at
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        payment_requests_total.labels(endpoint="create_payment_intent", status="fail").inc()
-        logger.error(f"Failed to create payment intent: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_payment_intent2(request, db, uctx)
 
 @app.post("/currency/convert", response_model=MultiCurrencyConversionResponse)
-async def convert_currency(
-    request: MultiCurrencyConversionRequest,
-    db = Depends(get_db_with_rls)
-):
+async def convert_currency_route(request: MultiCurrencyConversionRequest, db = Depends(get_db_with_rls)):
     """Convert currency using stored exchange rates - Phase 5"""
-    try:
-        payment_requests_total.labels(endpoint="convert_currency", status="start").inc()
-
-        # Get current exchange rate
-        rate_record = db.query(CurrencyRate).filter(
-            CurrencyRate.base_currency == request.from_currency.upper(),
-            CurrencyRate.target_currency == request.to_currency.upper(),
-            CurrencyRate.is_active == True,
-            CurrencyRate.valid_from <= datetime.now(timezone.utc),
-            or_(CurrencyRate.valid_to.is_(None), CurrencyRate.valid_to >= datetime.now(timezone.utc))
-        ).order_by(CurrencyRate.created_at.desc()).first()
-
-        if not rate_record:
-            # Use fallback rate (1:1 for demo)
-            exchange_rate = 1.0
-        else:
-            exchange_rate = float(rate_record.rate)
-
-        converted_amount = int(request.amount_minor * exchange_rate)
-
-        payment_requests_total.labels(endpoint="convert_currency", status="ok").inc()
-
-        return MultiCurrencyConversionResponse(
-            from_currency=request.from_currency.upper(),
-            to_currency=request.to_currency.upper(),
-            original_amount_minor=request.amount_minor,
-            converted_amount_minor=converted_amount,
-            exchange_rate=exchange_rate,
-            converted_at=datetime.now(timezone.utc)
-        )
-
-    except Exception as e:
-        payment_requests_total.labels(endpoint="convert_currency", status="fail").inc()
-        logger.error(f"Failed to convert currency: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await convert_currency(request, db)
 
 @app.get("/payment-intents/{payment_intent_id}")
-async def get_payment_intent(
-    payment_intent_id: str,
-    db = Depends(get_db_with_rls)
-):
+async def get_payment_intent_route(payment_intent_id: str, db = Depends(get_db_with_rls)):
     """Get payment intent details - Phase 5"""
-    try:
-        payment_intent = db.query(PaymentIntent).filter(
-            PaymentIntent.payment_intent_id == uuid.UUID(payment_intent_id)
-        ).first()
-
-        if not payment_intent:
-            raise HTTPException(status_code=404, detail="Payment intent not found")
-
-        return {
-            "payment_intent_id": str(payment_intent.payment_intent_id),
-            "order_id": str(payment_intent.order_id) if payment_intent.order_id else None,
-            "trade_account_id": str(payment_intent.trade_account_id) if payment_intent.trade_account_id else None,
-            "amount_minor": payment_intent.amount_minor,
-            "currency": payment_intent.currency,
-            "status": payment_intent.status,
-            "provider": payment_intent.provider,
-            "provider_intent_id": payment_intent.provider_intent_id,
-            "payment_method": payment_intent.payment_method,
-            "metadata": payment_intent.payment_metadata,
-            "expires_at": payment_intent.expires_at.isoformat() if payment_intent.expires_at else None,
-            "succeeded_at": payment_intent.succeeded_at.isoformat() if payment_intent.succeeded_at else None,
-            "failed_at": payment_intent.failed_at.isoformat() if payment_intent.failed_at else None,
-            "created_at": payment_intent.created_at.isoformat(),
-            "updated_at": payment_intent.updated_at.isoformat()
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get payment intent: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_payment_intent(payment_intent_id, db)
 
 @app.post("/stripe/payment-intent")
 async def stripe_payment_intent_legacy():
@@ -456,78 +221,14 @@ async def stripe_webhook_legacy():
 # =============================================================================
 
 @app.post("/payments/v2/integration/orders/payment-required")
-async def handle_payment_required_event(
-    event_data: Dict[str, Any] = Body(...),
-    db: Session = Depends(get_db_with_rls)
+async def handle_payment_required_event_route(event_data: Dict[str, Any] = Body(...), db: Session = Depends(get_db_with_rls)
 ):
-    """Handle ORDER_COMPLETED event from Orders service requiring payment"""
-    try:
-        logger.info(f"Received ORDER_COMPLETED event requiring payment: {event_data}")
-        
-        order_id = event_data.get("order_id")
-        tenant_id = event_data.get("tenant_id")
-        total_amount_minor = event_data.get("total_amount_minor", 0)
-        currency = event_data.get("currency", "GBP")
-        
-        if not order_id or not tenant_id:
-            raise HTTPException(status_code=400, detail="Missing order_id or tenant_id")
-        
-        # Create payment intent for the order
-        request = PaymentIntentRequest(
-            tenant_id=tenant_id,
-            order_id=order_id,
-            amount_minor=total_amount_minor,
-            currency=currency,
-            provider="stripe",  # Default provider
-            metadata={"order_id": order_id, "auto_created": True}
-        )
-        
-        saga = PaymentIntentSaga(db)
-        result = await saga.create_payment_intent(request)
-        
-        logger.info(f"Created payment intent for order: {result}")
-        return {"ok": True, "payment_intent_created": True, "result": result}
-        
-    except Exception as e:
-        logger.error(f"Error handling payment required event: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to handle event: {str(e)}")
-    finally:
-        db.close()
+    return await handle_payment_required_event(event_data, db)
 
 @app.get("/payments/v2/integration/status")
-async def get_integration_status():
+async def get_integration_status_route():
     """Get status of all service integrations"""
-    try:
-        integration_status = {
-            "orders_service": {"status": "unknown", "url": "http://localhost:8081"},
-            "billing_service": {"status": "unknown", "url": "http://localhost:8083"},
-            "ledger_service": {"status": "unknown", "url": "http://localhost:8086"},
-            "notifications_service": {"status": "unknown", "url": "http://localhost:8087"}
-        }
-        
-        # Test each service connectivity
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for service_name, config in integration_status.items():
-                try:
-                    response = await client.get(f"{config['url']}/health")
-                    if response.status_code == 200:
-                        config["status"] = "healthy"
-                        config["response_time_ms"] = response.elapsed.total_seconds() * 1000
-                    else:
-                        config["status"] = "unhealthy"
-                except Exception as e:
-                    config["status"] = "unreachable"
-                    config["error"] = str(e)
-        
-        return {
-            "integration_status": integration_status,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting integration status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
+    return await get_integration_status()
 
 # =============================================================================
 # MAIN EXECUTION

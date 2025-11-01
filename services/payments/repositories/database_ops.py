@@ -1,10 +1,13 @@
 import json
+import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from sqlalchemy.orm import Session
 
-from services.payments.models import AuditLog, CustomerNew, PaymentTransactionNew, PaymentRefund
+from services.payments.models import AuditLog, CustomerNew, PaymentTransactionNew, PaymentRefund, TradeAccount, \
+    PaymentIntent, CurrencyRate
 from services.payments.repositories.payment_saga import PaymentIntentSaga
 from services.payments.utils.payments_logger import logger
 
@@ -227,3 +230,76 @@ async def get_daily_payment(db, tenant_id: str, currency: str, period_start: str
     }).fetchall()
 
     return daily_result
+
+async def create_trade_account_db(db, request, uctx, account_number: str):
+    trade_account = TradeAccount(
+        tenant_id=uuid.UUID(uctx["tenant_id"]),
+        account_number=account_number,
+        company_name=request.company_name,
+        contact_email=request.contact_email,
+        credit_limit_minor=request.credit_limit_minor,
+        available_credit_minor=request.credit_limit_minor,
+        currency=request.currency,
+        payment_terms_days=request.payment_terms_days
+    )
+    db.add(trade_account)
+    db.commit()
+    db.refresh(trade_account)
+
+    return trade_account
+
+async def get_trade_accounts_db(db, tenant_id: str, offset: int, limit: int):
+    query = db.query(TradeAccount).filter(
+        TradeAccount.tenant_id == uuid.UUID(tenant_id),
+        TradeAccount.is_active == True
+    )
+    accounts = query.offset(offset).limit(limit).all()
+    return accounts
+
+async def get_trade_account(db, tenant_id: str, request):
+    trade_account = db.query(TradeAccount).filter(
+        TradeAccount.trade_account_id == uuid.UUID(request.trade_account_id),
+        TradeAccount.tenant_id == tenant_id,
+        TradeAccount.is_active == True
+    ).first()
+    return trade_account
+
+async def create_payment_intent_db(db, request, uctx):
+    payment_intent = PaymentIntent(
+        tenant_id=uuid.UUID(uctx["tenant_id"]),
+        order_id=uuid.UUID(request.order_id) if request.order_id else None,
+        trade_account_id=uuid.UUID(request.trade_account_id) if request.trade_account_id else None,
+        amount_minor=request.amount_minor,
+        currency=request.currency,
+        provider="stripe",  # Default to Stripe for Phase 5
+        payment_method=request.payment_method,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hour expiry
+    )
+
+    db.add(payment_intent)
+    db.commit()
+    db.refresh(payment_intent)
+    return payment_intent
+
+async def update_payment_intent_status_db(db, payment_intent, status):
+    payment_intent.status = status
+    db.commit()
+    db.refresh(payment_intent)
+    return payment_intent
+
+async def get_current_exchange_rate(db, request):
+    rate = db.query(CurrencyRate).filter(
+        CurrencyRate.base_currency == request.from_currency.upper(),
+        CurrencyRate.target_currency == request.to_currency.upper(),
+        CurrencyRate.is_active == True,
+        CurrencyRate.valid_from <= datetime.now(timezone.utc),
+        or_(CurrencyRate.valid_to.is_(None), CurrencyRate.valid_to >= datetime.now(timezone.utc))
+    ).order_by(CurrencyRate.created_at.desc()).first()
+
+    return rate
+
+async def get_payment_intent_db(db, payment_intent_id: str):
+    payment_intent = db.query(PaymentIntent).filter(
+            PaymentIntent.payment_intent_id == uuid.UUID(payment_intent_id)
+        ).first()
+    return payment_intent
