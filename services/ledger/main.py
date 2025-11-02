@@ -1,131 +1,30 @@
 # Ledger Service V2 - Enhanced V4.1 Architecture
 # Double-entry accounting with sagas, events, and multi-tenant support
-
 import os
-import uuid
 import json
-import asyncio
-import structlog
 import hashlib
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone, timedelta
+from datetime import  timezone, timedelta
 from contextlib import asynccontextmanager
-
-# Configure structured logging
-logger = structlog.get_logger(__name__)
-
-import httpx
-from fastapi import FastAPI, Body, HTTPException, Request, Query, Path, Depends, Response, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Body, HTTPException, Query, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import text, create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, BigInteger, Numeric
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, Session
-from sqlalchemy.sql import func
-from sqlalchemy.exc import SQLAlchemyError
-
-# Prometheus metrics
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-
-# Database imports
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.exc import SQLAlchemyError
-from celery import Celery
-import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import redis
 import pika
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
-import jwt
 
-# =============================================================================
-# PROMETHEUS METRICS
-# =============================================================================
-
-# Metrics for Ledger Service
-ledger_requests_total = Counter(
-    'ledger_requests_total_v2', 
-    'Total ledger requests',
-    ['method', 'endpoint', 'status']
-)
-
-ledger_request_duration = Histogram(
-    'ledger_request_duration_seconds_v2',
-    'Ledger request duration',
-    ['method', 'endpoint']
-)
-
-ledger_entries_created_total = Counter(
-    'ledger_entries_created_total_v2',
-    'Total ledger entries created',
-    ['entry_type', 'account', 'currency']
-)
-
-ledger_saga_duration = Histogram(
-    'ledger_saga_duration_seconds_v2',
-    'Ledger saga execution duration',
-    ['saga_type']
-)
-
-ledger_saga_failures = Counter(
-    'ledger_saga_failures_total_v2',
-    'Total ledger saga failures',
-    ['saga_type', 'step']
-)
-
-# Idempotency metrics
-ledger_idempotency_requests_total = Counter(
-    'ledger_idempotency_requests_total_v2',
-    'Total idempotency requests',
-    ['operation', 'status']  # cached, new, conflict
-)
-
-ledger_idempotency_cache_hits = Counter(
-    'ledger_idempotency_cache_hits_total_v2',
-    'Total idempotency cache hits',
-    ['operation']
-)
-
-ledger_idempotency_cleanup_total = Counter(
-    'ledger_idempotency_cleanup_total_v2',
-    'Total idempotency records cleaned up'
-)
-
-# Daily rollup metrics
-ledger_daily_rollups_total = Counter(
-    'ledger_daily_rollups_total_v2',
-    'Total daily rollups generated',
-    ['rollup_type', 'status']
-)
-
-ledger_financial_reports_total = Counter(
-    'ledger_financial_reports_total_v2',
-    'Total financial reports generated',
-    ['report_type', 'status']
-)
-
-# Usage metering metrics
-ledger_usage_events_total = Counter(
-    'ledger_usage_events_total_v2',
-    'Total usage events generated',
-    ['meter_code', 'status']
-)
-
-ledger_usage_processing_total = Counter(
-    'ledger_usage_processing_total_v2',
-    'Total usage processing operations',
-    ['status']
-)
+from core.config import get_settings
+from services.ledger.repositories.db_config import get_db_with_rls, set_rls_context, get_db, SessionLocal
+from .utils.metrics import *
+from .utils.ledger_logger import logger
+from .services.celery_tasks import generate_daily_ledger_rollups, process_usage_metering
+from .models import *
+from .schemas import *
+from .utils.user_auth import check_permission, get_user_context
 
 # =============================================================================
 # CONFIGURATION
@@ -135,291 +34,22 @@ SERVICE_NAME = "ledger"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
-JWT_ALGORITHM = "HS256"
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 EVENT_BUS_URL = os.getenv("EVENT_BUS_URL", "http://localhost:8085")
-JWT_SECRET = os.getenv("JWT_SECRET", "")
-
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    logger.warning("Celery config not found, using defaults")
-    # Set default configuration
-    celery_app.conf.update(
-        result_expires=3600,  # 1 hour
-        task_serializer='json',
-        accept_content=['json'],
-        result_serializer='json',
-        timezone='UTC',
-        enable_utc=True,
-    )
-
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
-# =============================================================================
-# DATABASE MODELS
-# =============================================================================
-
-Base = declarative_base()
-
-class LedgerEntryNew(Base):
-    """Enhanced ledger entry with v4.1 features"""
-    __tablename__ = "ledger_entries_new"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), nullable=True)
-    account = Column(String(100), nullable=False)
-    entry_type = Column(String(20), nullable=False)  # debit/credit
-    amount_minor = Column(BigInteger, nullable=False)
-    currency = Column(String(3), nullable=False)
-    cost_centre_id = Column(UUID(as_uuid=True), nullable=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    reference_type = Column(String(50), nullable=True)  # order, invoice, approval
-    reference_id = Column(String(255), nullable=True)
-    description = Column(Text, nullable=True)
-    entry_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-class AccountBalanceNew(Base):
-    """Precomputed account balances for performance"""
-    __tablename__ = "account_balances_new"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    account = Column(String(100), nullable=False)
-    currency = Column(String(3), nullable=False)
-    balance_minor = Column(BigInteger, nullable=False, server_default='0')
-    last_updated = Column(DateTime(timezone=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-class OutboxEvent(Base):
-    """Outbox pattern for reliable event publishing"""
-    __tablename__ = "outbox_events"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=True)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')  # pending, published, failed
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-class AuditLog(Base):
-    """Audit trail for all operations - Phase 7: Enhanced for compliance"""
-    __tablename__ = "audit_logs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=True)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(50), nullable=False)
-    resource_id = Column(String(255), nullable=True)
-    details = Column(JSONB, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # Phase 7: Enhanced audit fields for compliance
-    session_id = Column(String(100), nullable=True)
-    correlation_id = Column(String(100), nullable=True)
-    severity = Column(String(20), nullable=False, default="info")  # info, warning, error, critical
-    category = Column(String(50), nullable=False, default="system")  # system, security, business, compliance
-    retention_until = Column(DateTime(timezone=True), nullable=True)  # For data retention policies
-
-class IdempotencyRecord(Base):
-    """Idempotency records to prevent duplicate operations"""
-    __tablename__ = "idempotency_records"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
-    request_hash = Column(String(255), nullable=False)  # Hash of request body
-    response_data = Column(JSONB, nullable=False)  # Cached response
-    status_code = Column(Integer, nullable=False)  # HTTP status code
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)  # Auto-expire after 24 hours
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class LedgerEntryRequest(BaseModel):
-    """Request model for creating ledger entries"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    account: str = Field(..., description="Account name")
-    entry_type: str = Field(..., description="Entry type (debit/credit)")
-    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
-    currency: str = Field(..., description="Currency code")
-    cost_centre_id: Optional[str] = None
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    idempotency_key: Optional[str] = Field(None, description="Idempotency key to prevent duplicate entries")
-
-    @field_validator('entry_type')
-    @classmethod
-    def validate_entry_type(cls, v):
-        if v not in ['debit', 'credit']:
-            raise ValueError('entry_type must be "debit" or "credit"')
-        return v
-
-class LedgerEntryResponse(BaseModel):
-    """Response model for ledger entries"""
-    id: str
-    tenant_id: str
-    vendor_id: Optional[str] = None
-    account: str
-    entry_type: str
-    amount_minor: int
-    currency: str
-    cost_centre_id: Optional[str] = None
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-class AccountBalanceResponse(BaseModel):
-    """Response model for account balances"""
-    account: str
-    currency: str
-    balance_minor: int
-    last_updated: datetime
-
-class LedgerAdjustmentRequest(BaseModel):
-    """Request model for ledger adjustments"""
-    entry_id: str = Field(..., description="Entry ID to adjust")
-    adjustment_amount_minor: int = Field(..., description="Adjustment amount in minor units")
-    reason: str = Field(..., description="Reason for adjustment")
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    idempotency_key: Optional[str] = Field(None, description="Idempotency key to prevent duplicate adjustments")
-
-class LedgerReportRequest(BaseModel):
-    """Request model for ledger reports"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    account: Optional[str] = None
-    cost_centre_id: Optional[str] = None
-    currency: Optional[str] = None
-
-# =============================================================================
-# SECURITY & AUTHENTICATION
-# =============================================================================
-
-async def get_user_context(request: Request) -> dict:
-    """Get user context from JWT token (demo implementation)"""
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return {
-            "user_id": "demo_user",
-            "tenant_id": "demo_tenant",
-            "permissions": ["ledger.read"]
-        }
-    
-    # In production: validate JWT token and extract claims
-    token = auth_header.split(" ")[1]
-    return {
-        "user_id": "authenticated_user",
-        "tenant_id": "authenticated_tenant", 
-        "permissions": ["ledger.read", "ledger.create", "ledger.admin"]
-    }
-
-async def check_permission(user_context: dict, required_permission: str) -> bool:
-    """Check if user has required permission"""
-    user_permissions = user_context.get("permissions", [])
-    return required_permission in user_permissions or "ledger.admin" in user_permissions
-
-# =============================================================================
-# UTILITIES
-# =============================================================================
-
-def set_rls_context(db: Session, tenant_id: str):
-    """Set RLS context for database session"""
-    db.execute(text("SET LOCAL app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-
-# =============================================================================
-# AUTHENTICATION & AUTHORIZATION
-# =============================================================================
-
-def get_user_context(authorization: Optional[str] = Header(None), x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
-    """Get user context from JWT or API key"""
-    # Try API key first (simplified for Ledger service)
-    if x_api_key:
-        if ALLOW_DEMO or x_api_key.startswith('zq_'):
-            return {
-                "user_id": "demo_user",
-                "tenant_id": "demo_tenant",
-                "permissions": ["ledger.create", "ledger.view", "ledger.admin"]
-            }
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # Try JWT
-    if authorization and "Bearer " in authorization:
-        try:
-            token = authorization.replace("Bearer ", "")
-            claims = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return claims
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
-
-    # Demo mode (dev only)
-    if ALLOW_DEMO:
-        logger.warning("Using demo mode - not for production!")
-        return {"tenant_id": "demo", "user_id": "demo", "permissions": ["*"]}
-
-    raise HTTPException(status_code=401, detail="Authentication required")
-
-def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
-    """Check if user has required permission"""
-    permissions = user_context.get("permissions", [])
-    return "*" in permissions or required_permission in permissions
-
-def get_db_with_rls(user_context: Dict[str, Any] = Depends(get_user_context)):
-    """Database dependency with RLS"""
-    db = SessionLocal()
-    try:
-        set_rls_context(db, user_context["tenant_id"], user_context["user_id"])
-        yield db
-    finally:
-        db.close()
 
 # RabbitMQ Publishing
 def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
@@ -894,17 +524,7 @@ else:
 #     ("POST", "/ledger/v4/adjustments"),
 # ])
 
-# =============================================================================
-# DEPENDENCY INJECTION
-# =============================================================================
 
-def get_db():
-    """Get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # =============================================================================
 # HEALTH AND MONITORING ENDPOINTS
@@ -1666,7 +1286,7 @@ async def handle_order_completed_event(
             }
             
             # Create entries using saga
-            from .sagas import LedgerEntrySaga
+            # from .sagas import LedgerEntrySaga
             
             saga = LedgerEntrySaga()
             result = await saga.create_double_entry(
@@ -1753,9 +1373,6 @@ async def handle_approval_resolved_event(
                     "description": f"Approval denied - spend reversal: {approval_id}"
                 }
             
-            # Create entries using saga
-            from .sagas import LedgerEntrySaga
-            
             saga = LedgerEntrySaga()
             result = await saga.create_double_entry(
                 tenant_id=tenant_id,
@@ -1815,9 +1432,6 @@ async def handle_invoice_posted_event(
                 "reference_id": invoice_id,
                 "description": f"Revenue recognized for invoice: {invoice_id}"
             }
-            
-            # Create entries using saga
-            from .sagas import LedgerEntrySaga
             
             saga = LedgerEntrySaga()
             result = await saga.create_double_entry(
@@ -2303,93 +1917,7 @@ async def process_usage_for_date(
         logger.error(f"Failed to trigger usage processing: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to trigger usage processing: {str(e)}")
 
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
 
-@celery_app.task(bind=True, max_retries=3)
-def process_journal_entry(self, tenant_id: str, entry_data: Dict[str, Any]):
-    """Process journal entry asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-            
-            # Process journal entry logic here
-            logger.info(f"Processing journal entry for tenant {tenant_id}")
-            
-            # Update metrics
-            ledger_requests_total.labels(method="POST", endpoint="journal", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process journal entry for tenant {tenant_id}: {e}")
-        ledger_requests_total.labels(method="POST", endpoint="journal", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_account_reconciliation(self, tenant_id: str, account_id: str):
-    """Process account reconciliation asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-            
-            # Process reconciliation logic here
-            logger.info(f"Processing account reconciliation for tenant {tenant_id}, account {account_id}")
-            
-            # Update metrics
-            ledger_requests_total.labels(method="POST", endpoint="reconciliation", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process account reconciliation: {e}")
-        ledger_requests_total.labels(method="POST", endpoint="reconciliation", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_ledger_data(self):
-    """Clean up old ledger data"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=365)
-
-            # Clean up old journal entries
-            journal_result = db.execute(text("""
-                DELETE FROM journal_entries_new
-                WHERE created_at < :cutoff_date AND status IN ('posted', 'cancelled')
-            """), {"cutoff_date": cutoff_date})
-
-            # Clean up old account balances
-            balance_result = db.execute(text("""
-                DELETE FROM account_balances_new
-                WHERE created_at < :cutoff_date AND status = 'closed'
-            """), {"cutoff_date": cutoff_date})
-
-            db.commit()
-
-            logger.info(f"Cleaned up {journal_result.rowcount} old journal entries and {balance_result.rowcount} old account balances")
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup old ledger data: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_expired_idempotency_records_task(self):
-    """Clean up expired idempotency records"""
-    try:
-        with SessionLocal() as db:
-            expired_count = cleanup_expired_idempotency_records(db)
-
-            if expired_count > 0:
-                ledger_idempotency_cleanup_total.inc(expired_count)
-                logger.info(f"Cleaned up {expired_count} expired idempotency records")
-
-            # Update metrics
-            ledger_requests_total.labels(method="POST", endpoint="cleanup", status="success").inc()
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup expired idempotency records: {e}")
-        ledger_requests_total.labels(method="POST", endpoint="cleanup", status="error").inc()
-        raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
 # DAILY ROLLUPS AND MATERIALIZATION
@@ -2543,89 +2071,6 @@ class DailyRollupManager:
             })
 
         return api_data
-
-# Celery Beat Tasks for Daily Rollups
-@celery_app.task(bind=True, max_retries=3)
-def generate_daily_ledger_rollups(self, date_str: str = None):
-    """Generate daily rollups for ledger entries"""
-    try:
-        # Default to yesterday if no date provided
-        if date_str:
-            target_date = datetime.fromisoformat(date_str).date()
-        else:
-            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-
-        with SessionLocal() as db:
-            rollup_manager = DailyRollupManager(db)
-
-            # Generate ledger rollups
-            rollup_data = rollup_manager.create_daily_ledger_rollup(target_date)
-
-            # Generate tenant metrics
-            metrics_data = rollup_manager.create_daily_tenant_metrics(target_date)
-
-            # Generate API metrics
-            api_data = rollup_manager.create_daily_api_metrics(target_date)
-
-            # Store rollup data (in production, these would go to dedicated rollup tables)
-            logger.info(f"Generated rollups for {target_date}: {len(rollup_data)} ledger, {len(metrics_data)} tenant, {len(api_data)} API metrics")
-
-            # Update metrics
-            ledger_requests_total.labels(method="POST", endpoint="rollups", status="success").inc()
-            ledger_daily_rollups_total.labels(rollup_type="ledger", status="success").inc()
-            ledger_daily_rollups_total.labels(rollup_type="tenant", status="success").inc()
-            ledger_daily_rollups_total.labels(rollup_type="api", status="success").inc()
-
-    except Exception as e:
-        logger.error(f"Failed to generate daily rollups: {e}")
-        ledger_requests_total.labels(method="POST", endpoint="rollups", status="error").inc()
-        raise self.retry(exc=e, countdown=3600)  # Retry in 1 hour
-
-@celery_app.task(bind=True, max_retries=3)
-def generate_daily_financial_reports(self, date_str: str = None):
-    """Generate daily financial reports and summaries"""
-    try:
-        if date_str:
-            target_date = datetime.fromisoformat(date_str).date()
-        else:
-            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-
-        with SessionLocal() as db:
-            # Generate P&L summary
-            pnl_data = generate_pnl_summary(db, target_date)
-
-            # Generate cash flow summary
-            cash_flow_data = generate_cash_flow_summary(db, target_date)
-
-            # Generate compliance summary
-            compliance_data = generate_compliance_summary(db, target_date)
-
-            logger.info(f"Generated financial reports for {target_date}")
-
-    except Exception as e:
-        logger.error(f"Failed to generate daily financial reports: {e}")
-        raise self.retry(exc=e, countdown=3600)
-
-# Celery Beat Configuration
-from celery.schedules import crontab
-
-# Configure Celery Beat schedule
-celery_app.conf.beat_schedule = {
-    'daily-ledger-rollups': {
-        'task': 'services.ledger.main.generate_daily_ledger_rollups',
-        'schedule': crontab(hour=2, minute=0),  # Run at 2 AM daily
-    },
-    'daily-financial-reports': {
-        'task': 'services.ledger.main.generate_daily_financial_reports',
-        'schedule': crontab(hour=3, minute=0),  # Run at 3 AM daily
-    },
-    'cleanup-idempotency-records': {
-        'task': 'services.ledger.main.cleanup_expired_idempotency_records_task',
-        'schedule': crontab(hour=1, minute=0),  # Run at 1 AM daily
-    },
-}
-
-celery_app.conf.timezone = 'UTC'
 
 # =============================================================================
 # FINANCIAL REPORTING FUNCTIONS
@@ -2854,51 +2299,6 @@ class UsageMeteringManager:
             return 1
         else:
             return 0
-
-@celery_app.task(bind=True, max_retries=3)
-def process_usage_metering(self, date_str: str = None):
-    """Process usage metering from ledger entries"""
-    try:
-        if date_str:
-            target_date = datetime.fromisoformat(date_str).date()
-        else:
-            target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-
-        start_of_day = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-        end_of_day = start_of_day + timedelta(days=1)
-
-        with SessionLocal() as db:
-            usage_manager = UsageMeteringManager(db)
-            usage_events = usage_manager.process_ledger_entries_for_usage(start_of_day, end_of_day)
-
-            # In production, these would be sent to the Usage service
-            if usage_events:
-                logger.info(f"Generated {len(usage_events)} usage events for {target_date}")
-
-                # Send to usage service (mock implementation)
-                for event in usage_events:
-                    # In production: send to actual usage service
-                    # await send_to_usage_service(event)
-                    # For now, just log the event
-                    logger.info(f"Usage event: {event['meter_code']} - {event['quantity']} for tenant {event['tenant_id']}")
-                    # Update usage event metrics
-                    ledger_usage_events_total.labels(meter_code=event['meter_code'], status="generated").inc()
-
-            # Update metrics
-            ledger_requests_total.labels(method="POST", endpoint="usage", status="success").inc()
-            ledger_usage_processing_total.labels(status="success").inc()
-
-    except Exception as e:
-        logger.error(f"Failed to process usage metering: {e}")
-        ledger_requests_total.labels(method="POST", endpoint="usage", status="error").inc()
-        ledger_usage_processing_total.labels(status="error").inc()
-        raise self.retry(exc=e, countdown=1800)  # Retry in 30 minutes
-
-# Add usage metering to beat schedule
-celery_app.conf.beat_schedule['daily-usage-metering'] = {
-    'task': 'services.ledger.main.process_usage_metering',
-    'schedule': crontab(hour=4, minute=0),  # Run at 4 AM daily
-}
 
 # =============================================================================
 # PHASE 7: AUDIT LOG VIEWER ENDPOINTS (Pro/Enterprise Feature)
