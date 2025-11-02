@@ -23,14 +23,25 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.exc import SQLAlchemyError
 from celery import Celery
-import structlog
+
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 import redis
 import pika
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 import jwt
+
+from core.config import get_settings
+from services.approvals.repositories.databse_ops import _get_user_ids_for_role
+from .utils.approvals_logger import logger, log
+from .models import ApprovalRequest, ApprovalChainStep, AuditLog, OutboxEvent, ApprovalChain, ApprovalRequestApprover
+from .schemas import UserContext, CreateApprovalRequestRequest, ApproveRequest, RespondToRequestRequest, ApprovalRequestApproverResponse, \
+     CreateApprovalChainRequest, CreateApprovalChainStepRequest
+from .repositories.db_config import SessionLocal, engine
+from .utils.metrics import REQUEST_COUNT, REQUEST_DURATION, ACTIVE_CONNECTIONS, APPROVAL_REQUESTS_CREATED_V2, \
+    EVENTS_PUBLISHED
+from .core.redis_config import get_redis_client, cache_get, cache_set
+from .utils.user_auth import get_user_context, validate_jwt_token, check_rate_limit
 
 # =============================================================================
 # CONFIGURATION & LOGGING
@@ -40,118 +51,20 @@ SERVICE_NAME = "approvals"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", "300"))
+DATABASE_URL = get_settings().DATABASE_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
 
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
-# Redis setup
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
-# Prometheus metrics
-approval_requests_total = Counter('approval_requests_total', 'Total approval requests', ['operation', 'status'])
-approval_request_duration = Histogram('approval_request_duration_seconds', 'Approval request duration', ['operation'])
-active_approvals = Gauge('active_approvals_total', 'Total active approvals', ['tenant_id'])
+# Security Configuration
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 30
+API_KEY_HEADER = "X-API-Key"
+MAX_REQUEST_SIZE_BYTES = 1024 * 1024  # 1MB
 
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-log = structlog.get_logger()
-# Alias to avoid NameError where 'logger' is used below
-logger = log
-
-# Clear registry to avoid duplicate metrics on reload
-try:
-    REGISTRY.clear()
-except:
-    pass
-
-# Prometheus Metrics
-REQUEST_COUNT = Counter(
-    'approvals_requests_total', 
-    'Total number of requests', 
-    ['method', 'endpoint', 'status_code']
-)
-
-REQUEST_DURATION = Histogram(
-    'approvals_request_duration_seconds', 
-    'Request duration in seconds',
-    ['method', 'endpoint']
-)
-
-ACTIVE_CONNECTIONS = Gauge(
-    'approvals_active_connections', 
-    'Number of active connections'
-)
-
-APPROVAL_REQUESTS_CREATED_V2 = Counter(
-    'approvals_v2_requests_created_total',
-    'Total number of approval requests created',
-    ['request_type', 'status']
-)
-
-APPROVAL_REQUESTS_RESOLVED_V2 = Counter(
-    'approvals_v2_requests_resolved_total',
-    'Total number of approval requests resolved',
-    ['request_type', 'resolution']
-)
-
-EVENTS_PUBLISHED = Counter(
-    'approvals_events_published_total',
-    'Total number of events published',
-    ['event_type', 'status']
-)
-
-CACHE_HITS = Counter(
-    'approvals_cache_hits_total',
-    'Total number of cache hits',
-    ['cache_type']
-)
-
-CACHE_MISSES = Counter(
-    'approvals_cache_misses_total',
-    'Total number of cache misses',
-    ['cache_type']
-)
 
 # Event Publishing Configuration
 EVENT_BUS_URL = os.getenv("EVENT_BUS_URL", "http://localhost:8080/events")
@@ -159,73 +72,9 @@ NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://localho
 ORDERS_SERVICE_URL = os.getenv("ORDERS_SERVICE_URL", "http://localhost:8082/orders")
 BUDGETS_SERVICE_URL = os.getenv("BUDGETS_SERVICE_URL", "http://localhost:8083/budgets")
 
-# Security Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-JWT_ALGORITHM = "HS256"
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 30
-API_KEY_HEADER = "X-API-Key"
-RATE_LIMIT_REQUESTS_PER_MINUTE = 100
-MAX_REQUEST_SIZE_BYTES = 1024 * 1024  # 1MB
 
 # Security Dependencies
 security = HTTPBearer(auto_error=False)
-
-# Redis Cache
-redis_client = None
-
-async def get_redis_client():
-    """Get Redis client with connection pooling"""
-    global redis_client
-    if redis_client is None:
-        try:
-            redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-            # Test connection
-            redis_client.ping()
-            log.info("Redis connection established")
-        except Exception as e:
-            log.warning(f"Redis connection failed: {str(e)}")
-            redis_client = None
-    return redis_client
-
-async def cache_get(key: str) -> Optional[str]:
-    """Get value from cache"""
-    try:
-        client = await get_redis_client()
-        if client:
-            value = client.get(key)
-            if value:
-                CACHE_HITS.labels(cache_type="general").inc()
-                return value
-            else:
-                CACHE_MISSES.labels(cache_type="general").inc()
-        return None
-    except Exception as e:
-        log.warning(f"Cache get failed: {str(e)}")
-        return None
-
-async def cache_set(key: str, value: str, ttl: int = REDIS_CACHE_TTL) -> bool:
-    """Set value in cache"""
-    try:
-        client = await get_redis_client()
-        if client:
-            client.setex(key, ttl, value)
-            return True
-        return False
-    except Exception as e:
-        log.warning(f"Cache set failed: {str(e)}")
-        return False
-    
-async def cache_delete(key: str) -> bool:
-    """Delete value from cache"""
-    try:
-        client = await get_redis_client()
-        if client:
-            client.delete(key)
-            return True
-        return False
-    except Exception as e:
-        log.warning(f"Cache delete failed: {str(e)}")
-        return False
 
 # Custom Exceptions for Saga Pattern
 class SagaStepFailed(Exception):
@@ -247,12 +96,6 @@ class SecurityError(Exception):
 class RateLimitExceeded(Exception):
     """Raised when rate limit is exceeded"""
     pass
-
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # RabbitMQ Publishing
 def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
@@ -280,179 +123,6 @@ def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: 
         logger.error(f"RabbitMQ publish failed: {e}")
         return False
 
-# SQLAlchemy Models - Matching actual database schema
-class ApprovalChain(Base):
-    """Approval Chain: Workflow templates for approval processes"""
-    __tablename__ = "approval_chains"
-    
-    chain_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(Text, nullable=False)
-    description = Column(Text, nullable=True)
-    chain_type = Column(String(50), nullable=False)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-class ApprovalChainStep(Base):
-    """Approval Chain Step: Individual steps in an approval chain"""
-    __tablename__ = "approval_chain_steps"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    approval_chain_id = Column(UUID(as_uuid=True), nullable=False)
-    step_number = Column(Integer, nullable=False)
-    approver_role = Column(Text, nullable=False)
-    approver_scope = Column(String(50), nullable=False)
-    escalation_after_hours = Column(Integer, nullable=True)
-    is_required = Column(Boolean, nullable=False, default=True)
-
-class ApprovalRequest(Base):
-    """Approval Request: Individual approval requests"""
-    __tablename__ = "approval_requests_new"
-    
-    request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_number = Column(String(50), nullable=False, unique=True)
-    chain_id = Column(UUID(as_uuid=True), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)  # Added for tenant isolation
-    request_type = Column(String(50), nullable=False)
-    request_data = Column(Text, nullable=False)  # JSONB stored as text
-    requested_by = Column(UUID(as_uuid=True), nullable=False)
-    request_status = Column(String(20), nullable=False, default='pending')
-    current_step_id = Column(UUID(as_uuid=True), nullable=True)
-    current_step_number = Column(Integer, nullable=False, default=1)  # Added for workflow tracking
-    total_amount_minor = Column(BigInteger, nullable=True)
-    currency = Column(String(3), nullable=True)
-    due_date = Column(DateTime(timezone=True), nullable=True)
-    completed_date = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    approvers = relationship("ApprovalRequestApprover", back_populates="request")
-
-class ApprovalRequestApprover(Base):
-    """Approval Request Approver: Tracks individual approver responses"""
-    __tablename__ = "approval_request_approvers"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_id = Column(UUID(as_uuid=True), ForeignKey('approval_requests_new.request_id'), nullable=False)
-    approver_user_id = Column(UUID(as_uuid=True), nullable=False)
-    approver_role = Column(String(100), nullable=False)
-    step_number = Column(Integer, nullable=False, default=1)
-    status = Column(String(20), nullable=False, default='pending')  # pending, approved, denied, skipped
-    notes = Column(Text, nullable=True)
-    responded_at = Column(DateTime(timezone=True), nullable=True)
-    escalation_sent = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    request = relationship("ApprovalRequest", back_populates="approvers")
-
-class OutboxEvent(Base):
-    """Outbox Event: For reliable event publishing"""
-    __tablename__ = "outbox_events"
-    
-    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    event_type = Column(String(100), nullable=False)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
-    event_data = Column(Text, nullable=False)  # JSONB stored as text
-    event_version = Column(Integer, nullable=False, default=1)
-    event_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    processed_at = Column(DateTime(timezone=True), nullable=True)
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    status = Column(String(20), nullable=False, default='pending')
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-class AuditLog(Base):
-    """Audit Log: Security and access logging"""
-    __tablename__ = "audit_logs"
-
-    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    table_name = Column(String(100), nullable=False)
-    record_id = Column(UUID(as_uuid=True), nullable=False)
-    operation = Column(String(20), nullable=False)
-    old_values = Column(Text, nullable=True)  # JSONB stored as text
-    new_values = Column(Text, nullable=True)  # JSONB stored as text
-    changed_by = Column(UUID(as_uuid=True), nullable=True)
-    changed_at = Column(DateTime(timezone=True), server_default=func.now())
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-
-# Phase 4: Security Models
-class UserContext(BaseModel):
-    """User context for RLS and authorization"""
-    user_id: str
-    tenant_id: str
-    roles: List[str] = []
-    permissions: List[str] = []
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-
-class SecurityValidation(BaseModel):
-    """Security validation result"""
-    is_valid: bool
-    user_context: Optional[UserContext] = None
-    error_message: Optional[str] = None
-
-# Pydantic Models
-class CreateApprovalChainRequest(BaseModel):
-    """Request model for creating approval chains"""
-    name: str = Field(..., description="Chain name", min_length=1)
-    description: Optional[str] = Field(None, description="Chain description")
-    chain_type: str = Field(..., description="Chain type")
-    is_active: bool = Field(True, description="Whether chain is active")
-
-class CreateApprovalChainStepRequest(BaseModel):
-    """Request model for creating approval chain steps"""
-    approval_chain_id: str = Field(..., description="Chain ID")
-    step_number: int = Field(..., description="Step number", gt=0)
-    approver_role: str = Field(..., description="Approver role")
-    approver_scope: str = Field(..., description="Approver scope")
-    escalation_after_hours: Optional[int] = Field(None, description="Escalation timeout in hours", gt=0)
-    is_required: bool = Field(True, description="Whether this step is required")
-
-class CreateApprovalRequestRequest(BaseModel):
-    """Request model for creating approval requests"""
-    request_type: str = Field(..., description="Request type")
-    requested_by: str = Field(..., description="Requester user ID")
-    chain_id: str = Field(..., description="Chain ID")
-    tenant_id: str = Field(..., description="Tenant ID for multi-tenancy")
-    request_data: Dict[str, Any] = Field(..., description="Request data")
-    total_amount_minor: Optional[int] = Field(None, description="Amount in minor units")
-    currency: str = Field("GBP", description="Currency code")
-    due_date: Optional[datetime] = Field(None, description="Due date")
-
-class ApproveRequest(BaseModel):
-    """Request model for responding to approval requests"""
-    approver_user_id: str = Field(..., description="Approver user ID")
-    approved: bool = Field(..., description="Whether to approve or deny")
-    notes: Optional[str] = Field(None, description="Approval notes", max_length=500)
-
-class RespondToRequestRequest(BaseModel):
-    """Request model for responding to approval requests (new workflow logic)"""
-    approver_user_id: str = Field(..., description="Approver user ID")
-    approved: bool = Field(..., description="Whether to approve or deny")
-    notes: Optional[str] = Field(None, description="Approver notes", max_length=500)
-    step_number: int = Field(..., description="Step number being responded to")
-
-class ApprovalRequestApproverResponse(BaseModel):
-    """Response model for approval request approvers"""
-    id: str
-    request_id: str
-    approver_user_id: str
-    approver_role: str
-    step_number: int
-    status: str
-    notes: Optional[str]
-    responded_at: Optional[datetime]
-    escalation_sent: bool
-    created_at: datetime
-    updated_at: Optional[datetime]
-
-# Phase 4: Security Functions
-
 def validate_uuid(uuid_string: str) -> None:
     """Validate UUID format"""
     try:
@@ -460,56 +130,7 @@ def validate_uuid(uuid_string: str) -> None:
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid UUID format: {uuid_string}")
 
-async def validate_jwt_token(token: str) -> Optional[UserContext]:
-    """Validate JWT token and extract user context"""
-    try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        
-        # Extract user context from JWT payload
-        user_context = UserContext(
-            user_id=payload.get("user_id", ""),
-            tenant_id=payload.get("tenant_id", ""),
-            roles=payload.get("roles", []),
-            permissions=payload.get("permissions", []),
-            site_id=payload.get("site_id"),
-            store_id=payload.get("store_id")
-        )
-        
-        return user_context
-        
-    except jwt.ExpiredSignatureError:
-        log.warning("JWT token expired")
-        return None
-    except jwt.InvalidTokenError:
-        log.warning("Invalid JWT token")
-        return None
-    except Exception as e:
-        log.error(f"JWT validation error: {str(e)}")
-        return None
 
-async def get_user_context(
-    authorization: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
-) -> UserContext:
-    """Extract user context from request"""
-    
-    # For demo purposes, create a default user context
-    # In production, this would validate JWT or API key
-    if authorization and authorization.credentials:
-        user_context = await validate_jwt_token(authorization.credentials)
-        if user_context:
-            return user_context
-    
-    # Fallback for demo/testing - create a default context
-    log.warning("No valid authentication provided, using demo context")
-    return UserContext(
-        user_id="550e8400-e29b-41d4-a716-446655440004",
-        tenant_id="550e8400-e29b-41d4-a716-446655440000",
-        roles=["admin", "approver"],
-        permissions=["approval.create", "approval.approve", "approval.view"],
-        site_id="550e8400-e29b-41d4-a716-446655440001",
-        store_id="550e8400-e29b-41d4-a716-446655440002"
-    )
 
 async def log_audit_event(
     user_context: UserContext,
@@ -597,49 +218,6 @@ async def validate_request_size(request_size: int) -> bool:
     """Validate request size is within limits"""
     return request_size <= MAX_REQUEST_SIZE_BYTES
 
-# Rate limiting with Redis (production-ready)
-redis_client = None
-
-async def check_rate_limit(user_id: str) -> bool:
-    """Check if user has exceeded rate limit using Redis"""
-    global redis_client
-
-    if redis_client is None:
-        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-
-    current_time = datetime.now()
-    minute_key = current_time.replace(second=0, microsecond=0)
-
-    try:
-        # Use Redis pipeline for atomic operations
-        pipe = redis_client.pipeline()
-
-        # Clean old entries (older than 1 minute)
-        cutoff_time = minute_key - timedelta(minutes=1)
-        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
-
-        # Remove old minute keys for this user
-        old_keys = redis_client.keys(f"rate_limit:{user_id}:*")
-        for key in old_keys:
-            if key < f"rate_limit:{user_id}:{cutoff_key}":
-                pipe.delete(key)
-
-        # Get current count
-        current_key = f"rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
-        pipe.incr(current_key)
-        pipe.expire(current_key, 60)  # Expire after 60 seconds
-
-        results = pipe.execute()
-        current_count = results[-2]  # The INCR result
-
-        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
-            return False
-
-        return True
-
-    except Exception as e:
-        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
-        return True  # Fail open for rate limiting
 
 # Phase 3: Event Publishing & Saga Functions
 
@@ -931,23 +509,6 @@ async def _assign_approvers_from_chain(chain_steps: List[Dict], db_session):
         log.error(f"Failed to assign approvers: {str(e)}")
         return []
 
-async def _get_user_ids_for_role(db_session, role_name: str) -> List[str]:
-    """Get user IDs for a given role from role_assignments"""
-    try:
-        # This is a placeholder - in production, integrate with Provisioning service
-        # For now, return a demo user ID
-        return ["550e8400-e29b-41d4-a716-446655440004"]  # Demo user
-        
-        # Production implementation would be:
-        # result = db_session.execute(text("""
-        #     SELECT user_id FROM role_assignments 
-        #     WHERE role_name = :role_name AND is_active = true
-        # """), {"role_name": role_name})
-        # return [row[0] for row in result.fetchall()]
-        
-    except Exception as e:
-        log.error(f"Failed to get user IDs for role {role_name}: {str(e)}")
-        return []
 
 # FastAPI App with lifespan management
 @asynccontextmanager
@@ -958,7 +519,7 @@ async def lifespan(app: FastAPI):
     
     # Create tables if they don't exist
     try:
-        Base.metadata.create_all(bind=engine)
+        # Base.metadata.create_all(bind=engine)
         log.info("Database tables created/verified successfully")
     except Exception as e:
         log.error(f"Failed to create database tables: {str(e)}")
@@ -2109,159 +1670,6 @@ async def get_integration_status():
     except Exception as e:
         logger.error(f"Error getting integration status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get integration status: {str(e)}")
-
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_approval_request(self, approval_id: str):
-    """Process approval request asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Get approval request
-            approval = db.execute(text("""
-                SELECT * FROM approval_requests_new WHERE id = :id
-            """), {"id": approval_id}).fetchone()
-            
-            if not approval:
-                raise ValueError(f"Approval request {approval_id} not found")
-            
-            # Process approval logic here
-            logger.info(f"Processing approval request {approval_id}")
-            
-            # Update status
-            db.execute(text("""
-                UPDATE approval_requests_new 
-                SET status = 'processed', updated_at = NOW()
-                WHERE id = :id
-            """), {"id": approval_id})
-            
-            db.commit()
-            
-            # Update metrics
-            approval_requests_total.labels(operation="process", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process approval request {approval_id}: {e}")
-        approval_requests_total.labels(operation="process", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_approvals(self):
-    """Clean up old approval requests"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
-            
-            result = db.execute(text("""
-                DELETE FROM approval_requests_new 
-                WHERE created_at < :cutoff_date AND status IN ('approved', 'rejected')
-            """), {"cutoff_date": cutoff_date})
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {result.rowcount} old approval requests")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup old approvals: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-# =============================================================================
-# EVENT CONSUMPTION WORKERS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
-    """Process TENANT_CREATED events"""
-    try:
-        logger.info(f"Processing TENANT_CREATED for tenant: {tenant_id}")
-
-        # Create default approval chains for new tenant
-        with SessionLocal() as db:
-            # Create default approval chains for common scenarios
-            default_chains = [
-                {
-                    "name": "Purchase Order Approval",
-                    "description": "Standard purchase order approval workflow",
-                    "chain_type": "purchase_order",
-                    "tenant_id": tenant_id
-                },
-                {
-                    "name": "Budget Approval",
-                    "description": "Budget increase approval workflow",
-                    "chain_type": "budget",
-                    "tenant_id": tenant_id
-                },
-                {
-                    "name": "Vendor Onboarding",
-                    "description": "New vendor approval workflow",
-                    "chain_type": "vendor_onboarding",
-                    "tenant_id": tenant_id
-                }
-            ]
-
-            for chain_data in default_chains:
-                chain = ApprovalChain(**chain_data)
-                db.add(chain)
-
-            db.commit()
-            logger.info(f"Created default approval chains for tenant: {tenant_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to process TENANT_CREATED for {tenant_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
-    """Process ORDER_COMPLETED events"""
-    try:
-        logger.info(f"Processing ORDER_COMPLETED for order: {order_id}")
-
-        # Check if order requires approval based on amount or type
-        with SessionLocal() as db:
-            # This could trigger approval chains for high-value orders
-            order_amount = order_data.get("total_amount", 0)
-            tenant_id = order_data.get("tenant_id")
-
-            if order_amount > 10000:  # Example threshold
-                # Create approval request for high-value order
-                approval_request = ApprovalRequest(
-                    request_type="order_review",
-                    title=f"High-value order review: {order_id}",
-                    description=f"Order amount: ${order_amount}",
-                    requested_by=order_data.get("user_id", "system"),
-                    tenant_id=tenant_id,
-                    metadata={"order_id": order_id, "amount": order_amount}
-                )
-                db.add(approval_request)
-                db.commit()
-
-                logger.info(f"Created approval request for high-value order: {order_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to process ORDER_COMPLETED for {order_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_outbox_events(self):
-    """Clean up old outbox events"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
-
-            result = db.execute(text("""
-                DELETE FROM outbox_events
-                WHERE status = 'published' AND processed_at < :cutoff_date
-            """), {"cutoff_date": cutoff_date})
-
-            db.commit()
-
-            logger.info(f"Cleaned up {result.rowcount} old outbox events")
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup old outbox events: {e}")
-        raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
 # MAIN EXECUTION
