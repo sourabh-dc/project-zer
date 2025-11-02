@@ -5,31 +5,22 @@ import os
 import uuid
 import time
 import json
-import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, BackgroundTasks, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, HTTPException, Depends, Request, Query, Body, Header
+from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, text, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, relationship
+from fastapi.responses import Response
+from sqlalchemy import text, func
 from sqlalchemy.exc import SQLAlchemyError
-from celery import Celery
-
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
-import redis
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import pika
 import httpx
 import pybreaker
-import jwt
+
 
 from core.config import get_settings
 from services.approvals.repositories.databse_ops import _get_user_ids_for_role
@@ -41,7 +32,7 @@ from .repositories.db_config import SessionLocal, engine
 from .utils.metrics import REQUEST_COUNT, REQUEST_DURATION, ACTIVE_CONNECTIONS, APPROVAL_REQUESTS_CREATED_V2, \
     EVENTS_PUBLISHED
 from .core.redis_config import get_redis_client, cache_get, cache_set
-from .utils.user_auth import get_user_context, validate_jwt_token, check_rate_limit
+from .utils.user_auth import get_user_context, check_rate_limit
 
 # =============================================================================
 # CONFIGURATION & LOGGING
