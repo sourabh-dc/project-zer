@@ -1,106 +1,52 @@
 # services/identity/main.py - ZeroQue Identity Service V4.1
 import os
 import json
-import uuid
 import time
 import jwt
-import httpx
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from datetime import timedelta, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request, Query, BackgroundTasks, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, text, select, insert, update, delete, Column, String, Integer, Numeric, DateTime, Boolean, Text, ForeignKey, JSON, func
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.exc import SQLAlchemyError
-from celery import Celery
-import structlog
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from sqlalchemy import text, select
+from prometheus_client import  generate_latest
 import redis
 import pika
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 
+from core.config import get_settings
+from services.identity.repositories.db_config import AsyncSessionLocal, check_db, set_rls_context_async
+from .utils.identity_logger import logger
+from .models import *
+from .schemas import *
+from .utils.user_auth import get_user_context, check_permission, generate_jwt_token, generate_guest_token
+from .repositories.user_creation_saga import UserCreationSaga
 # =============================================================================
 # CONFIGURATION & LOGGING
 # =============================================================================
-
 SERVICE_NAME = "identity"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+JWT_SECRET = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
+RATE_LIMIT_REQUESTS_PER_MINUTE = 60
+MAX_REQUEST_SIZE_BYTES = 10 * 1024 * 1024
 JWT_EXPIRY_MINUTES = int(os.getenv("JWT_EXPIRY_MINUTES", "60"))
 GUEST_TOKEN_TTL_HOURS = int(os.getenv("GUEST_TOKEN_TTL_HOURS", "24"))
-ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
-RATE_LIMIT_REQUESTS_PER_MINUTE = 60
-
-"""Synchronous and asynchronous DB setup
-We primarily use async sessions below; keep sync engine for utility if needed.
-"""
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Async engine/session for endpoints using AsyncSessionLocal
-ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=False, pool_pre_ping=True)
-AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
 
 # Prometheus metrics - temporarily disabled to avoid conflicts
 # identity_requests_total = Counter('identity_requests_v2', 'Total identity requests', ['endpoint', 'status'])
@@ -122,367 +68,6 @@ def safe_metric_call(metric, method, *args, **kwargs):
     if metric is not None and hasattr(metric, method):
         getattr(metric, method)(*args, **kwargs)
 
-# =============================================================================
-# DATABASE CONNECTION (ASYNC)
-# =============================================================================
-
-def get_engine():
-    return engine
-
-def init_db():
-    """Initialize database tables"""
-    Base.metadata.create_all(bind=engine)
-
-def check_db():
-    """Check database connectivity"""
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
-
-# =============================================================================
-# DATABASE MODELS
-# =============================================================================
-
-class Base(DeclarativeBase):
-    pass
-
-class UserNew(Base):
-    __tablename__ = 'users_new'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    email: Mapped[str] = mapped_column(nullable=False)
-    name: Mapped[Optional[str]] = mapped_column(nullable=True)
-    primary_cost_centre_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    user_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class RoleNew(Base):
-    __tablename__ = 'roles_new'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    name: Mapped[str] = mapped_column(nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(nullable=True)
-    permissions: Mapped[List[str]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class RoleAssignmentNew(Base):
-    __tablename__ = 'role_assignments_new'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    role_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class OutboxEvent(Base):
-    __tablename__ = 'outbox_events'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    event_type: Mapped[str] = mapped_column(nullable=False)
-    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(default='pending')
-    retry_count: Mapped[int] = mapped_column(default=0)
-    max_retries: Mapped[int] = mapped_column(default=3)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class AuditLog(Base):
-    __tablename__ = 'audit_logs'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    action: Mapped[str] = mapped_column(nullable=False)
-    resource_type: Mapped[str] = mapped_column(nullable=False)
-    resource_id: Mapped[Optional[str]] = mapped_column(nullable=True)
-    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(nullable=True)
-    user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-
-class OAuthProvider(Base):
-    """OAuth/SSO provider configuration for Pro/Enterprise tenants"""
-    __tablename__ = 'oauth_providers'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
-    provider_type: Mapped[str] = mapped_column(nullable=False)  # 'azure_ad', 'google', 'okta', 'auth0'
-    provider_name: Mapped[str] = mapped_column(nullable=False)  # Display name
-    client_id: Mapped[str] = mapped_column(nullable=False)
-    client_secret: Mapped[str] = mapped_column(nullable=False)  # Encrypted in production
-    tenant_domain: Mapped[Optional[str]] = mapped_column(nullable=True)  # For Azure AD
-    discovery_url: Mapped[Optional[str]] = mapped_column(nullable=True)  # OIDC discovery endpoint
-    scopes: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=['openid', 'profile', 'email'])
-    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    config_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-class OAuthSession(Base):
-    """OAuth session tracking for SSO flows"""
-    __tablename__ = 'oauth_sessions'
-    
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)  # Set after successful auth
-    state: Mapped[str] = mapped_column(nullable=False, index=True)  # OAuth state parameter
-    code_verifier: Mapped[Optional[str]] = mapped_column(nullable=True)  # PKCE verifier
-    redirect_uri: Mapped[str] = mapped_column(nullable=False)
-    external_user_id: Mapped[Optional[str]] = mapped_column(nullable=True)  # Provider's user ID
-    external_email: Mapped[Optional[str]] = mapped_column(nullable=True)
-    status: Mapped[str] = mapped_column(default='initiated', nullable=False)  # 'initiated', 'completed', 'failed'
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
-class UserCreateRequest(BaseModel):
-    tenant_id: str
-    email: str
-    name: Optional[str] = None
-    primary_cost_centre_id: Optional[str] = None
-    role_ids: List[str] = Field(default=[], description="List of role IDs to assign")
-    user_metadata: Optional[Dict[str, Any]] = None
-
-class UserUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    primary_cost_centre_id: Optional[str] = None
-    user_metadata: Optional[Dict[str, Any]] = None
-
-class RoleCreateRequest(BaseModel):
-    tenant_id: str
-    name: str
-    description: Optional[str] = None
-    permissions: List[str] = Field(description="List of permission strings")
-
-class RoleUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    permissions: Optional[List[str]] = None
-
-class RoleAssignmentRequest(BaseModel):
-    tenant_id: str
-    user_id: str
-    role_id: str
-
-class TokenRequest(BaseModel):
-    tenant_id: str
-    token_type: str = Field(description="'guest' or 'loyalty'")
-    user_id: Optional[str] = Field(default=None, description="Required for loyalty tokens")
-    guest_info: Optional[Dict[str, Any]] = Field(default=None, description="Guest-specific information")
-
-class OAuthProviderCreateRequest(BaseModel):
-    """Create OAuth provider configuration - Pro/Enterprise feature"""
-    tenant_id: str
-    provider_type: str = Field(description="'azure_ad', 'google', 'okta', 'auth0'")
-    provider_name: str = Field(description="Display name for the provider")
-    client_id: str
-    client_secret: str
-    tenant_domain: Optional[str] = None  # For Azure AD
-    discovery_url: Optional[str] = None  # OIDC discovery endpoint
-    scopes: List[str] = ['openid', 'profile', 'email']
-    config_metadata: Optional[Dict[str, Any]] = None
-
-class OAuthProviderUpdateRequest(BaseModel):
-    provider_name: Optional[str] = None
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-    tenant_domain: Optional[str] = None
-    discovery_url: Optional[str] = None
-    scopes: Optional[List[str]] = None
-    enabled: Optional[bool] = None
-    config_metadata: Optional[Dict[str, Any]] = None
-
-class OAuthInitiateRequest(BaseModel):
-    """Initiate OAuth/SSO flow"""
-    tenant_id: str
-    provider_id: str
-    redirect_uri: str = Field(description="Where to redirect after auth")
-
-class OAuthCallbackRequest(BaseModel):
-    """OAuth callback payload"""
-    state: str
-    code: str
-    error: Optional[str] = None
-    error_description: Optional[str] = None
-
-class ReportRequest(BaseModel):
-    tenant_id: str
-    report_type: str = Field(description="'users', 'roles', 'active_users', 'role_counts'")
-    period_start: Optional[str] = Field(default=None, description="ISO date string")
-    period_end: Optional[str] = Field(default=None, description="ISO date string")
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Additional filters")
-
-class UserResponse(BaseModel):
-    id: str
-    tenant_id: str
-    email: str
-    name: Optional[str]
-    primary_cost_centre_id: Optional[str]
-    metadata: Optional[Dict[str, Any]]
-    created_at: str
-    updated_at: Optional[str]
-    roles: List[Dict[str, Any]] = Field(default=[], description="Assigned roles")
-
-class RoleResponse(BaseModel):
-    id: str
-    tenant_id: str
-    name: str
-    description: Optional[str]
-    permissions: List[str]
-    created_at: str
-    updated_at: Optional[str]
-    user_count: int = Field(default=0, description="Number of users with this role")
-
-class TokenResponse(BaseModel):
-    token: str
-    token_type: str
-    expires_at: str
-    user_id: Optional[str] = None
-    permissions: List[str] = Field(default=[])
-
-class ReportResponse(BaseModel):
-    report_type: str
-    tenant_id: str
-    generated_at: str
-    period: Optional[Dict[str, str]]
-    summary: Dict[str, Any]
-    data: List[Dict[str, Any]]
-
-# =============================================================================
-# AUTHENTICATION & SECURITY
-# =============================================================================
-
-security = HTTPBearer(auto_error=False)  # Don't auto-error, we'll check API key fallback
-
-async def get_user_context(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    x_api_key: Optional[str] = Header(None)
-) -> Dict[str, Any]:
-    """Get user context from JWT token or API key"""
-    
-    # Demo mode - check API key first
-    if ALLOW_DEMO and x_api_key == "zq_demo_key_for_testing":
-        return {
-            "user_id": "demo-user",
-            "tenant_id": "demo-tenant",
-            "roles": ["identity.admin"],
-            "permissions": ["*"]  # Wildcard for demo mode
-        }
-    
-    # Try Bearer token
-    if credentials:
-        try:
-            token = credentials.credentials
-            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            return payload
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    
-    # Demo mode fallback
-    if ALLOW_DEMO:
-        return {
-            "user_id": "demo-user",
-            "tenant_id": "demo-tenant",
-            "permissions": ["*"]
-        }
-    
-    raise HTTPException(status_code=401, detail="Not authenticated")
-
-def check_permission(required_permission: str, user_context: Dict[str, Any]) -> bool:
-    """Check if user has required permission"""
-    user_permissions = user_context.get("permissions", [])
-    
-    # Wildcard permission (demo mode or superadmin)
-    if "*" in user_permissions:
-        return True
-    
-    # Exact match
-    if required_permission in user_permissions:
-        return True
-    
-    # Check permission hierarchy
-    permission_parts = required_permission.split(".")
-    for i in range(len(permission_parts)):
-        wildcard_perm = ".".join(permission_parts[:i+1]) + ".*"
-        if wildcard_perm in user_permissions:
-            return True
-    
-    return False
-
-def set_rls_context(db, tenant_id: str, user_id: Optional[str] = None):
-    """Set Row Level Security context (sync sessions)"""
-    try:
-        db.execute(text("SET app.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-        if user_id:
-            db.execute(text("SET app.user_id = :user_id"), {"user_id": user_id})
-        db.commit()
-    except Exception as e:
-        logger.error(f"Failed to set RLS context: {str(e)}")
-        raise
-
-async def set_rls_context_async(db: AsyncSession, tenant_id: str, user_id: Optional[str] = None):
-    """Set Row Level Security context (async sessions)"""
-    try:
-        await db.execute(text("SET LOCAL app.tenant_id = :tenant_id"), {"tenant_id": tenant_id})
-        if user_id:
-            await db.execute(text("SET LOCAL app.user_id = :user_id"), {"user_id": user_id})
-    except Exception as e:
-        # RLS not configured - rollback and continue without it in demo mode
-        await db.rollback()
-        logger.debug(f"RLS context not set (probably not configured): {str(e)}")
-
-# Rate limiting with Redis (production-ready)
-async def check_rate_limit(user_id: str) -> bool:
-    """Check if user has exceeded rate limit using Redis"""
-    global redis_client
-
-    if redis_client is None:
-        return True  # Allow if Redis not available
-
-    current_time = datetime.now()
-    minute_key = current_time.replace(second=0, microsecond=0)
-
-    try:
-        # Use Redis pipeline for atomic operations
-        pipe = redis_client.pipeline()
-
-        # Clean old entries (older than 1 minute)
-        cutoff_time = minute_key - timedelta(minutes=1)
-        cutoff_key = cutoff_time.strftime("%Y%m%d%H%M")
-
-        # Get current count
-        current_key = f"identity_rate_limit:{user_id}:{minute_key.strftime('%Y%m%d%H%M')}"
-        pipe.incr(current_key)
-        pipe.expire(current_key, 60)  # Expire after 60 seconds
-
-        results = pipe.execute()
-        current_count = results[-2]  # The INCR result
-
-        if current_count > RATE_LIMIT_REQUESTS_PER_MINUTE:
-            return False
-
-        return True
-
-    except Exception as e:
-        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
-        return True  # Fail open for rate limiting
 
 # RabbitMQ Publishing
 def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
@@ -510,199 +95,6 @@ def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: 
         logger.error(f"RabbitMQ publish failed: {e}")
         return False
 
-# Event consumption workers (if needed for this service)
-# The Identity service primarily manages users and authentication, so event consumption may not be needed
-
-# =============================================================================
-# SAGA PATTERN
-# =============================================================================
-
-class UserCreationSaga:
-    """Saga for user creation operations with compensation"""
-    
-    def __init__(self, db):
-        self.db = db
-        self.compensation_steps = []
-    
-    def execute_create_user(self, payload: UserCreateRequest, user_context: Dict[str, Any]) -> UserResponse:
-        """Execute user creation saga"""
-        saga_start = time.time()
-        
-        try:
-            # Step 1: Validate tenant exists
-            self._validate_tenant(payload.tenant_id)
-            self.compensation_steps.append(("validate_tenant", None))
-            
-            # Step 2: Create user
-            user = self._create_user(payload, user_context)
-            self.compensation_steps.append(("create_user", user.id))
-            
-            # Step 3: Assign roles
-            roles = self._assign_roles(user.id, payload.role_ids, payload.tenant_id, user_context)
-            self.compensation_steps.append(("assign_roles", {"user_id": user.id, "role_ids": payload.role_ids}))
-            
-            # Step 4: Publish USER_CREATED event
-            self._publish_user_created_event(user, roles, user_context)
-            self.compensation_steps.append(("publish_event", None))
-            
-            # Step 5: Audit log
-            self._audit_log("CREATE_USER", payload, user_context)
-            
-            # Metrics temporarily disabled
-            pass
-            
-            return user
-            
-        except Exception as e:
-            logger.error(f"User creation saga failed: {str(e)}")
-            # Metrics temporarily disabled
-            pass
-            self._compensate()
-            raise
-    
-    def _validate_tenant(self, tenant_id: str):
-        """Validate tenant exists"""
-        query = text("SELECT tenant_id FROM tenants WHERE tenant_id = :tenant_id")
-        result = self.db.execute(query, {"tenant_id": tenant_id})
-        if not result.first():
-            raise HTTPException(status_code=400, detail="Tenant not found")
-    
-    def _create_user(self, payload: UserCreateRequest, user_context: Dict[str, Any]) -> UserNew:
-        """Create user in database"""
-        user = UserNew(
-            tenant_id=uuid.UUID(payload.tenant_id),
-            email=payload.email,
-            name=payload.name,
-            primary_cost_centre_id=uuid.UUID(payload.primary_cost_centre_id) if payload.primary_cost_centre_id else None,
-            user_metadata=payload.user_metadata
-        )
-        
-        self.db.add(user)
-        self.db.commit()
-        self.db.refresh(user)
-        
-        return user
-    
-    def _assign_roles(self, user_id: uuid.UUID, role_ids: List[str], tenant_id: str, user_context: Dict[str, Any]) -> List[RoleNew]:
-        """Assign roles to user"""
-        roles = []
-        for role_id in role_ids:
-            # Verify role exists and belongs to tenant
-            role_query = text("""
-                SELECT id, name, description, permissions FROM roles_new
-                WHERE id = :role_id AND tenant_id = :tenant_id
-            """)
-            result = self.db.execute(role_query, {"role_id": role_id, "tenant_id": tenant_id})
-            role_row = result.first()
-            
-            if not role_row:
-                raise HTTPException(status_code=400, detail=f"Role {role_id} not found")
-            
-            # Create role assignment
-            assignment = RoleAssignmentNew(
-                tenant_id=uuid.UUID(tenant_id),
-                user_id=user_id,
-                role_id=uuid.UUID(role_id)
-            )
-            
-            self.db.add(assignment)
-            roles.append(role_row)
-        
-        self.db.commit()
-        return roles
-    
-    async def _publish_user_created_event(self, user: UserNew, roles: List[Any], user_context: Dict[str, Any]):
-        """Publish USER_CREATED event"""
-        event_data = {
-            "user_id": str(user.id),
-            "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "name": user.name,
-            "roles": [{"id": str(role[0]), "name": role[1], "permissions": role[3]} for role in roles],
-            "created_at": user.created_at.isoformat()
-        }
-        
-        # Store in outbox for reliable delivery
-        outbox_event = OutboxEvent(
-            tenant_id=user.tenant_id,
-            event_type="USER_CREATED",
-            event_data=event_data
-        )
-        
-        self.db.add(outbox_event)
-        await self.db.commit()
-    
-    async def _audit_log(self, action: str, payload: Any, user_context: Dict[str, Any]):
-        """Create audit log entry"""
-        audit_log = AuditLog(
-            tenant_id=uuid.UUID(user_context["tenant_id"]),
-            user_id=uuid.UUID(user_context["user_id"]),
-            action=action,
-            resource_type="user",
-            resource_id=getattr(payload, 'email', str(uuid.uuid4())),
-            details=payload.dict() if hasattr(payload, 'dict') else {}
-        )
-        
-        self.db.add(audit_log)
-        await self.db.commit()
-    
-    async def _compensate(self):
-        """Execute compensation steps in reverse order"""
-        for step_name, step_data in reversed(self.compensation_steps):
-            try:
-                if step_name == "assign_roles" and step_data:
-                    # Remove role assignments
-                    delete_query = text("DELETE FROM role_assignments_new WHERE user_id = :user_id")
-                    await self.db.execute(delete_query, {"user_id": step_data["user_id"]})
-                    await self.db.commit()
-                
-                elif step_name == "create_user" and step_data:
-                    # Delete user
-                    delete_query = text("DELETE FROM users_new WHERE id = :id")
-                    await self.db.execute(delete_query, {"id": step_data})
-                    await self.db.commit()
-                
-                # Add more compensation steps as needed
-                
-            except Exception as e:
-                logger.error(f"Compensation step {step_name} failed: {str(e)}")
-
-# =============================================================================
-# JWT TOKEN MANAGEMENT
-# =============================================================================
-
-def generate_jwt_token(user_id: str, tenant_id: str, permissions: List[str], token_type: str = "loyalty") -> str:
-    """Generate JWT token"""
-    now = datetime.utcnow()
-    expiry = now + timedelta(minutes=JWT_EXPIRY_MINUTES)
-    
-    payload = {
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "permissions": permissions,
-        "token_type": token_type,
-        "iat": now,
-        "exp": expiry
-    }
-    
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-def generate_guest_token(tenant_id: str, guest_info: Optional[Dict[str, Any]] = None) -> str:
-    """Generate guest JWT token"""
-    now = datetime.utcnow()
-    expiry = now + timedelta(hours=GUEST_TOKEN_TTL_HOURS)
-    
-    payload = {
-        "tenant_id": tenant_id,
-        "permissions": ["guest.access"],
-        "token_type": "guest",
-        "guest_info": guest_info or {},
-        "iat": now,
-        "exp": expiry
-    }
-    
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
 # =============================================================================
 # FASTAPI APPLICATION
 # =============================================================================
@@ -711,7 +103,7 @@ def generate_guest_token(tenant_id: str, guest_info: Optional[Dict[str, Any]] = 
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Identity Service V4.1")
-    init_db()  # Remove await since init_db is synchronous
+    # init_db()  # Remove await since init_db is synchronous
     
     yield
     
@@ -1571,73 +963,6 @@ async def loyalty_token_legacy(
     payload = TokenRequest(tenant_id=tenant_id, token_type="loyalty", user_id=user_id)
     # Forward to v4 without needing a Request instance
     return await generate_token(payload, None, user_context)
-
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_expired_tokens(self):
-    """Clean up expired tokens"""
-    try:
-        with SessionLocal() as db:
-            # Clean up expired tokens
-            result = db.execute(text("""
-                DELETE FROM identity_tokens_new 
-                WHERE expires_at < NOW() AND status = 'active'
-            """))
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {result.rowcount} expired tokens")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup expired tokens: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_token_revocation(self, token_id: str, reason: str):
-    """Process token revocation asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Revoke token
-            db.execute(text("""
-                UPDATE identity_tokens_new 
-                SET status = 'revoked', revoked_at = NOW(), revoked_reason = :reason
-                WHERE id = :token_id
-            """), {"token_id": token_id, "reason": reason})
-            
-            db.commit()
-            
-            logger.info(f"Revoked token {token_id} with reason: {reason}")
-            
-    except Exception as e:
-        logger.error(f"Failed to revoke token {token_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_guest_token_cleanup(self, tenant_id: str):
-    """Process guest token cleanup for a tenant"""
-    try:
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-            
-            # Clean up expired guest tokens
-            result = db.execute(text("""
-                DELETE FROM identity_tokens_new 
-                WHERE tenant_id = :tenant_id 
-                AND token_type = 'guest' 
-                AND expires_at < NOW()
-            """), {"tenant_id": tenant_id})
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {result.rowcount} expired guest tokens for tenant {tenant_id}")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup guest tokens for tenant {tenant_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
 
 # =============================================================================
 # MAIN EXECUTION
