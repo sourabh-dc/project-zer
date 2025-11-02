@@ -1,6 +1,5 @@
 # CV Gateway Service - Enhanced V4.1 Architecture
 # Multi-provider CV order processing with sagas, events, and RLS
-
 import os
 import uuid
 import json
@@ -40,6 +39,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import pybreaker
 import jwt
 
+from core.config import get_settings
+from .utils.cv_gateway_logger import logger
+from .models import *
+from .schemas import *
+
 # =============================================================================
 # PROMETHEUS METRICS
 # =============================================================================
@@ -66,70 +70,24 @@ SERVICE_NAME = "cv_gateway"
 SERVICE_VERSION = "4.1.0"
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://zeroque:zeroque@localhost:5432/zeroque_dev")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-ALLOW_DEMO = os.getenv("ALLOW_DEMO", "true").lower() == "true"
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
-JWT_ALGORITHM = "HS256"
+DATABASE_URL = get_settings().DATABASE_URL
+REDIS_URL = get_settings().REDIS_URL
+RABBITMQ_URL = get_settings().RABBITMQ_URL
+ENVIRONMENT = get_settings().ENVIRONMENT
+ALLOW_DEMO = get_settings().ALLOW_DEMO
+JWT_SECRET_KEY = get_settings().JWT_SECRET_KEY
+JWT_ALGORITHM = get_settings().JWT_ALGORITHM
 RATE_LIMIT_REQUESTS_PER_MINUTE = 60
 MAX_REQUEST_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
 
-# Database setup
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 Base = declarative_base()
 
 # Redis setup
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Celery setup
-celery_app = Celery(
-    SERVICE_NAME,
-    broker=RABBITMQ_URL,
-    backend=REDIS_URL,
-    include=[f'{SERVICE_NAME}.tasks']
-)
-
-# Load Celery configuration
-try:
-    celery_app.config_from_object('celeryconfig')
-except ImportError:
-    pass
-
 # Circuit breaker for external service calls
 service_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger(__name__)
-# Minimal helper stubs to prevent runtime NameErrors in this standalone service
-def get_engine():
-    return engine
-
-def init_db():
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception:
-        pass
 
 def add_api_call_meter(app):
     return app
@@ -137,197 +95,9 @@ def add_api_call_meter(app):
 def add_idempotency_middleware(app, routes=None):
     return app
 
-def check_db():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
-
 def create_trade_invoice_if_applicable(db, tenant_id: str, order_id: int, total_minor: int, currency: str, site_id: str, store_id: str):
     # Placeholder hook for billing integration
     return None
-
-# =============================================================================
-# DATABASE MODELS
-# =============================================================================
-
-class Device(Base):
-    """Phase 2: Device registry for hardware monitoring"""
-    __tablename__ = "devices"
-    
-    device_id = Column(String(100), primary_key=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    device_type = Column(String(50), nullable=False)  # camera, sensor, entry_device
-    device_name = Column(String(255), nullable=False)
-    zone = Column(String(100), nullable=True)
-    status = Column(String(20), nullable=False, default='online')  # online, offline, error, maintenance
-    health_score = Column(Integer, nullable=True)  # 0-100
-    last_heartbeat = Column(DateTime(timezone=True), nullable=True)
-    device_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class DeviceStatusLog(Base):
-    """Phase 2: Device status change logs"""
-    __tablename__ = "device_status_logs"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    device_id = Column(String(100), nullable=False, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    status = Column(String(20), nullable=False)
-    health_score = Column(Integer, nullable=True)
-    details = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-class DeviceAlert(Base):
-    """Phase 2: Device alerts for offline/error states"""
-    __tablename__ = "device_alerts"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    device_id = Column(String(100), nullable=False, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    alert_type = Column(String(50), nullable=False)  # offline, error, low_health
-    severity = Column(String(20), nullable=False, default='warning')  # info, warning, critical
-    message = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='open')  # open, acknowledged, resolved
-    acknowledged_by = Column(String(255), nullable=True)
-    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-class CvUnknownItemReview(Base):
-    """Unknown item reviews for reconciliation"""
-    __tablename__ = "cv_unknown_item_reviews"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    site_id = Column(UUID(as_uuid=True), ForeignKey('sites.site_id'), nullable=True)
-    store_id = Column(UUID(as_uuid=True), ForeignKey('stores.store_id'), nullable=True)
-    provider = Column(String(50), nullable=False)
-    external_sku = Column(String(255), nullable=False)
-    name = Column(String(255), nullable=False)
-    qty = Column(Integer, nullable=False)
-    price_minor = Column(Integer, nullable=False)
-    payload_json = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    mapped_sku = Column(String(255), nullable=True)
-    notes = Column(Text, nullable=True)
-    resolved_by = Column(String(255), nullable=True)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class OutboxEvent(Base):
-    """Reliable event publishing"""
-    __tablename__ = "outbox_events"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=True)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    next_retry_at = Column(DateTime(timezone=True), nullable=True)
-    error_message = Column(Text, nullable=True)
-    sent_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class AuditLog(Base):
-    """Audit trail for operations"""
-    __tablename__ = "audit_logs"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id'), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(50), nullable=False)
-    resource_id = Column(String(255), nullable=True)
-    details = Column(JSONB, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(String(500), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-# =============================================================================
-# PYDANTIC SCHEMAS
-# =============================================================================
-
-class AiFiItem(BaseModel):
-    """CV order item"""
-    sku: str = Field(..., description="Product SKU")
-    name: str = Field(..., description="Product name")
-    qty: int = Field(..., description="Quantity")
-    price_minor: int = Field(..., description="Price in minor units")
-
-class AiFiOrder(BaseModel):
-    """CV order from provider"""
-    provider: str = Field(..., description="Provider name")
-    provider_order_id: str = Field(..., description="Provider order ID")
-    
-    # External IDs (optional if local IDs are provided)
-    tenant_ext_id: Optional[str] = Field(None, description="External tenant ID")
-    site_ext_id: Optional[str] = Field(None, description="External site ID")
-    store_ext_id: Optional[str] = Field(None, description="External store ID")
-    user_ext_id: Optional[str] = Field(None, description="External user ID")
-    
-    # Local IDs (preferred)
-    tenant_id: Optional[str] = Field(None, description="Local tenant ID")
-    site_id: Optional[str] = Field(None, description="Local site ID")
-    store_id: Optional[str] = Field(None, description="Local store ID")
-    shopper_id: Optional[str] = Field(None, description="Local shopper ID")
-    
-    currency: str = Field("GBP", description="Currency")
-    items: List[AiFiItem] = Field(..., description="Order items")
-    occurred_at: Optional[datetime] = Field(None, description="Order timestamp")
-    
-    @field_validator('tenant_id', 'site_id', 'store_id', 'shopper_id')
-    @classmethod
-    def validate_uuids(cls, v):
-        if v is not None:
-            try:
-                uuid.UUID(v)
-                return v
-            except ValueError:
-                raise ValueError('Invalid UUID format')
-        return v
-
-class DeviceStatusUpdate(BaseModel):
-    """Phase 2: Update device status"""
-    status: str = Field(..., description="Device status: online, offline, error, maintenance")
-    health_score: Optional[int] = Field(None, description="Health score 0-100", ge=0, le=100)
-    details: Optional[Dict[str, Any]] = Field(None, description="Status details")
-
-class DeviceAlertCreate(BaseModel):
-    """Phase 2: Create device alert"""
-    alert_type: str = Field(..., description="Alert type: offline, error, low_health")
-    severity: str = Field("warning", description="Severity: info, warning, critical")
-    message: str = Field(..., description="Alert message")
-
-class ReviewResolvePayload(BaseModel):
-    """Review resolution payload"""
-    mapped_sku: Optional[str] = Field(None, description="Mapped SKU")
-    status: str = Field("resolved", description="Resolution status")
-    notes: Optional[str] = Field(None, description="Resolution notes")
-    
-    @field_validator('status')
-    @classmethod
-    def validate_status(cls, v):
-        if v not in ("resolved", "ignored"):
-            raise ValueError("Status must be 'resolved' or 'ignored'")
-        return v
-
-class OrderResponse(BaseModel):
-    """Order processing response"""
-    ok: bool = Field(..., description="Success status")
-    order_id: Optional[int] = Field(None, description="Created order ID")
-    total_minor: Optional[int] = Field(None, description="Total amount in minor units")
-    currency: Optional[str] = Field(None, description="Currency")
-    unknown_items: Optional[List[dict]] = Field(None, description="Unknown items requiring review")
-
 # =============================================================================
 # UTILITIES
 # =============================================================================
@@ -1739,277 +1509,6 @@ async def aifi_order_legacy(payload: dict = Body(...)):
         "migrate_to": "/cv/webhook/order",
         "message": "This endpoint is deprecated. Please use /cv/webhook/order with provider parameter."
     }
-
-# =============================================================================
-# CELERY TASKS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_cv_order(self, tenant_id: str, order_data: Dict[str, Any]):
-    """Process CV order asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-            
-            # Process order logic here
-            logger.info(f"Processing CV order for tenant {tenant_id}")
-            
-            # Update metrics
-            cv_gateway_requests_total.labels(method="POST", endpoint="order", provider="async", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process CV order for tenant {tenant_id}: {e}")
-        cv_gateway_requests_total.labels(method="POST", endpoint="order", provider="async", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_cv_session(self, tenant_id: str, session_data: Dict[str, Any]):
-    """Process CV session asynchronously"""
-    try:
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-            
-            # Process session logic here
-            logger.info(f"Processing CV session for tenant {tenant_id}")
-            
-            # Update metrics
-            cv_gateway_requests_total.labels(method="POST", endpoint="session", provider="async", status="success").inc()
-            
-    except Exception as e:
-        logger.error(f"Failed to process CV session for tenant {tenant_id}: {e}")
-        cv_gateway_requests_total.labels(method="POST", endpoint="session", provider="async", status="failed").inc()
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_site_created(self, site_id: str, site_data: Dict[str, Any]):
-    """
-    Phase 2: Process SITE_CREATED events from Provisioning
-    Syncs devices from device_metadata to Device registry
-    """
-    try:
-        tenant_id = site_data.get("tenant_id")
-        device_metadata = site_data.get("device_metadata", {})
-        
-        logger.info(f"Processing SITE_CREATED for CV Gateway site: {site_id}, tenant: {tenant_id}")
-        
-        with SessionLocal() as db:
-            if tenant_id:
-                set_rls_context(db, tenant_id)
-            
-            # Sync cameras
-            cameras = device_metadata.get("cameras", [])
-            for camera in cameras:
-                try:
-                    db.execute(text("""
-                        INSERT INTO devices (device_id, tenant_id, site_id, device_type, device_name, zone, status, device_metadata)
-                        VALUES (:device_id, :tenant_id, :site_id, 'camera', :device_name, :zone, 'online', :metadata)
-                        ON CONFLICT (device_id) DO UPDATE SET
-                            device_name = EXCLUDED.device_name,
-                            zone = EXCLUDED.zone,
-                            device_metadata = EXCLUDED.device_metadata
-                    """), {
-                        "device_id": camera.get("id"),
-                        "tenant_id": tenant_id,
-                        "site_id": site_id,
-                        "device_name": camera.get("id"),
-                        "zone": camera.get("zone"),
-                        "metadata": json.dumps(camera)
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to sync camera {camera.get('id')}: {e}")
-            
-            # Sync sensors
-            sensors = device_metadata.get("sensors", [])
-            for sensor in sensors:
-                try:
-                    db.execute(text("""
-                        INSERT INTO devices (device_id, tenant_id, site_id, device_type, device_name, zone, status, device_metadata)
-                        VALUES (:device_id, :tenant_id, :site_id, 'sensor', :device_name, :zone, 'online', :metadata)
-                        ON CONFLICT (device_id) DO UPDATE SET
-                            device_name = EXCLUDED.device_name,
-                            zone = EXCLUDED.zone,
-                            device_metadata = EXCLUDED.device_metadata
-                    """), {
-                        "device_id": sensor.get("id"),
-                        "tenant_id": tenant_id,
-                        "site_id": site_id,
-                        "device_name": sensor.get("id"),
-                        "zone": sensor.get("zone"),
-                        "metadata": json.dumps(sensor)
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to sync sensor {sensor.get('id')}: {e}")
-            
-            # Sync entry devices
-            entry_devices = device_metadata.get("entry_devices", [])
-            for entry_device in entry_devices:
-                try:
-                    db.execute(text("""
-                        INSERT INTO devices (device_id, tenant_id, site_id, device_type, device_name, zone, status, device_metadata)
-                        VALUES (:device_id, :tenant_id, :site_id, 'entry_device', :device_name, :zone, 'online', :metadata)
-                        ON CONFLICT (device_id) DO UPDATE SET
-                            device_name = EXCLUDED.device_name,
-                            device_metadata = EXCLUDED.device_metadata
-                    """), {
-                        "device_id": entry_device.get("id"),
-                        "tenant_id": tenant_id,
-                        "site_id": site_id,
-                        "device_name": entry_device.get("id"),
-                        "zone": None,
-                        "metadata": json.dumps(entry_device)
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to sync entry device {entry_device.get('id')}: {e}")
-            
-            db.commit()
-            
-            total_devices = len(cameras) + len(sensors) + len(entry_devices)
-            logger.info(f"Synced {total_devices} devices for site {site_id}")
-    
-    except Exception as e:
-        logger.error(f"Failed to process SITE_CREATED for CV Gateway {site_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_cv_gateway_data(self):
-    """Clean up old CV gateway data"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
-            
-            # Clean up old CV orders
-            order_result = db.execute(text("""
-                DELETE FROM cv_orders_new 
-                WHERE created_at < :cutoff_date AND status IN ('completed', 'cancelled')
-            """), {"cutoff_date": cutoff_date})
-            
-            # Clean up old CV sessions
-            session_result = db.execute(text("""
-                DELETE FROM cv_sessions_new 
-                WHERE created_at < :cutoff_date AND status IN ('completed', 'expired')
-            """), {"cutoff_date": cutoff_date})
-            
-            # Phase 2: Clean up old device status logs
-            device_log_result = db.execute(text("""
-                DELETE FROM device_status_logs
-                WHERE created_at < :cutoff_date
-            """), {"cutoff_date": cutoff_date})
-            
-            # Phase 2: Clean up resolved device alerts
-            alert_result = db.execute(text("""
-                DELETE FROM device_alerts
-                WHERE status = 'resolved' AND resolved_at < :cutoff_date
-            """), {"cutoff_date": cutoff_date})
-            
-            db.commit()
-            
-            logger.info(f"Cleaned up {order_result.rowcount} old CV orders, {session_result.rowcount} old CV sessions, {device_log_result.rowcount} device logs, {alert_result.rowcount} resolved alerts")
-            
-    except Exception as e:
-        logger.error(f"Failed to cleanup old CV gateway data: {e}")
-        raise self.retry(exc=e, countdown=300)
-
-# =============================================================================
-# EVENT CONSUMPTION WORKERS
-# =============================================================================
-
-@celery_app.task(bind=True, max_retries=3)
-def process_tenant_created(self, tenant_id: str, tenant_data: Dict[str, Any]):
-    """Process TENANT_CREATED events for CV Gateway"""
-    try:
-        logger.info(f"Processing TENANT_CREATED for CV Gateway tenant: {tenant_id}")
-
-        # Create default CV provider mappings for new tenant
-        with SessionLocal() as db:
-            # Set RLS context
-            set_rls_context(db, tenant_id)
-
-            # Create default provider mappings
-            providers = ["provider_a", "provider_b", "provider_c"]
-            for provider in providers:
-                # Check if mapping already exists
-                existing = db.execute(text("""
-                    SELECT 1 FROM provider_mappings
-                    WHERE provider = :provider AND tenant_id = :tenant_id
-                """), {"provider": provider, "tenant_id": tenant_id}).fetchone()
-
-                if not existing:
-                    # Create new provider mapping
-                    db.execute(text("""
-                        INSERT INTO provider_mappings (provider, entity_type, external_id, local_id, tenant_id)
-                        VALUES (:provider, 'provider', :provider, :local_id, :tenant_id)
-                    """), {
-                        "provider": provider,
-                        "local_id": f"{provider}_{tenant_id}",
-                        "tenant_id": tenant_id
-                    })
-
-            db.commit()
-            logger.info(f"Created default provider mappings for CV Gateway tenant: {tenant_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to process TENANT_CREATED for CV Gateway {tenant_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def process_order_completed(self, order_id: str, order_data: Dict[str, Any]):
-    """Process ORDER_COMPLETED events for CV Gateway"""
-    try:
-        logger.info(f"Processing ORDER_COMPLETED for CV Gateway order: {order_id}")
-
-        # Check if order needs CV processing
-        with SessionLocal() as db:
-            tenant_id = order_data.get("tenant_id")
-
-            if tenant_id:
-                set_rls_context(db, tenant_id)
-
-            # Check if order has unknown items that need CV processing
-            unknown_items = order_data.get("unknown_items", [])
-            if unknown_items:
-                # Process unknown items through CV providers
-                for item in unknown_items:
-                    # Create CV unknown item review for unknown item
-                    cv_review = CvUnknownItemReview(
-                        tenant_id=uuid.UUID(tenant_id) if tenant_id else None,
-                        provider="auto",
-                        external_sku=item.get("sku", "unknown"),
-                        name=item.get("name", "Unknown Item"),
-                        qty=item.get("qty", 1),
-                        price_minor=item.get("price_minor", 0),
-                        payload_json={"original_order_id": order_id, "unknown_item": item},
-                        status="pending"
-                    )
-                    db.add(cv_review)
-
-                db.commit()
-                logger.info(f"Created CV orders for unknown items in order: {order_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to process ORDER_COMPLETED for CV Gateway {order_id}: {e}")
-        raise self.retry(exc=e, countdown=60)
-
-@celery_app.task(bind=True, max_retries=3)
-def cleanup_old_outbox_events(self):
-    """Clean up old outbox events"""
-    try:
-        with SessionLocal() as db:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
-
-            result = db.execute(text("""
-                DELETE FROM outbox_events
-                WHERE status = 'published' AND processed_at < :cutoff_date
-            """), {"cutoff_date": cutoff_date})
-
-            db.commit()
-
-            logger.info(f"Cleaned up {result.rowcount} old CV Gateway outbox events")
-
-    except Exception as e:
-        logger.error(f"Failed to cleanup old CV Gateway outbox events: {e}")
-        raise self.retry(exc=e, countdown=300)
 
 # =============================================================================
 # MAIN EXECUTION
