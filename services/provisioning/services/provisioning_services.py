@@ -24,6 +24,7 @@ async def create_tenant(req: TenantRequest, db: Session):
     try:
         req_total.labels(op="create_tenant", status="start").inc()
         saga = TenantSaga(db)
+        print(27)
         res = await saga.exec(req)
         req_total.labels(op="create_tenant", status="ok").inc()
         req_duration.labels(op="create_tenant").observe(time.time() - start)

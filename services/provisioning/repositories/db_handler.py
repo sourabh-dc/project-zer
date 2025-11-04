@@ -19,11 +19,11 @@ def get_db():
     finally:
         db.close()
 
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Tables initialized")
-except Exception as e:
-    logger.warning(f"Table init: {e}")
+# try:
+#     Base.metadata.create_all(bind=engine)
+#     logger.info("Tables initialized")
+# except Exception as e:
+#     logger.warning(f"Table init: {e}")
 
 # RLS
 def set_rls_context(db, tid, uid=None):

@@ -7,18 +7,17 @@ from ..utils.provisioning_logger import logger
 
 def store_outbox(db, evt_type, tid, eid, data):
     evt = OutboxEvent(
-        event_id=f"evt_{uuid.uuid4().hex[:12]}",
+        id=uuid.uuid4(),
         event_type=evt_type,
-        aggregate_id=tid,
+        tenant_id=tid,
         event_data=json.dumps(data),
-        event_version=1,
         status="pending",
         retry_count=0,
         max_retries=3
     )
     db.add(evt)
     db.commit()
-    return str(evt.event_id)
+    return str(evt.id)
 
 def get_pending_events(limit=100):
     with SessionLocal() as db:

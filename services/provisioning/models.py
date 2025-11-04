@@ -79,18 +79,18 @@ class CostCentre(Base):
 
 class OutboxEvent(Base):
     __tablename__ = "outbox_events"
-    event_id = Column(String(255), primary_key=True)
+    id = Column(SQLUUID, primary_key=True)
     event_type = Column(String(100), nullable=False, index=True)
-    aggregate_id = Column(String(255), nullable=False)
+    tenant_id = Column(String(255), nullable=False)
     event_data = Column(Text, nullable=False)
-    event_version = Column(Integer, nullable=False, default=1)
-    event_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    processed_at = Column(DateTime(timezone=True), nullable=True)
+    # event_timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    # processed_at = Column(DateTime(timezone=True), nullable=True)
     retry_count = Column(Integer, nullable=False, default=0)
     max_retries = Column(Integer, nullable=False, default=3)
     status = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    published_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # published_at = Column(DateTime(timezone=True), nullable=True)
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"

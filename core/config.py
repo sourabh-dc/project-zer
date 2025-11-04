@@ -3,7 +3,7 @@ from pydantic import ConfigDict
 
 class Settings():
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/zeroque_dev"
-    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672//"
+    RABBITMQ_URL: str = "amqp://zeroque:zeroque_prod_2024@localhost:5672/%2Fzeroque"
     REDIS_URL: str = "redis://localhost:6379/0"
     SUBSCRIPTIONS_SERVICE_URL: str = "http://localhost:8010"
     JWT_SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION"

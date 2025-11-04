@@ -1,0 +1,354 @@
+{
+  "info": {
+    "name": "ZeroQue Provisioning API",
+    "_postman_id": "b9f6e2d4-0000-4000-8000-123456789abc",
+    "description": "Postman collection for provisioning service endpoints (health, metrics, tenants, sites, stores, users, roles, vendors, cost centres).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8201",
+      "type": "string"
+    },
+    {
+      "key": "auth_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tenant_id",
+      "value": "tenant-uuid",
+      "type": "string"
+    },
+    {
+      "key": "site_id",
+      "value": "site-uuid",
+      "type": "string"
+    },
+    {
+      "key": "store_id",
+      "value": "store-uuid",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "user-uuid",
+      "type": "string"
+    },
+    {
+      "key": "role_id",
+      "value": "role-uuid",
+      "type": "string"
+    },
+    {
+      "key": "vendor_id",
+      "value": "vendor-uuid",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Accept", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Metrics",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Accept", "value": "text/plain" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/metrics",
+          "host": ["{{baseUrl}}"],
+          "path": ["metrics"]
+        }
+      }
+    },
+    {
+      "name": "Create Tenant",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant_id\": \"tenant-uuid\",\n  \"name\": \"Example Tenant\",\n  \"domain\": \"example.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/tenants",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","tenants"]
+        }
+      }
+    },
+    {
+      "name": "List Tenants",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/tenants",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","tenants"]
+        }
+      }
+    },
+    {
+      "name": "Create Site",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Main Site\",\n  \"address\": \"123 Example St\",\n  \"config\": {}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/sites/{{site_id}}?tenant_id={{tenant_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","sites","{{site_id}}"],
+          "query": [
+            { "key": "tenant_id", "value": "{{tenant_id}}" }
+          ],
+          "variable": [
+            { "key": "site_id", "value": "{{site_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Sites",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/sites",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","sites"]
+        }
+      }
+    },
+    {
+      "name": "Create Store",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Main Store\",\n  \"site_id\": \"{{site_id}}\",\n  \"config\": {}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/stores/{{store_id}}?site_id={{site_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","stores","{{store_id}}"],
+          "query": [
+            { "key": "site_id", "value": "{{site_id}}" }
+          ],
+          "variable": [
+            { "key": "store_id", "value": "{{store_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Stores",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/stores",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","stores"]
+        }
+      }
+    },
+    {
+      "name": "Create User",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"user@example.com\",\n  \"name\": \"John Doe\",\n  \"roles\": []\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/users/{{user_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","users","{{user_id}}"],
+          "variable": [
+            { "key": "user_id", "value": "{{user_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Users",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/users",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","users"]
+        }
+      }
+    },
+    {
+      "name": "Bulk Import Users",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"users\": [\n    { \"email\": \"user1@example.com\", \"name\": \"User One\" },\n    { \"email\": \"user2@example.com\", \"name\": \"User Two\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/users/bulk-import",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","users","bulk-import"]
+        }
+      }
+    },
+    {
+      "name": "Create Role",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"admin\",\n  \"permissions\": [\"*\"]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/roles/{{role_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","roles","{{role_id}}"],
+          "variable": [
+            { "key": "role_id", "value": "{{role_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Roles",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/roles",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","roles"]
+        }
+      }
+    },
+    {
+      "name": "Create Vendor",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Vendor Inc\",\n  \"contact\": \"vendor@example.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/vendors/{{vendor_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","vendors","{{vendor_id}}"],
+          "variable": [
+            { "key": "vendor_id", "value": "{{vendor_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Vendors",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/vendors",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","vendors"]
+        }
+      }
+    },
+    {
+      "name": "Create Cost Centre",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"code\": \"CC100\",\n  \"name\": \"Operations\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/cost-centres",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","cost-centres"]
+        }
+      }
+    },
+    {
+      "name": "List Cost Centres",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/provisioning/cost-centres?tenant_id={{tenant_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["provisioning","cost-centres"],
+          "query": [
+            { "key": "tenant_id", "value": "{{tenant_id}}" }
+          ]
+        }
+      }
+    }
+  ]
+}

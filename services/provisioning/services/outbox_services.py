@@ -7,9 +7,10 @@ from ..utils.provisioning_logger import logger
 
 def process_pending_outbox_events():
     events = get_pending_events(limit=100)
+    print(events)
     for e in events:
         data = json.loads(e.event_data) if isinstance(e.event_data, str) else e.event_data
-        success = publish_to_rabbitmq(e.event_type, data, str(e.aggregate_id))
+        success = publish_to_rabbitmq(e.event_type, data, str(e.id))
         if success:
             update_event_status(e, status="published", published_at=datetime.now())
         else:

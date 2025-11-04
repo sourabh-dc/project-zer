@@ -34,7 +34,7 @@ class TenantSaga:
             saga_duration.labels(type="tenant").observe(time.time() - start)
             return {"tenant_id": str(self.t.tenant_id), "name": self.t.name, "status": "created", "saga_id": sid}
         except Exception as e:
-            await self.comp()
+            # await self.comp()
             saga_total.labels(type="tenant", status="fail").inc()
             raise
 

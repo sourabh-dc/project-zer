@@ -15,16 +15,14 @@ Features (ALL GAPS FIXED):
 10. Full audit logging
 """
 from fastapi import FastAPI, Query, Depends
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
-
 from .services.provisioning_services import create_tenant, get_tenants, create_site, get_sites, \
     create_store, create_user, get_stores, get_users, bulk_import_users, create_role, get_roles, create_vendor, \
     get_vendors, create_cc, get_cc
-from .repositories.db_handler import SessionLocal, set_rls_context
+from .repositories.db_handler import SessionLocal, set_rls_context, get_db
 from .utils.user_auth import *
 from .schemas import TenantRequest, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, RoleRequest, VendorRequest, CostCentreRequest
 
@@ -35,7 +33,7 @@ DATABASE_URL = get_settings().DATABASE_URL
 RABBITMQ_URL = get_settings().RABBITMQ_URL
 REDIS_URL = get_settings().REDIS_URL
 ALLOW_DEMO = get_settings().ALLOW_DEMO
-SERVICE_PORT = get_settings().SERVICE_PORT
+SERVICE_PORT = 8201
 
 app = FastAPI(title="ZeroQue Provisioning", version=SERVICE_VERSION)
 
@@ -48,7 +46,6 @@ def get_db_with_rls(uctx: Dict = Depends(get_user_context)):
         yield db
     finally:
         db.close()
-
 
 # Health
 @app.get("/health")
@@ -64,7 +61,7 @@ async def metrics():
 
 # Endpoints
 @app.post("/provisioning/tenants")
-async def create_tenant_route(req: TenantRequest, db: Session = Depends(get_db_with_rls)):
+async def create_tenant_route(req: TenantRequest, db: Session = Depends(get_db)):
     return await create_tenant(req, db)
 
 @app.get("/provisioning/tenants")
