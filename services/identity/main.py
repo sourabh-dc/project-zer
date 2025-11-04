@@ -1,10 +1,9 @@
 # services/identity/main.py - ZeroQue Identity Service V4.1
 import os
-import json
 import time
 import jwt
 import secrets
-from datetime import timedelta, timezone
+from datetime import timedelta
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,11 +12,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text, select
 from prometheus_client import  generate_latest
 import redis
-import pika
 import pybreaker
 
 from core.config import get_settings
 from services.identity.repositories.db_config import AsyncSessionLocal, check_db, set_rls_context_async
+from services.identity.services.identity_services import create_user, get_users
 from .utils.identity_logger import logger
 from .models import *
 from .schemas import *
@@ -32,7 +31,6 @@ SERVICE_VERSION = "4.1.0"
 # Configuration
 DATABASE_URL = get_settings().DATABASE_URL
 REDIS_URL = get_settings().REDIS_URL
-RABBITMQ_URL = get_settings().RABBITMQ_URL
 ENVIRONMENT = get_settings().ENVIRONMENT
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 JWT_SECRET = get_settings().JWT_SECRET_KEY
@@ -67,33 +65,6 @@ def safe_metric_call(metric, method, *args, **kwargs):
     """Safely call metric methods if metric is available"""
     if metric is not None and hasattr(metric, method):
         getattr(metric, method)(*args, **kwargs)
-
-
-# RabbitMQ Publishing
-def publish_to_rabbitmq(event_type: str, event_data: Dict[str, Any], tenant_id: str) -> bool:
-    """Publish event directly to RabbitMQ"""
-    try:
-        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-        channel = connection.channel()
-        channel.exchange_declare(exchange='zeroque_events', exchange_type='topic', durable=True)
-        message = json.dumps({
-            "event_type": event_type,
-            "tenant_id": tenant_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "data": event_data
-        })
-        channel.basic_publish(
-            exchange='zeroque_events',
-            routing_key=event_type,
-            body=message,
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-        connection.close()
-        logger.info(f"Published {event_type} to RabbitMQ")
-        return True
-    except Exception as e:
-        logger.error(f"RabbitMQ publish failed: {e}")
-        return False
 
 # =============================================================================
 # FASTAPI APPLICATION
@@ -171,68 +142,13 @@ async def metrics():
 # =============================================================================
 
 @app.post("/identity/v4/users", response_model=UserResponse)
-async def create_user(
+async def create_user_route(
     payload: UserCreateRequest,
     request: Request,
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """Create user with role assignments"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.create_user", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        # Execute saga
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
-            saga = UserCreationSaga(db)
-            user = await saga.execute_create_user(payload, user_context)
-        
-        # Get user with roles
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
-            
-            # Get user roles
-            roles_query = text("""
-                SELECT r.id, r.name, r.description, r.permissions
-                FROM roles_new r
-                JOIN role_assignments_new ra ON r.id = ra.role_id
-                WHERE ra.user_id = :user_id AND ra.tenant_id = :tenant_id
-            """)
-            
-            result = await db.execute(roles_query, {"user_id": user.id, "tenant_id": payload.tenant_id})
-            roles = []
-            for row in result:
-                roles.append({
-                    "id": str(row[0]),
-                    "name": row[1],
-                    "description": row[2],
-                    "permissions": row[3]
-                })
-        
-        pass  # Metrics disabled - start_time)
-        
-        return UserResponse(
-            id=str(user.id),
-            tenant_id=str(user.tenant_id),
-            email=user.email,
-            name=user.name,
-            primary_cost_centre_id=str(user.primary_cost_centre_id) if user.primary_cost_centre_id else None,
-            user_metadata=user.user_metadata,
-            created_at=user.created_at.isoformat(),
-            updated_at=user.updated_at.isoformat() if user.updated_at else None,
-            roles=roles
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to create user: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_user(payload, request, user_context)
 
 @app.get("/identity/v4/users", response_model=List[UserResponse])
 async def list_users(
@@ -242,81 +158,7 @@ async def list_users(
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
     """List users with optional filters"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.view_user", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, tenant_id, user_context["user_id"])
-            
-            # Build query with filters
-            query = text("""
-                SELECT DISTINCT u.id, u.tenant_id, u.email, u.name, u.primary_cost_centre_id, 
-                       u.metadata, u.created_at, u.updated_at
-                FROM users_new u
-                LEFT JOIN role_assignments_new ra ON u.id = ra.user_id
-                LEFT JOIN roles_new r ON ra.role_id = r.id
-                WHERE u.tenant_id = :tenant_id
-            """)
-            
-            params = {"tenant_id": tenant_id}
-            
-            if email_filter:
-                query = text(str(query) + " AND u.email ILIKE :email_filter")
-                params["email_filter"] = f"%{email_filter}%"
-            
-            if role_filter:
-                query = text(str(query) + " AND r.name = :role_filter")
-                params["role_filter"] = role_filter
-            
-            query = text(str(query) + " ORDER BY u.created_at DESC")
-            
-            result = await db.execute(query, params)
-            users = []
-            
-            for row in result:
-                # Get roles for each user
-                roles_query = text("""
-                    SELECT r.id, r.name, r.description, r.permissions
-                    FROM roles_new r
-                    JOIN role_assignments_new ra ON r.id = ra.role_id
-                    WHERE ra.user_id = :user_id AND ra.tenant_id = :tenant_id
-                """)
-                
-                roles_result = await db.execute(roles_query, {"user_id": row[0], "tenant_id": tenant_id})
-                roles = []
-                for role_row in roles_result:
-                    roles.append({
-                        "id": str(role_row[0]),
-                        "name": role_row[1],
-                        "description": role_row[2],
-                        "permissions": role_row[3]
-                    })
-                
-                users.append(UserResponse(
-                    id=str(row[0]),
-                    tenant_id=str(row[1]),
-                    email=row[2],
-                    name=row[3],
-                    primary_cost_centre_id=str(row[4]) if row[4] else None,
-                    user_metadata=row[5],
-                    created_at=row[6].isoformat(),
-                    updated_at=row[7].isoformat() if row[7] else None,
-                    roles=roles
-                ))
-        
-        pass  # Metrics disabled - start_time)
-        
-        return users
-        
-    except Exception as e:
-        logger.error(f"Failed to list users: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    return await get_users(tenant_id, email_filter, role_filter, user_context)
 
 @app.post("/identity/v4/roles", response_model=RoleResponse)
 async def create_role(
