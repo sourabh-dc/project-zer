@@ -16,7 +16,7 @@ import pybreaker
 
 from core.config import get_settings
 from services.identity.repositories.db_config import AsyncSessionLocal, check_db, set_rls_context_async
-from services.identity.services.identity_services import create_user, get_users
+from services.identity.services.identity_services import create_user, get_users, get_roles
 from .utils.identity_logger import logger
 from .models import *
 from .schemas import *
@@ -166,111 +166,16 @@ async def create_role(
     request: Request,
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """Create role with permissions"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
-            
-            # Create role
-            role = RoleNew(
-                tenant_id=uuid.UUID(payload.tenant_id),
-                name=payload.name,
-                description=payload.description,
-                permissions=payload.permissions
-            )
-            
-            db.add(role)
-            await db.commit()
-            await db.refresh(role)
-            
-            # Audit log
-            audit_log = AuditLog(
-                tenant_id=uuid.UUID(payload.tenant_id),
-                user_id=uuid.UUID(user_context["user_id"]),
-                action="CREATE_ROLE",
-                resource_type="role",
-                resource_id=payload.name,
-                details=payload.dict()
-            )
-            db.add(audit_log)
-            await db.commit()
-        
-        pass  # Metrics disabled - start_time)
-        pass  # Metrics disabled
-        
-        return RoleResponse(
-            id=str(role.id),
-            tenant_id=str(role.tenant_id),
-            name=role.name,
-            description=role.description,
-            permissions=role.permissions,
-            created_at=role.created_at.isoformat(),
-            updated_at=role.updated_at.isoformat() if role.updated_at else None,
-            user_count=0
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to create role: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    """Delegate role creation to service layer"""
+    return await create_role(payload, request, user_context)
 
 @app.get("/identity/v4/roles", response_model=List[RoleResponse])
 async def list_roles(
     tenant_id: str = Query(...),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """List roles for tenant"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.view_role", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, tenant_id, user_context["user_id"])
-            
-            query = text("""
-                SELECT r.id, r.tenant_id, r.name, r.description, r.permissions, r.created_at, r.updated_at,
-                       COUNT(ra.user_id) as user_count
-                FROM roles_new r
-                LEFT JOIN role_assignments_new ra ON r.id = ra.role_id
-                WHERE r.tenant_id = :tenant_id
-                GROUP BY r.id, r.tenant_id, r.name, r.description, r.permissions, r.created_at, r.updated_at
-                ORDER BY r.created_at DESC
-            """)
-            
-            result = await db.execute(query, {"tenant_id": tenant_id})
-            roles = []
-            
-            for row in result:
-                roles.append(RoleResponse(
-                    id=str(row[0]),
-                    tenant_id=str(row[1]),
-                    name=row[2],
-                    description=row[3],
-                    permissions=row[4],
-                    created_at=row[5].isoformat(),
-                    updated_at=row[6].isoformat() if row[6] else None,
-                    user_count=row[7]
-                ))
-        
-        pass  # Metrics disabled - start_time)
-        
-        return roles
-        
-    except Exception as e:
-        logger.error(f"Failed to list roles: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    """List roles for tenant (delegates to service layer)"""
+    return await get_roles(tenant_id, user_context)
 
 @app.post("/identity/v4/role-assignments")
 async def assign_role(
@@ -278,49 +183,8 @@ async def assign_role(
     request: Request,
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """Assign role to user"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
-            
-            # Create role assignment
-            assignment = RoleAssignmentNew(
-                tenant_id=uuid.UUID(payload.tenant_id),
-                user_id=uuid.UUID(payload.user_id),
-                role_id=uuid.UUID(payload.role_id)
-            )
-            
-            db.add(assignment)
-            await db.commit()
-            
-            # Audit log
-            audit_log = AuditLog(
-                tenant_id=uuid.UUID(payload.tenant_id),
-                user_id=uuid.UUID(user_context["user_id"]),
-                action="ASSIGN_ROLE",
-                resource_type="role_assignment",
-                resource_id=f"{payload.user_id}:{payload.role_id}",
-                details=payload.dict()
-            )
-            db.add(audit_log)
-            await db.commit()
-        
-        pass  # Metrics disabled - start_time)
-        pass  # Metrics disabled
-        
-        return {"ok": True, "message": "Role assigned successfully"}
-        
-    except Exception as e:
-        logger.error(f"Failed to assign role: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    """Assign role to user (delegates to service layer)"""
+    return await assign_role(payload, request, user_context)
 
 @app.post("/identity/v4/token", response_model=TokenResponse)
 async def generate_token(

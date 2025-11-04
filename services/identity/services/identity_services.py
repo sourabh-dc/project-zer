@@ -1,11 +1,13 @@
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from fastapi import HTTPException, Request
 
 from services.identity.repositories.db_config import AsyncSessionLocal, set_rls_context_async
 from services.identity.repositories.user_creation_saga import UserCreationSaga
-from services.identity.schemas import UserCreateRequest, UserResponse
-from services.identity.repositories.database_ops import fetch_user_roles, fetch_users
+from services.identity.schemas import UserCreateRequest, UserResponse, RoleCreateRequest, RoleResponse, \
+    RoleAssignmentRequest
+from services.identity.repositories.database_ops import fetch_user_roles, fetch_users, create_role_db, list_roles_db, \
+    assign_role_db
 from services.identity.utils.identity_logger import logger
 from services.identity.utils.user_auth import check_permission
 
@@ -89,4 +91,99 @@ async def get_users(tenant_id: str, email_filter: Optional[str], role_filter: Op
         logger.error(f"Failed to list users: {str(e)}")
         pass  # Metrics disabled
         pass  # Metrics disabled - start_time)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def create_role(payload: RoleCreateRequest, request: Request, user_context: Dict[str, Any]) -> RoleResponse:
+    """
+    Business logic for creating a role
+    """
+    start_time = time.time()
+
+    try:
+        if not check_permission("identity.admin", user_context):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        async with AsyncSessionLocal() as db:
+            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
+            role = await create_role_db(db, payload, user_context["user_id"])
+
+        # Map to response
+        return RoleResponse(
+            id=str(role.id),
+            tenant_id=str(role.tenant_id),
+            name=role.name,
+            description=role.description,
+            permissions=role.permissions,
+            created_at=role.created_at.isoformat(),
+            updated_at=role.updated_at.isoformat() if role.updated_at else None,
+            user_count=0
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create role: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_roles(tenant_id: str, user_context: Dict[str, Any]) -> List[RoleResponse]:
+    """
+    Business logic for listing roles:
+    """
+    start_time = time.time()
+    try:
+        if not check_permission("identity.view_role", user_context):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        async with AsyncSessionLocal() as db:
+            await set_rls_context_async(db, tenant_id, user_context["user_id"])
+            roles_data = await list_roles_db(db, tenant_id)
+
+        roles = [
+            RoleResponse(
+                id=r["id"],
+                tenant_id=r["tenant_id"],
+                name=r["name"],
+                description=r["description"],
+                permissions=r["permissions"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                user_count=r["user_count"]
+            )
+            for r in roles_data
+        ]
+
+        return roles
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list roles: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def assign_role(payload: RoleAssignmentRequest, request: Request, user_context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Business logic for assigning a role:
+    - Check permissions
+    - Open DB session and set RLS
+    - Delegate DB writes to repository
+    - Return simple confirmation
+    """
+    start_time = time.time()
+    try:
+        if not check_permission("identity.admin", user_context):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        async with AsyncSessionLocal() as db:
+            await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
+            result = await assign_role_db(db, payload, user_context["user_id"])
+
+        return {"ok": True, "message": "Role assigned successfully", "assignment_id": result["assignment_id"]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to assign role: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
