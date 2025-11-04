@@ -1,28 +1,22 @@
 # services/identity/main.py - ZeroQue Identity Service V4.1
 import os
-import time
-import jwt
-import secrets
-from datetime import timedelta
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request, Query
+from fastapi import FastAPI, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy import text, select
 from prometheus_client import  generate_latest
 import redis
 import pybreaker
 
 from core.config import get_settings
-from services.identity.repositories.db_config import AsyncSessionLocal, check_db, set_rls_context_async
+from services.identity.repositories.db_config import check_db
 from services.identity.services.identity_services import create_user, get_users, get_roles, generate_token_service, \
-    get_reports_service
+    get_reports_service, create_oauth_provider_service, list_oauth_providers_service, initiate_oauth_flow_service, \
+    oauth_callback_service
 from .utils.identity_logger import logger
-from .models import *
 from .schemas import *
-from .utils.user_auth import get_user_context, check_permission, generate_jwt_token, generate_guest_token
-from .repositories.user_creation_saga import UserCreationSaga
+from .utils.user_auth import get_user_context
 # =============================================================================
 # CONFIGURATION & LOGGING
 # =============================================================================
@@ -220,88 +214,15 @@ async def create_oauth_provider(
     Create OAuth/SSO provider configuration - Pro/Enterprise feature
     Requires 'identity.oauth_admin' permission
     """
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.oauth_admin", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions - OAuth configuration requires Pro or Enterprise plan")
-        
-        async with AsyncSessionLocal() as db:
-            tenant_id_uuid = uuid.UUID(req.tenant_id)
-            await set_rls_context_async(db, req.tenant_id, user_context["user_id"])
-            
-            # Create provider
-            provider = OAuthProvider(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id_uuid,
-                provider_type=req.provider_type,
-                provider_name=req.provider_name,
-                client_id=req.client_id,
-                client_secret=req.client_secret,  # TODO: Encrypt in production
-                tenant_domain=req.tenant_domain,
-                discovery_url=req.discovery_url,
-                scopes=req.scopes,
-                config_metadata=req.config_metadata
-            )
-            
-            db.add(provider)
-            await db.commit()
-            await db.refresh(provider)
-            
-            # Skip audit log in demo mode (schema mismatch)
-            # TODO: Fix audit_logs table schema to match model
-            logger.info(f"OAuth provider created (audit log skipped in demo mode)")
-            
-            logger.info(f"OAuth provider created: {provider.id} for tenant {req.tenant_id}")
-            
-            return {
-                "provider_id": str(provider.id),
-                "tenant_id": req.tenant_id,
-                "provider_type": req.provider_type,
-                "provider_name": req.provider_name,
-                "enabled": provider.enabled,
-                "created_at": provider.created_at.isoformat()
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to create OAuth provider: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await create_oauth_provider_service(req, user_context)
 
 @app.get("/identity/v4/oauth/providers")
 async def list_oauth_providers(
     tenant_id: str = Query(...),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """List OAuth/SSO providers for tenant"""
-    try:
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, tenant_id, user_context["user_id"])
-            
-            result = await db.execute(
-                select(OAuthProvider).where(OAuthProvider.tenant_id == uuid.UUID(tenant_id))
-            )
-            providers = result.scalars().all()
-            
-            return {
-                "tenant_id": tenant_id,
-                "providers": [
-                    {
-                        "provider_id": str(p.id),
-                        "provider_type": p.provider_type,
-                        "provider_name": p.provider_name,
-                        "enabled": p.enabled,
-                        "created_at": p.created_at.isoformat()
-                    }
-                    for p in providers
-                ]
-            }
-            
-    except Exception as e:
-        logger.error(f"Failed to list OAuth providers: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    """List OAuth/SSO providers for tenant (delegates to service layer)"""
+    return await list_oauth_providers_service(tenant_id, user_context)
 
 @app.post("/identity/v4/oauth/initiate")
 async def initiate_oauth_flow(
@@ -312,77 +233,7 @@ async def initiate_oauth_flow(
     Initiate OAuth/SSO authentication flow
     Returns authorization URL for user to visit
     """
-    try:
-        async with AsyncSessionLocal() as db:
-            tenant_id_uuid = uuid.UUID(req.tenant_id)
-            provider_id_uuid = uuid.UUID(req.provider_id)
-            
-            # Get provider config
-            result = await db.execute(
-                select(OAuthProvider).where(
-                    OAuthProvider.id == provider_id_uuid,
-                    OAuthProvider.tenant_id == tenant_id_uuid,
-                    OAuthProvider.enabled == True
-                )
-            )
-            provider = result.scalar_one_or_none()
-            
-            if not provider:
-                raise HTTPException(status_code=404, detail="OAuth provider not found or disabled")
-            
-            # Generate state and PKCE verifier
-            state = secrets.token_urlsafe(32)
-            code_verifier = secrets.token_urlsafe(32)
-            
-            # Create session
-            session = OAuthSession(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id_uuid,
-                provider_id=provider_id_uuid,
-                state=state,
-                code_verifier=code_verifier,
-                redirect_uri=req.redirect_uri,
-                expires_at=datetime.utcnow() + timedelta(minutes=10)
-            )
-            
-            db.add(session)
-            await db.commit()
-            
-            # Build authorization URL based on provider type
-            if provider.provider_type == "azure_ad":
-                auth_url = f"https://login.microsoftonline.com/{provider.tenant_domain}/oauth2/v2.0/authorize"
-            elif provider.provider_type == "google":
-                auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
-            elif provider.discovery_url:
-                # Use OIDC discovery
-                auth_url = provider.discovery_url.replace("/.well-known/openid-configuration", "/authorize")
-            else:
-                raise HTTPException(status_code=400, detail="Provider configuration incomplete")
-            
-            scopes_str = " ".join(provider.scopes)
-            full_auth_url = (
-                f"{auth_url}"
-                f"?client_id={provider.client_id}"
-                f"&response_type=code"
-                f"&redirect_uri={req.redirect_uri}"
-                f"&scope={scopes_str}"
-                f"&state={state}"
-            )
-            
-            logger.info(f"OAuth flow initiated for provider {provider.provider_name}, session {session.id}")
-            
-            return {
-                "session_id": str(session.id),
-                "authorization_url": full_auth_url,
-                "state": state,
-                "expires_at": session.expires_at.isoformat()
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to initiate OAuth flow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await initiate_oauth_flow_service(req, user_context)
 
 @app.post("/identity/v4/oauth/callback")
 async def oauth_callback(
@@ -393,105 +244,7 @@ async def oauth_callback(
     Handle OAuth callback after user authentication
     Exchanges code for tokens and creates/links user
     """
-    try:
-        if req.error:
-            logger.error(f"OAuth error: {req.error} - {req.error_description}")
-            raise HTTPException(status_code=400, detail=f"OAuth error: {req.error}")
-        
-        async with AsyncSessionLocal() as db:
-            # Find session by state
-            result = await db.execute(
-                select(OAuthSession).where(
-                    OAuthSession.state == req.state,
-                    OAuthSession.status == 'initiated'
-                )
-            )
-            session = result.scalar_one_or_none()
-            
-            if not session:
-                raise HTTPException(status_code=404, detail="Invalid or expired OAuth session")
-            
-            if session.expires_at < datetime.utcnow():
-                session.status = 'failed'
-                await db.commit()
-                raise HTTPException(status_code=400, detail="OAuth session expired")
-            
-            # Get provider
-            result = await db.execute(
-                select(OAuthProvider).where(OAuthProvider.id == session.provider_id)
-            )
-            provider = result.scalar_one_or_none()
-            
-            if not provider:
-                raise HTTPException(status_code=404, detail="OAuth provider not found")
-            
-            # Exchange code for tokens (simplified - production needs proper OAuth client)
-            # TODO: Use proper OAuth library (authlib, httpx-oauth, etc.)
-            token_url = ""
-            if provider.provider_type == "azure_ad":
-                token_url = f"https://login.microsoftonline.com/{provider.tenant_domain}/oauth2/v2.0/token"
-            elif provider.provider_type == "google":
-                token_url = "https://oauth2.googleapis.com/token"
-            
-            # For demo purposes, we'll simulate successful token exchange
-            # In production, make actual HTTP request to token endpoint
-            external_user_id = f"{provider.provider_type}_user_{secrets.token_hex(8)}"
-            external_email = f"user@{provider.provider_type}.example.com"
-            
-            # Find or create user
-            result = await db.execute(
-                select(UserNew).where(
-                    UserNew.tenant_id == session.tenant_id,
-                    UserNew.email == external_email
-                )
-            )
-            user = result.scalar_one_or_none()
-            
-            if not user:
-                user = UserNew(
-                    id=uuid.uuid4(),
-                    tenant_id=session.tenant_id,
-                    email=external_email,
-                    name=f"SSO User from {provider.provider_name}",
-                    user_metadata={"sso_provider": provider.provider_type, "external_id": external_user_id}
-                )
-                db.add(user)
-                await db.flush()
-            
-            # Update session
-            session.status = 'completed'
-            session.user_id = user.id
-            session.external_user_id = external_user_id
-            session.external_email = external_email
-            session.completed_at = datetime.utcnow()
-            
-            await db.commit()
-            await db.refresh(user)
-            
-            # Generate JWT for the user
-            token_payload = {
-                "user_id": str(user.id),
-                "tenant_id": str(session.tenant_id),
-                "email": user.email,
-                "exp": datetime.utcnow() + timedelta(hours=24)
-            }
-            jwt_token = jwt.encode(token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-            
-            logger.info(f"OAuth callback successful, user {user.id} authenticated via {provider.provider_name}")
-            
-            return {
-                "success": True,
-                "user_id": str(user.id),
-                "email": user.email,
-                "token": jwt_token,
-                "provider": provider.provider_name
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"OAuth callback failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await oauth_callback_service(req, user_context)
 
 # =============================================================================
 # LEGACY ENDPOINTS (DEPRECATED)

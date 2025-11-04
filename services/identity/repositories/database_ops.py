@@ -1,11 +1,12 @@
 # File: `services/identity/repositories/database_ops.py`
 import uuid
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
-from sqlalchemy import text
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.identity.models import RoleNew, AuditLog, RoleAssignmentNew
-from services.identity.schemas import RoleCreateRequest, RoleAssignmentRequest
+from services.identity.models import RoleNew, AuditLog, RoleAssignmentNew, OAuthProvider, OAuthSession, UserNew
+from services.identity.schemas import RoleCreateRequest, RoleAssignmentRequest, OAuthProviderCreateRequest
 
 
 async def fetch_user_roles(db: AsyncSession, user_id: str, tenant_id: str) -> List[Dict]:
@@ -258,5 +259,198 @@ async def get_reports_db(
         raise ValueError(f"Unsupported report type: {report_type}")
 
     return {"summary": summary, "data": data}
+
+async def create_oauth_provider_db(db: AsyncSession, req: OAuthProviderCreateRequest, actor_user_id: str) -> Dict[str, str]:
+    """
+    Persist OAuthProvider and an AuditLog, commit and return minimal info.
+    """
+    provider = OAuthProvider(
+        id=uuid.uuid4(),
+        tenant_id=uuid.UUID(req.tenant_id),
+        provider_type=req.provider_type,
+        provider_name=req.provider_name,
+        client_id=req.client_id,
+        client_secret=req.client_secret,  # TODO: encrypt in production
+        tenant_domain=req.tenant_domain,
+        discovery_url=req.discovery_url,
+        scopes=req.scopes,
+        config_metadata=req.config_metadata,
+        enabled=True
+    )
+
+    db.add(provider)
+    await db.flush()  # populate generated fields
+
+    audit = AuditLog(
+        tenant_id=uuid.UUID(req.tenant_id),
+        user_id=uuid.UUID(actor_user_id),
+        action="CREATE_OAUTH_PROVIDER",
+        resource_type="oauth_provider",
+        resource_id=str(provider.id),
+        details=req.dict()
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(provider)
+
+    return {
+        "provider_id": str(provider.id),
+        "created_at": provider.created_at.isoformat() if provider.created_at else None,
+        "enabled": provider.enabled
+    }
+
+
+async def list_oauth_providers_db(db: AsyncSession, tenant_id: str) -> List[Dict]:
+    """
+    Fetch OAuth providers for a tenant and return a list of serializable dicts.
+    """
+    tenant_uuid = uuid.UUID(tenant_id)
+    result = await db.execute(select(OAuthProvider).where(OAuthProvider.tenant_id == tenant_uuid))
+    providers = result.scalars().all()
+
+    out: List[Dict] = []
+    for p in providers:
+        out.append({
+            "provider_id": str(p.id),
+            "provider_type": p.provider_type,
+            "provider_name": p.provider_name,
+            "enabled": p.enabled,
+            "created_at": p.created_at.isoformat() if p.created_at else None
+        })
+    return out
+
+
+async def initiate_oauth_flow_db(db: AsyncSession, tenant_id: str, provider_id: str, state: str, code_verifier: str,
+    redirect_uri: str, ttl_minutes: int = 10
+) -> Optional[Dict[str, Any]]:
+    """
+    DB work only:
+    - fetch enabled OAuthProvider for tenant/provider
+    - create OAuthSession row and commit
+    - return minimal serializable dicts for provider and session
+    Returns None when provider not found or disabled.
+    """
+    tenant_uuid = uuid.UUID(tenant_id)
+    provider_uuid = uuid.UUID(provider_id)
+
+    result = await db.execute(
+        select(OAuthProvider).where(
+            OAuthProvider.id == provider_uuid,
+            OAuthProvider.tenant_id == tenant_uuid,
+            OAuthProvider.enabled == True
+        )
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        return None
+
+    session = OAuthSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_uuid,
+        provider_id=provider_uuid,
+        state=state,
+        code_verifier=code_verifier,
+        redirect_uri=redirect_uri,
+        expires_at=datetime.utcnow() + timedelta(minutes=ttl_minutes),
+        status="initiated"
+    )
+
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    provider_out = {
+        "provider_id": str(provider.id),
+        "provider_type": provider.provider_type,
+        "provider_name": provider.provider_name,
+        "client_id": provider.client_id,
+        "tenant_domain": provider.tenant_domain,
+        "discovery_url": provider.discovery_url,
+        "scopes": provider.scopes
+    }
+
+    session_out = {
+        "session_id": str(session.id),
+        "state": session.state,
+        "code_verifier": session.code_verifier,
+        "redirect_uri": session.redirect_uri,
+        "expires_at": session.expires_at.isoformat()
+    }
+
+    return {"provider": provider_out, "session": session_out}
+
+async def get_oauth_session_and_provider_db(db: AsyncSession, state: str) -> Optional[Dict[str, Any]]:
+    """
+    DB read-only: find OAuthSession by state (status 'initiated') and the related OAuthProvider.
+    Returns None when session/provider not found.
+    """
+    result = await db.execute(
+        select(OAuthSession).where(OAuthSession.state == state, OAuthSession.status == "initiated")
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        return None
+
+    result = await db.execute(select(OAuthProvider).where(OAuthProvider.id == session.provider_id))
+    provider = result.scalar_one_or_none()
+    if not provider:
+        return None
+
+    return {
+        "session": session,
+        "provider": provider
+    }
+
+
+async def finalize_oauth_callback_db(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+    external_user_id: str,
+    external_email: str,
+    provider_name: str
+) -> Dict[str, Any]:
+    """
+    Persist user (if new), update OAuthSession to completed and return serializable user + provider info.
+    """
+    # load session
+    result = await db.execute(select(OAuthSession).where(OAuthSession.id == session_id))
+    session = result.scalar_one()
+    tenant_id = session.tenant_id
+
+    # find or create user by email within tenant
+    result = await db.execute(
+        select(UserNew).where(UserNew.tenant_id == tenant_id, UserNew.email == external_email)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        user = UserNew(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            email=external_email,
+            name=f"SSO User from {provider_name}",
+            user_metadata={"sso_provider": provider_name, "external_id": external_user_id}
+        )
+        db.add(user)
+        await db.flush()
+
+    # update session
+    session.status = "completed"
+    session.user_id = user.id
+    session.external_user_id = external_user_id
+    session.external_email = external_email
+    session.completed_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(user)
+
+    return {
+        "user_id": str(user.id),
+        "email": user.email,
+        "provider_name": provider_name,
+        "tenant_id": str(tenant_id),
+        "session_id": str(session_id)
+    }
 
 
