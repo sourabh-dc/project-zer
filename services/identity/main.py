@@ -16,7 +16,8 @@ import pybreaker
 
 from core.config import get_settings
 from services.identity.repositories.db_config import AsyncSessionLocal, check_db, set_rls_context_async
-from services.identity.services.identity_services import create_user, get_users, get_roles
+from services.identity.services.identity_services import create_user, get_users, get_roles, generate_token_service, \
+    get_reports_service
 from .utils.identity_logger import logger
 from .models import *
 from .schemas import *
@@ -192,79 +193,8 @@ async def generate_token(
     request: Request,
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """Generate JWT token (unified guest/loyalty)"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.generate_token", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        if payload.token_type == "guest":
-            # Generate guest token
-            token = generate_guest_token(payload.tenant_id, payload.guest_info)
-            expires_at = datetime.utcnow() + timedelta(hours=GUEST_TOKEN_TTL_HOURS)
-            permissions = ["guest.access"]
-            user_id = None
-            
-        elif payload.token_type == "loyalty":
-            # Generate loyalty token - validate user exists
-            if not payload.user_id:
-                raise HTTPException(status_code=400, detail="user_id required for loyalty tokens")
-            
-            async with AsyncSessionLocal() as db:
-                await set_rls_context_async(db, payload.tenant_id, user_context["user_id"])
-                
-                # Get user and roles
-                user_query = text("""
-                    SELECT u.id, r.permissions
-                    FROM users_new u
-                    LEFT JOIN role_assignments_new ra ON u.id = ra.user_id
-                    LEFT JOIN roles_new r ON ra.role_id = r.id
-                    WHERE u.id = :user_id AND u.tenant_id = :tenant_id
-                """)
-                
-                result = await db.execute(user_query, {"user_id": payload.user_id, "tenant_id": payload.tenant_id})
-                user_data = result.fetchall()
-                
-                if not user_data:
-                    raise HTTPException(status_code=404, detail="User not found")
-                
-                # Collect all permissions
-                all_permissions = []
-                for row in user_data:
-                    if row[1]:  # permissions
-                        all_permissions.extend(row[1])
-                
-                # Remove duplicates
-                permissions = list(set(all_permissions))
-                user_id = str(user_data[0][0])
-            
-            token = generate_jwt_token(user_id, payload.tenant_id, permissions, "loyalty")
-            expires_at = datetime.utcnow() + timedelta(minutes=JWT_EXPIRY_MINUTES)
-            
-        else:
-            raise HTTPException(status_code=400, detail="Invalid token_type. Must be 'guest' or 'loyalty'")
-        
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        pass  # Metrics disabled
-        
-        return TokenResponse(
-            token=token,
-            token_type=payload.token_type,
-            expires_at=expires_at.isoformat(),
-            user_id=user_id,
-            permissions=permissions
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to generate token: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    """Generate JWT token (delegates to service layer)"""
+    return await generate_token_service(payload, request, user_context)
 
 @app.get("/identity/v4/reports", response_model=ReportResponse)
 async def get_reports(
@@ -274,88 +204,8 @@ async def get_reports(
     period_end: Optional[str] = Query(None),
     user_context: Dict[str, Any] = Depends(get_user_context)
 ):
-    """Get identity reports (blueprint-inspired analytics)"""
-    start_time = time.time()
-    
-    try:
-        # Check permissions
-        if not check_permission("identity.view_reports", user_context):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
-        async with AsyncSessionLocal() as db:
-            await set_rls_context_async(db, tenant_id, user_context["user_id"])
-            
-            if report_type == "active_users":
-                # Active users report
-                query = text("""
-                    SELECT 
-                        COUNT(*) as total_users,
-                        COUNT(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as new_users_30d,
-                        COUNT(CASE WHEN updated_at >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) as active_users_7d
-                    FROM users_new
-                    WHERE tenant_id = :tenant_id
-                """)
-                
-                result = await db.execute(query, {"tenant_id": tenant_id})
-                row = result.first()
-                
-                summary = {
-                    "total_users": row[0],
-                    "new_users_30d": row[1],
-                    "active_users_7d": row[2]
-                }
-                
-                data = []
-                
-            elif report_type == "role_counts":
-                # Role counts report
-                query = text("""
-                    SELECT 
-                        r.name,
-                        r.description,
-                        COUNT(ra.user_id) as user_count,
-                        r.permissions
-                    FROM roles_new r
-                    LEFT JOIN role_assignments_new ra ON r.id = ra.role_id
-                    WHERE r.tenant_id = :tenant_id
-                    GROUP BY r.id, r.name, r.description, r.permissions
-                    ORDER BY user_count DESC
-                """)
-                
-                result = await db.execute(query, {"tenant_id": tenant_id})
-                
-                summary = {"total_roles": 0, "total_assignments": 0}
-                data = []
-                
-                for row in result:
-                    data.append({
-                        "role_name": row[0],
-                        "description": row[1],
-                        "user_count": row[2],
-                        "permissions": row[3]
-                    })
-                    summary["total_roles"] += 1
-                    summary["total_assignments"] += row[2]
-                
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported report type: {report_type}")
-        
-        pass  # Metrics disabled - start_time)
-        
-        return ReportResponse(
-            report_type=report_type,
-            tenant_id=tenant_id,
-            generated_at=datetime.utcnow().isoformat(),
-            period={"start": period_start, "end": period_end} if period_start and period_end else None,
-            summary=summary,
-            data=data
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get reports: {str(e)}")
-        pass  # Metrics disabled
-        pass  # Metrics disabled - start_time)
-        raise HTTPException(status_code=500, detail=str(e))
+    """Get identity reports (blueprint-inspired analytics) (delegates to service layer)"""
+    return await get_reports_service(tenant_id, report_type, period_start, period_end, user_context)
 
 # =============================================================================
 # OAUTH/SSO ENDPOINTS (Pro/Enterprise Feature)
