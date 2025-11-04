@@ -152,20 +152,20 @@ def upgrade():
     op.create_index(op.f('ix_dashboard_access_dashboard_id'), 'dashboard_access', ['dashboard_id'], unique=False)
     op.create_index(op.f('ix_dashboard_data_refresh_dashboard_id'), 'dashboard_data_refresh', ['dashboard_id'], unique=False)
 
-        # Phase 7: Enhance existing audit_logs table for compliance
-
-    # Add new columns to audit_logs table
-    op.add_column('audit_logs', sa.Column('session_id', sa.String(100), nullable=True))
-    op.add_column('audit_logs', sa.Column('correlation_id', sa.String(100), nullable=True))
-    op.add_column('audit_logs', sa.Column('severity', sa.String(20), nullable=False, server_default='info'))
-    op.add_column('audit_logs', sa.Column('category', sa.String(50), nullable=False, server_default='system'))
-    op.add_column('audit_logs', sa.Column('retention_until', sa.DateTime(timezone=True), nullable=True))
-
-    # Create indexes for Phase 7 audit log enhancements
-    op.create_index(op.f('ix_audit_logs_severity'), 'audit_logs', ['severity'], unique=False)
-    op.create_index(op.f('ix_audit_logs_category'), 'audit_logs', ['category'], unique=False)
-    op.create_index(op.f('ix_audit_logs_correlation_id'), 'audit_logs', ['correlation_id'], unique=False)
-    op.create_index(op.f('ix_audit_logs_session_id'), 'audit_logs', ['session_id'], unique=False)
+    #     # Phase 7: Enhance existing audit_logs table for compliance
+    #
+    # # Add new columns to audit_logs table
+    # op.add_column('audit_logs', sa.Column('session_id', sa.String(100), nullable=True))
+    # op.add_column('audit_logs', sa.Column('correlation_id', sa.String(100), nullable=True))
+    # op.add_column('audit_logs', sa.Column('severity', sa.String(20), nullable=False, server_default='info'))
+    # op.add_column('audit_logs', sa.Column('category', sa.String(50), nullable=False, server_default='system'))
+    # op.add_column('audit_logs', sa.Column('retention_until', sa.DateTime(timezone=True), nullable=True))
+    #
+    # # Create indexes for Phase 7 audit log enhancements
+    # op.create_index(op.f('ix_audit_logs_severity'), 'audit_logs', ['severity'], unique=False)
+    # op.create_index(op.f('ix_audit_logs_category'), 'audit_logs', ['category'], unique=False)
+    # op.create_index(op.f('ix_audit_logs_correlation_id'), 'audit_logs', ['correlation_id'], unique=False)
+    # op.create_index(op.f('ix_audit_logs_session_id'), 'audit_logs', ['session_id'], unique=False)
 
 
 def downgrade():
