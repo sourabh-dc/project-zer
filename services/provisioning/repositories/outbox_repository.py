@@ -11,8 +11,10 @@ def store_outbox(db, evt_type, tid, eid, data):
         event_type=evt_type,
         aggregate_id=tid,
         event_data=json.dumps(data),
+        event_version=1,
         status="pending",
-        retry_count=0
+        retry_count=0,
+        max_retries=3
     )
     db.add(evt)
     db.commit()
