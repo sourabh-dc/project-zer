@@ -1,9 +1,9 @@
-from ..utils.provisioning_logger import logger
-from ..core.celery_main import celery_app
-from ..services.outbox_services import process_pending_outbox_events
+from services.provisioning.utils.provisioning_logger import logger
+from services.provisioning.core.celery_main import celery_app
+from services.provisioning.services.outbox_services import process_pending_outbox_events
 from datetime import datetime, timedelta
-from ..models import *
-from ..repositories.db_handler import SessionLocal
+from services.provisioning.models import *
+from services.provisioning.repositories.db_handler import SessionLocal
 
 @celery_app.task(name='provisioning.publish_outbox_events')
 def publish_outbox_events():

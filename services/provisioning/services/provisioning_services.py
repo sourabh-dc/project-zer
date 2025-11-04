@@ -1,10 +1,7 @@
 import uuid
 from typing import Dict
-
 from fastapi import HTTPException
 import time
-
-from prometheus_client import Counter, Histogram
 from sqlalchemy.orm import Session
 
 from services.provisioning.repositories.bulk_user_saga import BulkUserSaga

@@ -4,14 +4,13 @@ from datetime import datetime
 from typing import List, Dict
 
 from sqlalchemy import text
-from prometheus_client import Counter, Histogram
 
 from .db_handler import audit
 from ..services.subscription_service import get_limits
 from ..utils.provisioning_logger import logger
 from ..models import UserV2, TenantV2
 from .outbox_repository import store_outbox
-from ..tasks.celery_tasks import publish_outbox_events
+from services.provisioning.services.celery_tasks import publish_outbox_events
 from ..utils.user_auth import gen_api_key
 from ..utils.metrics import saga_total, saga_duration
 

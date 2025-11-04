@@ -1,9 +1,8 @@
-import logging
 from celery import Celery
 
 from core.config import get_settings
+from ..utils.provisioning_logger import logger
 
-logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "provisioning"
 

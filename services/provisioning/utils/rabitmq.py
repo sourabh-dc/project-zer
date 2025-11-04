@@ -1,12 +1,10 @@
 import json
 from datetime import datetime
 import pika
-import logging
 
 from ..schemas import *
 from core.config import get_settings
-
-logger = logging.getLogger(__name__)
+from .provisioning_logger import logger
 
 RABBITMQ_URL = get_settings().RABBITMQ_URL
 

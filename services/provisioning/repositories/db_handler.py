@@ -1,14 +1,13 @@
-import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import  sessionmaker
 
 from core.config import get_settings
 from ..models import *
+from ..utils.provisioning_logger import logger
 
 DATABASE_URL = get_settings().DATABASE_URL
 ALLOW_DEMO = get_settings().ALLOW_DEMO
 
-logger = logging.getLogger(__name__)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

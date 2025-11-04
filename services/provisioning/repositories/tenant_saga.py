@@ -6,7 +6,7 @@ from sqlalchemy import text
 from ..utils.provisioning_logger import logger
 from ..models import TenantV2
 from .outbox_repository import store_outbox
-from ..tasks.celery_tasks import publish_outbox_events
+from services.provisioning.services.celery_tasks import publish_outbox_events
 from ..utils.metrics import saga_total, saga_duration
 
 

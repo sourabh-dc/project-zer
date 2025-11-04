@@ -7,7 +7,7 @@ from ..utils.provisioning_logger import logger
 from ..models import VendorV2, TenantV2
 from ..services.subscription_service import get_limits
 from .outbox_repository import store_outbox
-from ..tasks.celery_tasks import publish_outbox_events
+from services.provisioning.services.celery_tasks import publish_outbox_events
 from ..utils.metrics import saga_total, saga_duration
 
 

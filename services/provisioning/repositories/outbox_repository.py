@@ -1,11 +1,9 @@
 import json
-import logging
 
 from ..models import *
 from .db_handler import SessionLocal
 from ..models import OutboxEvent
-
-logger = logging.getLogger(__name__)
+from ..utils.provisioning_logger import logger
 
 def store_outbox(db, evt_type, tid, eid, data):
     evt = OutboxEvent(
