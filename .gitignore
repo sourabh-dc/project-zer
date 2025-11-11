@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.log
+
+# Virtual Environment
+venv/
+ENV/
+.venv
+env/
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Test output
+/tmp/
+*.log
+test_results.log
+test_response.json
+
+# Docker
+*.pid
+
+# Temp files
+migrate_schema.py
+seed_rbac_data.py
+generate_mock_jwt.py
+test_all_56_endpoints.sh
+test_all_api_key.sh
+setup_rls_policies.sql
+STATUS.md
+PRICING_INTEGRATION.md
+
