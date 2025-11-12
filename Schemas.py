@@ -1,7 +1,8 @@
-import uuid
-from datetime import datetime, date
+from datetime import datetime
+
 from pydantic import field_validator, BaseModel, Field, EmailStr, ConfigDict
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple
+import uuid
 import re
 
 # ==================================================================================
@@ -24,7 +25,6 @@ class TenantRequest(BaseModel):
 
 
 class SiteRequest(BaseModel):
-    tenant_id: str = Field(description="Tenant ID")
     """Site creation request"""
     name: str = Field(min_length=1, max_length=255, description="Site name")
     type: str = Field(description="Site type")
@@ -33,47 +33,11 @@ class SiteRequest(BaseModel):
 
 class StoreRequest(BaseModel):
     """Store creation request"""
-    tenant_id: str = Field(description="Tenant ID")
     name: str = Field(min_length=1, max_length=255, description="Store name")
     type: str = Field(description="Store type")
-    site_id: str = Field(description="Site ID")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
 
 
-# Add to Schemas.py
-
-class CheckEntitlementRequest(BaseModel):
-    tenant_id: str
-    feature_code: str
-    requested_count: Optional[int] = 1  # NEW: for checking batch operations
-
-class RecordUsageRequest(BaseModel):
-    tenant_id: str
-    feature_code: str
-    usage_type: str
-    count: int = 1
-
-class FeatureRequest(BaseModel):
-    code: str
-    name: str
-    description: Optional[str] = None
-    category: Optional[str] = None
-    usage_type: str = "count"  # NEW
-    unit: Optional[str] = None   # NEW
-    reset_period: str = "monthly"  # NEW
-
-class PlanFeatureRequest(BaseModel):
-    limits: Optional[dict] = None  # e.g., {"max_value": 50, "warn_at": 40}
-
-class SubscriptionPlanRequest(BaseModel):
-    code: str
-    name: str
-    description: Optional[str] = None
-    price_yearly_minor: int
-    price_monthly_minor: Optional[int] = None
-    currency: str = "GBP"
-    billing_cycle: str = "yearly"  # NEW
-    
 class UserRequest(BaseModel):
     """User creation request"""
     email: EmailStr = Field(description="Valid email address")
@@ -107,22 +71,17 @@ class RoleRequest(BaseModel):
 
 
 class VendorRequest(BaseModel):
-    tenant_id: str = Field(description="Tenant ID")
     """Vendor creation request"""
     name: str = Field(min_length=1, max_length=255, description="Vendor name")
     contact_email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
     description: Optional[str] = Field(None, max_length=500, description="Description (optional)")
-    user_id: Optional[str] = Field(None, description="User ID for vendor account (optional)")
 
 
 class CostCentreRequest(BaseModel):
-    """Cost centre creation request - Provisioning route"""
+    """Cost centre creation request"""
     name: str = Field(min_length=1, max_length=200, description="Cost centre name")
-    code: Optional[str] = Field(None, max_length=50, description="Cost centre code (optional)")
     budget_minor: int = Field(ge=0, description="Budget in minor units (required)")
     manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
-    budget_owner_id: Optional[str] = Field(None, description="Budget owner user ID (optional)")
-    tenant_id: str = Field(description="Tenant ID")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
 
 
@@ -188,7 +147,6 @@ class CategoryRequest(BaseModel):
 class ProductRequest(BaseModel):
     """Product creation request"""
     tenant_id: str = Field(description="Tenant ID")
-    vendor_id: Optional[str] = Field(None, description="Vendor ID (optional)")
     category_id: Optional[str] = Field(None, description="Category ID (optional)")
     sku: str = Field(min_length=1, max_length=100, description="Product SKU")
     name: str = Field(min_length=1, max_length=255, description="Product name")
@@ -274,16 +232,10 @@ class ApprovalRequestRequest(BaseModel):
     chain_id: str = Field(description="Approval chain ID to use")
     request_type: str = Field(description="Request type (budget, order, vendor)")
     request_data: Dict[str, Any] = Field(description="Request details")
-    total_amount_minor: Optional[int] = Field(None, description="Amount in minor units (optional)")
+    requested_by: str = Field(description="Requester user ID")
+    total_amount_minor: Optional[int] = Field(None, ge=0, description="Amount in minor units (optional)")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
     due_date: Optional[datetime] = Field(None, description="Due date (optional)")
-    
-    @field_validator('total_amount_minor')
-    @classmethod
-    def validate_amount(cls, v):
-        if v is not None and v <= 0:
-            raise ValueError("Amount must be positive")
-        return v
 
 
 class ApprovalResponseRequest(BaseModel):
@@ -291,8 +243,6 @@ class ApprovalResponseRequest(BaseModel):
     approver_user_id: str = Field(description="Approver user ID")
     approved: bool = Field(description="Whether to approve or deny")
     notes: Optional[str] = Field(None, max_length=500, description="Approval notes (optional)")
-    modified_amount_minor: Optional[int] = Field(None, description="Modified amount (if approver changes amount)")
-    modification_reason: Optional[str] = Field(None, max_length=500, description="Reason for amount modification")
 
 class ResourceContext(BaseModel):
     resource_type: str
@@ -309,597 +259,3 @@ class UserContext(BaseModel):
     raw_claims: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-# Authentication schemas
-class LoginRequest(BaseModel):
-    """Login request"""
-    email: EmailStr = Field(..., description="User email")
-    password: str = Field(..., min_length=8, description="User password")
-
-class LoginResponse(BaseModel):
-    """Login response"""
-    user_id: str
-    tenant_id: str
-    email: str
-    display_name: str
-    api_key: str
-    api_key_expires_at: str
-    last_login_at: Optional[str] = None
-
-class RefreshApiKeyRequest(BaseModel):
-    """Refresh API key request"""
-    email: EmailStr = Field(..., description="User email")
-    password: str = Field(..., min_length=8, description="User password")
-
-class RefreshApiKeyResponse(BaseModel):
-    """Refresh API key response"""
-    api_key: str
-    api_key_expires_at: str
-    message: str = "API key refreshed successfully"
-
-# New Code- Sebin
-
-class PaymentIntentRequest(BaseModel):
-    """Request model for creating payment intents"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    order_id: Optional[str] = Field(None, description="Associated order ID")
-    amount_minor: int = Field(..., description="Amount in minor units")
-    currency: str = Field(default="GBP", description="Currency code")
-    provider: str = Field(default="stripe", description="Payment provider")
-    site_id: Optional[str] = Field(None, description="Site ID")
-    store_id: Optional[str] = Field(None, description="Store ID")
-    user_id: Optional[str] = Field(None, description="User ID")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-
-class CustomerRequest(BaseModel):
-    """Request model for customer operations"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    provider: str = Field(default="stripe", description="Payment provider")
-    email: Optional[str] = Field(None, description="Customer email")
-    name: Optional[str] = Field(None, description="Customer name")
-    phone: Optional[str] = Field(None, description="Customer phone")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-
-class RefundRequest(BaseModel):
-    """Request model for payment refunds"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    payment_intent_id: str = Field(..., description="Payment intent ID")
-    amount_minor: Optional[int] = Field(None, description="Refund amount in minor units")
-    reason: Optional[str] = Field(None, description="Refund reason")
-
-
-class PaymentAdjustmentRequest(BaseModel):
-    """Request model for payment adjustments"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    payment_intent_id: str = Field(..., description="Payment intent ID")
-    adjustment_type: str = Field(..., description="Type of adjustment")
-    amount_minor: int = Field(..., description="Adjustment amount in minor units")
-    currency: str = Field(default="GBP", description="Currency code")
-    reason: Optional[str] = Field(None, description="Adjustment reason")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-
-class TradeAccountRequest(BaseModel):
-    """Trade account creation request"""
-    company_name: str = Field(..., description="Company name", max_length=200)
-    contact_email: str = Field(..., description="Contact email", max_length=255)
-    credit_limit_minor: int = Field(..., description="Credit limit in minor units", ge=0)
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    payment_terms_days: int = Field(30, description="Payment terms in days", ge=0)
-
-
-class TradeAccountResponse(BaseModel):
-    """Trade account response model"""
-    trade_account_id: str
-    account_number: str
-    company_name: str
-    contact_email: str
-    credit_limit_minor: int
-    available_credit_minor: int
-    currency: str
-    payment_terms_days: int
-    is_active: bool
-    created_at: datetime
-
-
-class PaymentIntentResponse(BaseModel):
-    """Payment intent response model"""
-    payment_intent_id: str
-    client_secret: str
-    amount_minor: int
-    currency: str
-    status: str
-    provider: str
-    expires_at: Optional[datetime]
-
-
-class MultiCurrencyConversionRequest(BaseModel):
-    """Currency conversion request"""
-    from_currency: str = Field(..., description="Source currency", max_length=3)
-    to_currency: str = Field(..., description="Target currency", max_length=3)
-    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
-
-
-class MultiCurrencyConversionResponse(BaseModel):
-    """Currency conversion response"""
-    from_currency: str
-    to_currency: str
-    original_amount_minor: int
-    converted_amount_minor: int
-    exchange_rate: float
-    converted_at: datetime
-
-class OrderRequest(BaseModel):
-    """Order creation request"""
-    customer_id: str
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    order_type: str = "purchase"
-    items: List[Dict[str, Any]]
-    shipping_address: Optional[Dict[str, Any]] = None
-    billing_address: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class OrderItemRequest(BaseModel):
-    """Order item request"""
-    product_id: str
-    variant_id: Optional[str] = None
-    quantity: int
-    unit_price_minor: int
-
-
-class OrderUpdateRequest(BaseModel):
-    """Order update request"""
-    order_status: Optional[str] = None
-    payment_status: Optional[str] = None
-    fulfillment_status: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-class BaseBillingRequest(BaseModel):
-    """Base request model with common fields"""
-    tenant_id: str = Field(..., description="Tenant ID for multi-tenancy")
-
-    @field_validator('tenant_id')
-    @classmethod
-    def validate_tenant_id(cls, v):
-        try:
-            uuid.UUID(v)
-            return v
-        except ValueError:
-            raise ValueError('tenant_id must be a valid UUID')
-
-
-class InvoiceLineRequest(BaseModel):
-    """Request model for invoice line items"""
-    line_number: int = Field(..., description="Line number", ge=1)
-    description: str = Field(..., description="Line item description", max_length=255)
-    quantity: int = Field(..., description="Quantity", gt=0)
-    unit_price_minor: int = Field(..., description="Unit price in minor units", ge=0)
-    tax_minor: int = Field(0, description="Tax amount in minor units", ge=0)
-    tax_code: Optional[str] = Field(None, description="Tax code", max_length=20)
-
-    @property
-    def line_total_minor(self) -> int:
-        return (self.quantity * self.unit_price_minor) + self.tax_minor
-
-
-class CreateInvoiceRequest(BaseBillingRequest):
-    """Request model for creating invoices"""
-    invoice_number: Optional[str] = Field(None, description="Invoice number", max_length=50)
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    due_date: Optional[date] = Field(None, description="Due date")
-    lines: List[InvoiceLineRequest] = Field(..., description="Invoice line items", min_items=1)
-    ar_customer_code: Optional[str] = Field(None, description="AR customer code", max_length=100)
-    terms: str = Field("NET30", description="Payment terms", max_length=20)
-
-    @field_validator('lines')
-    @classmethod
-    def validate_lines(cls, v):
-        if not v:
-            raise ValueError('At least one line item is required')
-        line_numbers = [line.line_number for line in v]
-        if len(line_numbers) != len(set(line_numbers)):
-            raise ValueError('Line numbers must be unique')
-        return v
-
-    @property
-    def subtotal_minor(self) -> int:
-        return sum(line.quantity * line.unit_price_minor for line in self.lines)
-
-    @property
-    def tax_total_minor(self) -> int:
-        return sum(line.tax_minor for line in self.lines)
-
-    @property
-    def total_minor(self) -> int:
-        return self.subtotal_minor + self.tax_total_minor
-
-
-class InvoiceResponse(BaseModel):
-    """Response model for invoices"""
-    id: str
-    tenant_id: str
-    invoice_number: Optional[str]
-    status: str
-    amount_minor: int
-    currency: str
-    tax_total_minor: int
-    subtotal_minor: int
-    due_date: Optional[date]
-    posted_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
-    lines: List[Dict[str, Any]] = []
-
-# Add to Schemas.py
-
-class StoreProductRequest(BaseModel):
-    store_id: str
-    product_id: str
-    price_minor: int
-    currency: str = "GBP"
-    is_available: Optional[bool] = True
-    stock_quantity: Optional[int] = 0
-    low_stock_threshold: Optional[int] = 10
-
-class StoreProductResponse(BaseModel):
-    id: str
-    store_id: str
-    product_id: str
-    price_minor: int
-    currency: str
-    is_available: bool
-    stock_quantity: int
-    created_at: str
-    
-class SettlementItemRequest(BaseModel):
-    """Request model for settlement items"""
-    order_id: Optional[str] = Field(None, description="Order ID")
-    sub_order_id: Optional[str] = Field(None, description="Sub-order ID")
-    payout_amount_minor: int = Field(..., description="Payout amount in minor units", ge=0)
-    commission_amount_minor: int = Field(..., description="Commission amount in minor units", ge=0)
-    fee_amount_minor: int = Field(0, description="Fee amount in minor units", ge=0)
-    notes: Optional[str] = Field(None, description="Item notes")
-
-    @property
-    def net_amount_minor(self) -> int:
-        return self.payout_amount_minor - self.commission_amount_minor - self.fee_amount_minor
-
-
-class CreateSettlementRequest(BaseBillingRequest):
-    """Request model for creating vendor settlements"""
-    vendor_id: str = Field(..., description="Vendor ID")
-    settlement_period_start: date = Field(..., description="Settlement period start date")
-    settlement_period_end: date = Field(..., description="Settlement period end date")
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    items: List[SettlementItemRequest] = Field(..., description="Settlement items", min_items=1)
-    notes: Optional[str] = Field(None, description="Settlement notes")
-
-    @field_validator('vendor_id')
-    @classmethod
-    def validate_vendor_id(cls, v):
-        try:
-            uuid.UUID(v)
-            return v
-        except ValueError:
-            raise ValueError('vendor_id must be a valid UUID')
-
-
-class SettlementResponse(BaseModel):
-    """Response model for settlements"""
-    settlement_id: str
-    vendor_id: str
-    tenant_id: str
-    settlement_period_start: date
-    settlement_period_end: date
-    total_sales_minor: int
-    total_commission_minor: int
-    net_settlement_minor: int
-    currency: str
-    settlement_status: str
-    settlement_date: Optional[datetime]
-    created_at: datetime
-
-
-class CreateDisputeRequest(BaseModel):
-    """Request model for creating disputes"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    settlement_id: Optional[str] = Field(None, description="Settlement ID")
-    settlement_item_id: Optional[str] = Field(None, description="Settlement item ID")
-    dispute_amount_minor: int = Field(..., description="Dispute amount in minor units", ge=0)
-    dispute_reason: str = Field(..., description="Dispute reason", max_length=255)
-    dispute_notes: Optional[str] = Field(None, description="Dispute notes")
-
-    @field_validator('tenant_id', 'settlement_id', 'settlement_item_id')
-    @classmethod
-    def validate_uuids(cls, v):
-        if v is not None:
-            try:
-                uuid.UUID(v)
-                return v
-            except ValueError:
-                raise ValueError(f'Invalid UUID format: {v}')
-
-
-class DisputeResponse(BaseModel):
-    """Response model for disputes"""
-    id: str
-    settlement_id: Optional[str]
-    settlement_item_id: Optional[str]
-    tenant_id: str
-    dispute_amount_minor: int
-    dispute_reason: str
-    dispute_status: str
-    dispute_notes: Optional[str]
-    created_at: datetime
-
-
-class CreateAdjustmentRequest(BaseModel):
-    """Request model for creating adjustments"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    settlement_id: str = Field(..., description="Settlement ID")
-    settlement_item_id: Optional[str] = Field(None, description="Settlement item ID")
-    adjustment_amount_minor: int = Field(..., description="Adjustment amount in minor units")
-    adjustment_reason: str = Field(..., description="Adjustment reason", max_length=255)
-    adjustment_type: str = Field(..., description="Adjustment type",
-                                 pattern="^(commission|chargeback|refund|bonus|penalty)$")
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    adjustment_notes: Optional[str] = Field(None, description="Adjustment notes")
-
-    @field_validator('tenant_id', 'settlement_id', 'settlement_item_id')
-    @classmethod
-    def validate_uuids(cls, v):
-        if v is not None:
-            try:
-                uuid.UUID(v)
-                return v
-            except ValueError:
-                raise ValueError(f'Invalid UUID format: {v}')
-
-
-class AdjustmentResponse(BaseModel):
-    """Response model for adjustments"""
-    id: str
-    settlement_id: str
-    settlement_item_id: Optional[str]
-    tenant_id: str
-
-
-class BillingCostCentreRequest(BaseModel):
-    """Cost centre creation request - Billing route (Phase 4)"""
-    name: str = Field(..., description="Cost centre name", max_length=200)
-    code: str = Field(..., description="Cost centre code (e.g., IT-001)", max_length=50)
-    description: Optional[str] = Field(None, description="Cost centre description")
-    parent_cost_centre_id: Optional[str] = Field(None, description="Parent cost centre ID for hierarchy")
-    budget_owner_id: str = Field(..., description="User ID who owns the budget")
-
-
-class CostCentreResponse(BaseModel):
-    """Cost centre response model - Phase 4"""
-    cost_centre_id: str
-    name: str
-    code: str
-    description: Optional[str]
-    parent_cost_centre_id: Optional[str]
-    budget_owner_id: str
-    is_active: bool
-    created_at: datetime
-
-
-class BudgetRequest(BaseModel):
-    """Budget creation request - Phase 4"""
-    cost_centre_id: str = Field(..., description="Cost centre ID")
-    budget_year: int = Field(..., description="Budget year", ge=2020, le=2030)
-    budget_month: Optional[int] = Field(None, description="Budget month (1-12)", ge=1, le=12)
-    budget_type: str = Field(..., description="Budget type", pattern="^(annual|monthly|project)$")
-    budget_amount_minor: int = Field(..., description="Budget amount in minor units", gt=0)
-    currency: str = Field("GBP", description="Currency code", max_length=3)
-    approval_workflow_id: Optional[str] = Field(None, description="Approval workflow ID")
-
-
-class BudgetResponse(BaseModel):
-    """Budget response model - Phase 4"""
-    budget_id: str
-    cost_centre_id: str
-    budget_year: int
-    budget_month: Optional[int]
-    budget_type: str
-    budget_amount_minor: int
-    spent_amount_minor: int
-    available_amount_minor: int
-    currency: str
-    status: str
-    created_at: datetime
-
-
-class BudgetCheckRequest(BaseModel):
-    """Budget check request - Phase 4"""
-    cost_centre_id: str = Field(..., description="Cost centre ID")
-    amount_minor: int = Field(..., description="Amount to check in minor units", gt=0)
-    description: str = Field(..., description="Transaction description")
-    reference_id: Optional[str] = Field(None, description="Reference ID (invoice, order, etc.)")
-    reference_type: Optional[str] = Field(None, description="Reference type")
-
-
-class BudgetCheckResponse(BaseModel):
-    """Budget check response - Phase 4"""
-    budget_id: str
-    cost_centre_id: str
-    requested_amount_minor: int
-    available_amount_minor: int
-    is_approved: bool
-    approval_required: bool
-    approval_id: Optional[str]
-    message: str
-
-
-class SpendRequest(BaseModel):
-    """Spend recording request - Phase 4"""
-    cost_centre_id: str = Field(..., description="Cost centre ID")
-    amount_minor: int = Field(..., description="Spend amount in minor units", gt=0)
-    description: str = Field(..., description="Spend description")
-    reference_id: Optional[str] = Field(None, description="Reference ID")
-    reference_type: Optional[str] = Field(None, description="Reference type")
-    approval_id: Optional[str] = Field(None, description="Pre-approved approval ID")
-
-class LedgerEntryRequest(BaseModel):
-    """Request model for creating ledger entries"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    account: str = Field(..., description="Account name")
-    entry_type: str = Field(..., description="Entry type (debit/credit)")
-    amount_minor: int = Field(..., description="Amount in minor units", gt=0)
-    currency: str = Field(..., description="Currency code")
-    cost_centre_id: Optional[str] = None
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    idempotency_key: Optional[str] = Field(None, description="Idempotency key")
-
-    @field_validator('entry_type')
-    @classmethod
-    def validate_entry_type(cls, v):
-        if v not in ['debit', 'credit']:
-            raise ValueError('entry_type must be "debit" or "credit"')
-        return v
-
-
-class LedgerEntryResponse(BaseModel):
-    """Response model for ledger entries"""
-    id: str
-    tenant_id: str
-    vendor_id: Optional[str] = None
-    account: str
-    entry_type: str
-    amount_minor: int
-    currency: str
-    cost_centre_id: Optional[str] = None
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-
-class AccountBalanceResponse(BaseModel):
-    """Response model for account balances"""
-    account: str
-    currency: str
-    balance_minor: int
-    last_updated: datetime
-
-
-class LedgerAdjustmentRequest(BaseModel):
-    """Request model for ledger adjustments"""
-    entry_id: str = Field(..., description="Entry ID to adjust")
-    adjustment_amount_minor: int = Field(..., description="Adjustment amount in minor units")
-    reason: str = Field(..., description="Reason for adjustment")
-    reference_type: Optional[str] = None
-    reference_id: Optional[str] = None
-    idempotency_key: Optional[str] = Field(None, description="Idempotency key")
-
-
-class LedgerReportRequest(BaseModel):
-    """Request model for ledger reports"""
-    tenant_id: str = Field(..., description="Tenant ID")
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    account: Optional[str] = None
-    cost_centre_id: Optional[str] = None
-    currency: Optional[str] = None
-
-
-# Instant Budget Schemas
-class InstantBudgetRequestCreate(BaseModel):
-    """Create instant budget request"""
-    cost_centre_id: str = Field(..., description="Cost centre ID")
-    amount_minor: int = Field(..., gt=0, description="Requested amount in minor units")
-    reason: Optional[str] = Field(default="Customer waiting", max_length=500, description="Reason for request")
-    store_id: Optional[str] = Field(None, description="Store ID (optional)")
-
-class InstantBudgetApproveRequest(BaseModel):
-    """Approve instant budget request"""
-    approve: bool = Field(default=True, description="Whether to approve")
-    partial_amount_minor: Optional[int] = Field(None, ge=0, description="Partial approval amount (optional)")
-
-class InstantBudgetResponse(BaseModel):
-    """Instant budget request response"""
-    request_id: str
-    status: str
-    expires_at: str
-    approved_amount_minor: Optional[int] = None
-    remaining_amount_minor: Optional[int] = None
-    message: Optional[str] = None
-
-class ApproverLimitRequest(BaseModel):
-    """Create/update approver limit request"""
-    user_id: str = Field(..., description="Manager user ID")
-    cost_centre_id: Optional[str] = Field(None, description="Cost centre ID (null for global limit)")
-    daily_limit_minor: int = Field(default=5000000, ge=0, description="Daily limit in minor units")
-    monthly_limit_minor: int = Field(default=50000000, ge=0, description="Monthly limit in minor units")
-    currency_code: str = Field(default="INR", max_length=3)
-
-class ApproverLimitResponse(BaseModel):
-    """Approver limit response"""
-    id: str
-    user_id: str
-    cost_centre_id: Optional[str]
-    daily_limit_minor: int
-    monthly_limit_minor: int
-    daily_spent_minor: int
-    monthly_spent_minor: int
-    daily_remaining_minor: int
-    monthly_remaining_minor: int
-    currency_code: str
-
-# Instant Budget Schemas
-class InstantBudgetRequestCreate(BaseModel):
-    """Create instant budget request"""
-    cost_centre_id: str = Field(..., description="Cost centre ID")
-    amount_minor: int = Field(..., gt=0, description="Requested amount in minor units")
-    reason: Optional[str] = Field(default="Customer waiting", max_length=500, description="Reason for request")
-    store_id: Optional[str] = Field(None, description="Store ID (optional)")
-
-class InstantBudgetApproveRequest(BaseModel):
-    """Approve instant budget request"""
-    approve: bool = Field(default=True, description="Whether to approve")
-    partial_amount_minor: Optional[int] = Field(None, ge=0, description="Partial approval amount (optional)")
-
-class InstantBudgetResponse(BaseModel):
-    """Instant budget request response"""
-    request_id: str
-    status: str
-    expires_at: str
-    approved_amount_minor: Optional[int] = None
-    remaining_amount_minor: Optional[int] = None
-    message: Optional[str] = None
-
-class ApproverLimitRequest(BaseModel):
-    """Create/update approver limit request"""
-    user_id: str = Field(..., description="Manager user ID")
-    cost_centre_id: Optional[str] = Field(None, description="Cost centre ID (null for global limit)")
-    daily_limit_minor: int = Field(default=5000000, ge=0, description="Daily limit in minor units")
-    monthly_limit_minor: int = Field(default=50000000, ge=0, description="Monthly limit in minor units")
-    currency_code: str = Field(default="INR", max_length=3)
-
-class ApproverLimitResponse(BaseModel):
-    """Approver limit response"""
-    id: str
-    user_id: str
-    cost_centre_id: Optional[str]
-    daily_limit_minor: int
-    monthly_limit_minor: int
-    daily_spent_minor: int
-    monthly_spent_minor: int
-    daily_remaining_minor: int
-    monthly_remaining_minor: int
-    currency_code: str

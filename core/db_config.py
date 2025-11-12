@@ -14,11 +14,3 @@ engine = create_engine(
     isolation_level="READ COMMITTED"
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def get_db():
-    """Get database session without RLS (for tenant creation)"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
