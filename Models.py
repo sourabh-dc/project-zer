@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func
+from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base
 import uuid
@@ -402,6 +402,148 @@ class ApprovalRequestApprover(Base):
     escalation_sent = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+#New Code - Sebin
+class PaymentTransaction(Base):
+    """Payment transactions table"""
+    __tablename__ = "payment_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    vendor_id = Column(UUID(as_uuid=True), ForeignKey('vendors.vendor_id'), nullable=True)
+    provider = Column(String(50), nullable=False)
+    payment_intent_id = Column(String(255), nullable=True)
+    charge_id = Column(String(255), nullable=True)
+    amount_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), ForeignKey('currencies.code'), nullable=False, default='GBP')
+    status = Column(String(50), nullable=False)
+    order_id = Column(UUID(as_uuid=True), nullable=True)
+    site_id = Column(UUID(as_uuid=True), nullable=True)
+    store_id = Column(UUID(as_uuid=True), nullable=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True)
+    transaction_metadata = Column(JSONB, nullable=True)
+    raw_response = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=text('NOW()'))
+
+
+class Customer(Base):
+    """Customers table"""
+    __tablename__ = "customers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    provider = Column(String(50), nullable=False)
+    external_customer_id = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=True)
+    phone = Column(String(50), nullable=True)
+    transaction_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=text('NOW()'))
+
+
+class PaymentRefund(Base):
+    """Payment refunds table"""
+    __tablename__ = "payment_refunds"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
+    refund_id = Column(String(255), nullable=True)
+    amount_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), nullable=False, default='GBP')
+    reason = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=False)
+    transaction_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=text('NOW()'))
+
+
+class PaymentAdjustment(Base):
+    """Payment adjustments table"""
+    __tablename__ = "payment_adjustments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
+    adjustment_type = Column(String(50), nullable=False)
+    adjustment_amount_minor = Column(BigInteger, nullable=False)
+    adjustment_reason = Column(Text, nullable=True)
+    currency = Column(String(3), nullable=False, default='GBP')
+    is_applied = Column(Boolean, nullable=False, default=False)
+    applied_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
+
+
+class TradeAccount(Base):
+    """Trade account for business customers"""
+    __tablename__ = "trade_accounts"
+
+    trade_account_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    account_number = Column(String(100), nullable=False, unique=True)
+    company_name = Column(String(200), nullable=False)
+    contact_email = Column(String(255), nullable=False)
+    credit_limit_minor = Column(BigInteger, nullable=False, default=0)
+    available_credit_minor = Column(BigInteger, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    payment_terms_days = Column(Integer, nullable=False, default=30)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
+    updated_at = Column(DateTime(timezone=True), server_default=text('NOW()'), onupdate=text('NOW()'))
+
+
+class PaymentIntent(Base):
+    """Payment intent for transaction processing"""
+    __tablename__ = "payment_intents"
+
+    payment_intent_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    order_id = Column(UUID(as_uuid=True), nullable=True)
+    trade_account_id = Column(UUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
+    amount_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), nullable=False, default='GBP')
+    status = Column(String(20), nullable=False, default='pending')
+    provider = Column(String(50), nullable=False)
+    provider_intent_id = Column(String(255), nullable=True)
+    payment_method = Column(String(50), nullable=True)
+    payment_metadata = Column(JSONB, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    succeeded_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
+    updated_at = Column(DateTime(timezone=True), server_default=text('NOW()'), onupdate=text('NOW()'))
+
+
+class CurrencyRate(Base):
+    """Currency exchange rates"""
+    __tablename__ = "currency_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(3), nullable=False)
+    target_currency = Column(String(3), nullable=False)
+    rate = Column(String(50), nullable=False)
+    source = Column(String(50), nullable=False, default='manual')
+    valid_from = Column(DateTime(timezone=True), nullable=False)
+    valid_to = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
+
+
+class PaymentWebhook(Base):
+    """Payment webhook events"""
+    __tablename__ = "payment_webhooks"
+
+    webhook_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    provider = Column(String(50), nullable=False)
+    event_type = Column(String(100), nullable=False)
+    event_data = Column(JSONB, nullable=False)
+    processed = Column(Boolean, nullable=False, default=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
+
 
 
 # Create tables
