@@ -1,17 +1,11 @@
 import uuid
-import json
 from datetime import datetime, timezone
 from fastapi import HTTPException, Depends, Query, APIRouter
 from sqlalchemy.orm import Session
 
-from Models import Order, OrderItem, Tenant, UserCostCentre, CostCentre, ApprovalRequest, SpendingEvent
-from Schemas import OrderRequest, OrderUpdateRequest, UserContext
+from Models import Order, OrderItem
+from Schemas import OrderRequest, OrderUpdateRequest
 from core.db_config import get_db
-from core.user_auth import get_user_context
-from utils.logger import logger
-from utils.metrics import req_total, req_duration
-from utils.service_bus import publish_spending_event, publish_order_event
-from utils.redis_client import redis_client
 
 app = APIRouter()
 
@@ -22,217 +16,82 @@ app = APIRouter()
 @app.post("/orders")
 async def create_order(
         req: OrderRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(get_user_context)
+        db: Session = Depends(get_db)
 ):
-    """Create a new order with budget validation for customer tenants"""
-    start = datetime.now()
+    """Create a new order"""
     try:
-        req_total.labels(operation="create_order", status="start").inc()
-        
-        # 1. Get tenant and check type
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(ctx.tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-        
-        # 2. For customer tenants, enforce budget checks
-        if tenant.tenant_type == "customer":
-            # Get user cost centre assignment
-            user_cc = db.query(UserCostCentre).filter(
-                UserCostCentre.user_id == uuid.UUID(ctx.user_id)
-            ).first()
-            
-            if not user_cc:
-                raise HTTPException(status_code=403, detail="User not assigned to any cost centre. Please contact your manager.")
-            
-            # If approval request provided, validate it
-            if hasattr(req, 'approval_request_id') and req.approval_request_id:
-                appr = db.query(ApprovalRequest).filter(
-                    ApprovalRequest.request_id == uuid.UUID(req.approval_request_id),
-                    ApprovalRequest.request_status == "approved",
-                    ApprovalRequest.requested_by == uuid.UUID(ctx.user_id)
-                ).first()
-                
-                if not appr:
-                    raise HTTPException(status_code=400, detail="Valid approved budget request required")
-        
-        # 3. Calculate total amount
-        total_amount = 0
-        items = []
-        
-        for item_data in req.items:
-            try:
-                product_uuid = uuid.UUID(item_data['product_id'])
-            except (ValueError, KeyError):
-                raise HTTPException(status_code=400, detail=f"Invalid product_id: {item_data.get('product_id')}")
-            
-            variant_uuid = None
-            if item_data.get('variant_id'):
-                try:
-                    variant_uuid = uuid.UUID(item_data['variant_id'])
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid variant_id: {item_data.get('variant_id')}")
-            
-            quantity = item_data['quantity']
-            unit_price = item_data['unit_price_minor']
-            item_total = quantity * unit_price
-            total_amount += item_total
-            
-            items.append({
-                "product_id": product_uuid,
-                "variant_id": variant_uuid,
-                "quantity": quantity,
-                "unit_price_minor": unit_price,
-                "total_price_minor": item_total
-            })
-        
-        # 4. Budget checks for customer tenants
-        if tenant.tenant_type == "customer":
-            # Check user budget
-            if user_cc.spent_minor + total_amount > user_cc.allocated_budget_minor:
-                available = user_cc.allocated_budget_minor - user_cc.spent_minor
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Insufficient personal budget. Available: {available} minor units, Required: {total_amount}"
-                )
-            
-            # Check cost centre budget
-            cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
-            if not cc:
-                raise HTTPException(status_code=500, detail="Cost centre not found")
-            
-            if cc.spent_minor + total_amount > cc.budget_minor:
-                available = cc.budget_minor - cc.spent_minor
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Cost centre budget exceeded. Available: {available} minor units, Required: {total_amount}"
-                )
-        
-        # 5. Create order
-        site_uuid = uuid.UUID(req.site_id) if req.site_id else None
-        store_uuid = uuid.UUID(req.store_id) if req.store_id else None
-        approval_req_id = uuid.UUID(req.approval_request_id) if hasattr(req, 'approval_request_id') and req.approval_request_id else None
-        
+        order_id = uuid.uuid4()
+        tenant_id = uuid.UUID("550e8400-e29b-41d4-a716-446655440000")  # Demo tenant
+
+        # Validate and convert UUIDs
+        try:
+            customer_uuid = uuid.UUID(req.customer_id) if req.customer_id and req.customer_id.strip() else uuid.uuid4()
+        except (ValueError, AttributeError):
+            customer_uuid = uuid.uuid4()
+
+        try:
+            site_uuid = uuid.UUID(req.site_id) if req.site_id and req.site_id.strip() else None
+        except (ValueError, AttributeError):
+            site_uuid = None
+
+        try:
+            store_uuid = uuid.UUID(req.store_id) if req.store_id and req.store_id.strip() else None
+        except (ValueError, AttributeError):
+            store_uuid = None
+
+        # Create order
         order = Order(
-            order_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(ctx.tenant_id),
-            customer_id=uuid.UUID(ctx.user_id),
+            order_id=order_id,
+            tenant_id=tenant_id,
             site_id=site_uuid,
             store_id=store_uuid,
-            order_number=f"ORD-{int(datetime.now(timezone.utc).timestamp())}-{uuid.uuid4().hex[:6]}",
-            order_type=req.order_type or ("employee_purchase" if tenant.tenant_type == "customer" else "purchase"),
-            total_amount_minor=total_amount,
-            currency=user_cc.currency_code if tenant.tenant_type == "customer" else "GBP",
-            approval_request_id=approval_req_id,
-            order_status="confirmed",
-            payment_status="budget_deducted" if tenant.tenant_type == "customer" else "pending",
-            fulfillment_status="pending",
+            customer_id=customer_uuid,
+            order_number=f"ORD-{int(datetime.now(timezone.utc).timestamp())}",
+            order_type=req.order_type,
             shipping_address=req.shipping_address,
             billing_address=req.billing_address,
             order_metadata=req.metadata
         )
         db.add(order)
         db.flush()
-        
-        # 6. Add order items
-        for item in items:
-            db.add(OrderItem(
-                order_id=order.order_id,
-                product_id=item['product_id'],
-                variant_id=item['variant_id'],
-                quantity=item['quantity'],
-                unit_price_minor=item['unit_price_minor'],
-                total_price_minor=item['total_price_minor']
-            ))
-        
-        # 7. Deduct budgets for customer tenants
-        if tenant.tenant_type == "customer":
-            user_cc.spent_minor += total_amount
-            cc.spent_minor += total_amount
-            
-            # Create spending event record
-            spending_event = SpendingEvent(
-                event_id=uuid.uuid4(),
-                event_type="budget_spent",
-                user_id=uuid.UUID(ctx.user_id),
-                cost_centre_id=user_cc.cost_centre_id,
-                order_id=order.order_id,
-                approval_request_id=approval_req_id,
-                amount_minor=total_amount,
-                currency_code=user_cc.currency_code,
-                metadata={
-                    "order_number": order.order_number,
-                    "item_count": len(items)
-                }
+
+        # Calculate total amount and add items
+        total_amount = 0
+        for item_data in req.items:
+            try:
+                product_uuid = uuid.UUID(item_data['product_id'])
+            except (ValueError, KeyError):
+                product_uuid = uuid.uuid4()
+
+            try:
+                variant_uuid = uuid.UUID(item_data.get('variant_id')) if item_data.get('variant_id') else None
+            except (ValueError, TypeError):
+                variant_uuid = None
+
+            item = OrderItem(
+                order_id=order_id,
+                product_id=product_uuid,
+                variant_id=variant_uuid,
+                quantity=item_data['quantity'],
+                unit_price_minor=item_data['unit_price_minor'],
+                total_price_minor=item_data['quantity'] * item_data['unit_price_minor']
             )
-            db.add(spending_event)
-        
+            db.add(item)
+            total_amount += item.total_price_minor
+
+        order.total_amount_minor = total_amount
         db.commit()
         db.refresh(order)
-        
-        # 8. Publish events (non-critical - don't fail order if this fails)
-        try:
-            if tenant.tenant_type == "customer":
-                publish_spending_event(
-                    event_type="budget_spent",
-                    user_id=ctx.user_id,
-                    cost_centre_id=str(user_cc.cost_centre_id),
-                    amount_minor=total_amount,
-                    order_id=str(order.order_id),
-                    approval_request_id=str(approval_req_id) if approval_req_id else None,
-                    metadata={
-                        "tenant_id": ctx.tenant_id,
-                        "order_number": order.order_number,
-                        "manager_id": str(cc.manager_user_id) if cc.manager_user_id else None
-                    }
-                )
-            
-            publish_order_event(
-                event_type="order_created",
-                order_id=str(order.order_id),
-                tenant_id=ctx.tenant_id,
-                customer_id=ctx.user_id,
-                total_amount_minor=total_amount,
-                currency=order.currency,
-                metadata={"order_type": order.order_type}
-            )
-            
-            # Publish to Redis for real-time notifications
-            if redis_client:
-                redis_client.publish("order.created", json.dumps({
-                    "order_id": str(order.order_id),
-                    "user_id": ctx.user_id,
-                    "total_amount_minor": total_amount,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }))
-        except Exception as e:
-            logger.warning(f"Event publishing failed (non-critical): {e}")
-        
-        req_total.labels(operation="create_order", status="success").inc()
-        req_duration.labels(operation="create_order").observe(
-            (datetime.now() - start).total_seconds()
-        )
-        
-        logger.info(f"✅ Order created: {order.order_id} for user {ctx.user_id}, amount: {total_amount}")
-        
+
         return {
-            "order_id": str(order.order_id),
+            "order_id": str(order_id),
             "order_number": order.order_number,
             "total_amount_minor": total_amount,
-            "currency": order.currency,
-            "status": order.order_status,
-            "payment_status": order.payment_status,
-            "created_at": order.created_at.isoformat()
+            "created": True
         }
-        
-    except HTTPException:
-        req_total.labels(operation="create_order", status="error").inc()
-        raise
     except Exception as e:
         db.rollback()
-        req_total.labels(operation="create_order", status="error").inc()
-        logger.error(f"❌ Order creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/orders")
