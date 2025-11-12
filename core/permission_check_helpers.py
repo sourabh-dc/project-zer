@@ -4,7 +4,7 @@
 import json
 import uuid
 from datetime import timezone, datetime
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from Models import Store, Site, CostCentre, Product, RoleScope, ApprovalDelegati
 from Schemas import ResourceContext, UserContext
 from core.config import SETTINGS
 from core.db_config import SessionLocal
-from user_auth import get_user_context, set_rls_context
+from core.user_auth import get_user_context, set_rls_context
 from utils.redis_client import redis_client
 from utils.logger import logger
 
