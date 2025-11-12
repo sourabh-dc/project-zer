@@ -33,27 +33,6 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 # ==================================================================================
 # API ENDPOINTS
 # ==================================================================================
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
-        return {"status": "healthy", "service": SERVICE_NAME, "version": SERVICE_VERSION}
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "error": str(e)}
-        )
-
-
-@app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint"""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
 @app.post("/v1/tenants", status_code=201)
 async def create_tenant(
         req: TenantRequest,

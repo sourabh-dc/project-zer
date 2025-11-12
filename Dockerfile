@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /root/.local /root/.local
 
 # Copy application code
-COPY main.py .
+COPY services/provisioning/main.py .
 
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH

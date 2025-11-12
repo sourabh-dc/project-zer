@@ -37,7 +37,7 @@ services:
   provisioning:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ../../Dockerfile
     container_name: zeroque-provisioning
     environment:
       DATABASE_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
