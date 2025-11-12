@@ -31,12 +31,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
-app.include_router(provisioning_router)
-app.include_router(catalog_router)
-app.include_router(approval_router)
-app.include_router(subscriptions_router)
-app.include_router(pricing_router)
-app.include_router(entitlements_router)
+app.include_router(provisioning_router, tags=["provisioning"])
+app.include_router(catalog_router, tags=["catalog"])
+app.include_router(approval_router, tags=["approval"])
+app.include_router(subscriptions_router, tags=["subscriptions"])
+app.include_router(pricing_router, tags=["pricing"])
+app.include_router(entitlements_router, tags=["entitlements"])
 
 @app.get("/health")
 async def health():

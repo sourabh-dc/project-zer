@@ -3,6 +3,7 @@ from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base
 import uuid
 
+from core.db_config import engine
 from utils.logger import logger
 
 # ==================================================================================
