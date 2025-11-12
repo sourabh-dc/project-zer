@@ -5,69 +5,29 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 """
 
 import os
-import uuid
 import json
-import logging
 import secrets
-import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any, Tuple
-
+from typing import Any, Tuple
 import httpx
 from jose import jwt, JWTError
-
-from fastapi import FastAPI, HTTPException, Query, Depends, Header, Request, status
+from fastapi import FastAPI, HTTPException, Query, Depends, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, EmailStr, field_validator
-from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Integer, ForeignKey, func, text
-from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
-from sqlalchemy.orm import Session, sessionmaker, declarative_base
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 import redis
 import bcrypt
 
-
-class Settings(BaseSettings):
-    """Application settings - simple and powerful"""
-    DATABASE_URL: str = Field(
-        default="postgresql://zeroque:zeroque@localhost:5432/zeroque_dev",
-        description="PostgreSQL connection URL"
-    )
-    REDIS_URL: str = Field(
-        default="redis://localhost:6379/0",
-        description="Redis connection URL for caching"
-    )
-    JWT_ISSUER: str = Field(default="http://mock-idp", description="JWT issuer (IdP)")
-    JWT_AUDIENCE: str = Field(default="zeroque-api", description="JWT audience")
-    JWT_ALGORITHM: str = Field(default="HS256", description="JWT signing algorithm")
-    JWT_SECRET: Optional[str] = Field(default="mock-secret", description="JWT shared secret for HS algorithms")
-    JWT_JWKS_URL: Optional[str] = Field(default=None, description="JWKS endpoint for RSA/EC algorithms")
-    JWT_CACHE_SECONDS: int = Field(default=300, description="How long to cache JWKS keys")
-    PORT: int = Field(default=8000, description="Service port")
-    LOG_LEVEL: str = Field(default="INFO", description="Logging level")
-    BOOTSTRAP_ADMIN_EMAIL: str = Field(default="admin@zeroque.local", description="Bootstrap admin email")
-    BOOTSTRAP_ADMIN_API_KEY: str = Field(default="zq_bootstrap_admin_key", description="Bootstrap admin API key")
-    BOOTSTRAP_TENANT_NAME: str = Field(default="ZeroQue Bootstrap Tenant", description="Bootstrap tenant name")
-    
-    # Production configuration
-    CONNECTION_POOL_SIZE: int = 20
-    MAX_OVERFLOW: int = 10
-    POOL_TIMEOUT: int = 30
-    API_KEY_EXPIRY_DAYS: int = 90
-    CACHE_TTL_SECONDS: int = 300  # 5 minutes
-    
-    model_config = ConfigDict(env_file=".env", extra="ignore")
-
-
-SETTINGS = Settings()
-
-SERVICE_NAME = "provisioning"
-SERVICE_VERSION = "2.0.0"
+from utils.logger import logger
+from Models import *
+from Schemas import *
+from core.config import SETTINGS, SERVICE_NAME, SERVICE_VERSION
+from core.db_config import engine, SessionLocal
 
 DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("tenants.create", "Create and manage tenants"),
@@ -96,27 +56,6 @@ DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("admin.roles.manage", "Manage roles and assignments"),
     ("admin.scopes.manage", "Manage role scopes"),
 ]
-
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, SETTINGS.LOG_LEVEL.upper(), logging.INFO),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(SERVICE_NAME)
-
-# Database setup
-engine = create_engine(
-    SETTINGS.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=SETTINGS.CONNECTION_POOL_SIZE,
-    max_overflow=SETTINGS.MAX_OVERFLOW,
-    pool_timeout=SETTINGS.POOL_TIMEOUT,
-    pool_recycle=3600,
-    isolation_level="READ COMMITTED"
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Redis setup
 try:
@@ -155,24 +94,6 @@ req_duration = Histogram('prov_duration_seconds', 'Request duration', ['operatio
 def generate_api_key() -> str:
     """Generate a secure API key (for service-to-service usage)"""
     return f"zq_{secrets.token_urlsafe(32)}"
-
-
-class ResourceContext(BaseModel):
-    resource_type: str
-    resource_id: Optional[str] = None
-    parent_chain: List[Tuple[str, str]] = Field(default_factory=list)
-
-
-class UserContext(BaseModel):
-    user_id: str
-    tenant_id: str
-    roles: List[str]
-    permissions: Dict[str, List[Dict[str, Optional[str]]]]
-    manager_of: List[str] = Field(default_factory=list)
-    raw_claims: Dict[str, Any] = Field(default_factory=dict)
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
 
 JWKS_CACHE: Dict[str, Any] = {}
 JWKS_CACHE_EXPIRES_AT: float = 0.0

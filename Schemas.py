@@ -1,0 +1,261 @@
+from datetime import datetime
+
+from pydantic import field_validator, BaseModel, Field, EmailStr, ConfigDict
+from typing import Optional, Dict, List, Tuple
+import uuid
+import re
+
+# ==================================================================================
+# REQUEST/RESPONSE MODELS
+# ==================================================================================
+
+
+class TenantRequest(BaseModel):
+    """Tenant creation request"""
+    name: str = Field(min_length=1, max_length=255, description="Tenant name")
+    type: str = Field(description="Tenant type: customer, retailer, or distributor")
+
+    @field_validator('type')
+    @classmethod
+    def validate_tenant_type(cls, v):
+        allowed = ["customer", "retailer", "distributor"]
+        if v not in allowed:
+            raise ValueError(f"Type must be one of: {', '.join(allowed)}")
+        return v
+
+
+class SiteRequest(BaseModel):
+    """Site creation request"""
+    name: str = Field(min_length=1, max_length=255, description="Site name")
+    type: str = Field(description="Site type")
+    geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
+
+
+class StoreRequest(BaseModel):
+    """Store creation request"""
+    name: str = Field(min_length=1, max_length=255, description="Store name")
+    type: str = Field(description="Store type")
+    geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
+
+
+class UserRequest(BaseModel):
+    """User creation request"""
+    email: EmailStr = Field(description="Valid email address")
+    display_name: str = Field(min_length=1, max_length=255, description="Display name")
+    tenant_id: str = Field(description="Tenant ID")
+    password: str = Field(min_length=8, max_length=128, description="Password (min 8 chars)")
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        """Validate password strength"""
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
+class BulkUserRequest(BaseModel):
+    """Bulk user import request"""
+    tenant_id: str
+    users: List[Dict[str, Any]]
+
+
+class RoleRequest(BaseModel):
+    """Role creation request"""
+    code: str = Field(min_length=1, max_length=100, description="Role code (required)")
+    description: Optional[str] = Field(None, max_length=500, description="Role description (optional)")
+
+
+class VendorRequest(BaseModel):
+    """Vendor creation request"""
+    name: str = Field(min_length=1, max_length=255, description="Vendor name")
+    contact_email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
+    description: Optional[str] = Field(None, max_length=500, description="Description (optional)")
+
+
+class CostCentreRequest(BaseModel):
+    """Cost centre creation request"""
+    name: str = Field(min_length=1, max_length=200, description="Cost centre name")
+    budget_minor: int = Field(ge=0, description="Budget in minor units (required)")
+    manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+
+
+class SubscriptionPlanRequest(BaseModel):
+    """Subscription plan creation request"""
+    code: str = Field(min_length=1, max_length=50, description="Unique plan code")
+    name: str = Field(min_length=1, max_length=100, description="Plan name")
+    description: Optional[str] = Field(None, max_length=500, description="Plan description (optional)")
+    price_yearly_minor: int = Field(ge=0, description="Yearly price in minor units")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+
+
+class FeatureRequest(BaseModel):
+    """Feature creation request"""
+    code: str = Field(min_length=1, max_length=50, description="Unique feature code")
+    name: str = Field(min_length=1, max_length=100, description="Feature name")
+    description: Optional[str] = Field(None, max_length=500, description="Feature description (optional)")
+    category: Optional[str] = Field(None, max_length=50, description="Feature category (optional)")
+
+
+class PlanFeatureRequest(BaseModel):
+    """Plan-feature association request"""
+    limits: Optional[Dict[str, Any]] = Field(None, description="Feature limits (optional)")
+
+
+class TenantSubscriptionRequest(BaseModel):
+    """Tenant subscription creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    plan_code: str = Field(description="Plan code")
+    payment_method: str = Field(default="stripe", description="Payment method")
+    billing_cycle: str = Field(default="yearly", description="Billing cycle: yearly or monthly")
+    auto_renew: bool = Field(default=True, description="Auto-renew subscription")
+
+
+class CheckEntitlementRequest(BaseModel):
+    """Check entitlement request"""
+    tenant_id: str = Field(description="Tenant ID")
+    feature_code: str = Field(description="Feature code to check")
+
+
+class RecordUsageRequest(BaseModel):
+    """Record usage request"""
+    tenant_id: str = Field(description="Tenant ID")
+    feature_code: str = Field(description="Feature code")
+    usage_type: str = Field(description="Usage type identifier")
+    count: int = Field(default=1, ge=1, description="Usage count")
+
+
+class AssignRoleRequest(BaseModel):
+    """Assign role to user request"""
+    role_id: str = Field(description="Role ID to assign")
+
+
+class CategoryRequest(BaseModel):
+    """Category creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    name: str = Field(min_length=1, max_length=255, description="Category name")
+    code: str = Field(min_length=1, max_length=100, description="Category code")
+    description: Optional[str] = Field(None, max_length=500, description="Description (optional)")
+    parent_category_id: Optional[str] = Field(None, description="Parent category ID (optional)")
+
+
+class ProductRequest(BaseModel):
+    """Product creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    category_id: Optional[str] = Field(None, description="Category ID (optional)")
+    sku: str = Field(min_length=1, max_length=100, description="Product SKU")
+    name: str = Field(min_length=1, max_length=255, description="Product name")
+    description: Optional[str] = Field(None, max_length=1000, description="Product description")
+    brand: Optional[str] = Field(None, max_length=100, description="Brand (optional)")
+    manufacturer: Optional[str] = Field(None, max_length=255, description="Manufacturer (optional)")
+    base_price_minor: int = Field(ge=0, description="Base price in minor units")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    tax_rate: int = Field(default=0, ge=0, description="Tax rate in basis points")
+    product_type: Optional[str] = Field(None, description="Product type (optional)")
+    product_metadata: Optional[Dict[str, Any]] = Field(None, description="Product metadata (optional)")
+
+
+class VariantRequest(BaseModel):
+    """Variant creation request"""
+    product_id: str = Field(description="Product ID")
+    sku: str = Field(min_length=1, max_length=100, description="Variant SKU (must be unique)")
+    name: str = Field(min_length=1, max_length=255, description="Variant name")
+    attributes: Optional[Dict[str, Any]] = Field(None, description="Variant attributes (optional)")
+    price_minor: int = Field(ge=0, description="Price in minor units")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    stock_quantity: int = Field(default=0, ge=0, description="Stock quantity")
+    low_stock_threshold: int = Field(default=10, ge=0, description="Low stock threshold")
+
+
+class PricebookRequest(BaseModel):
+    """Pricebook creation request"""
+    store_id: str = Field(description="Store ID")
+    name: str = Field(min_length=1, max_length=255, description="Pricebook name")
+    description: Optional[str] = Field(None, max_length=500, description="Description (optional)")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+
+
+class PriceRuleRequest(BaseModel):
+    """Price rule creation request"""
+    product_id: Optional[str] = Field(None, description="Product ID (optional, null = applies to all)")
+    variant_id: Optional[str] = Field(None, description="Variant ID (optional)")
+    rule_type: str = Field(description="Rule type: fixed, percentage, discount")
+    rule_value: int = Field(description="For fixed: price in minor units, for percentage: basis points (1000 = 10%)")
+    min_quantity: Optional[int] = Field(None, ge=1, description="Min quantity for rule to apply (optional)")
+    max_quantity: Optional[int] = Field(None, ge=1, description="Max quantity for rule to apply (optional)")
+    valid_from: Optional[datetime] = Field(None, description="Valid from date (optional)")
+    valid_until: Optional[datetime] = Field(None, description="Valid until date (optional)")
+
+    @field_validator('rule_type')
+    @classmethod
+    def validate_rule_type(cls, v):
+        if v not in ['fixed', 'percentage', 'discount']:
+            raise ValueError('Rule type must be one of: fixed, percentage, discount')
+        return v
+
+
+class PriceCalculationRequest(BaseModel):
+    """Price calculation request"""
+    product_id: str = Field(description="Product ID")
+    variant_id: Optional[str] = Field(None, description="Variant ID (optional)")
+    pricebook_id: str = Field(description="Pricebook ID")
+    quantity: int = Field(default=1, ge=1, description="Quantity")
+
+
+class ApprovalChainRequest(BaseModel):
+    """Approval chain creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    name: str = Field(min_length=1, max_length=255, description="Chain name")
+    description: Optional[str] = Field(None, max_length=500, description="Chain description (optional)")
+    chain_type: str = Field(description="Chain type (budget, purchase_order, vendor_onboarding)")
+    is_active: bool = Field(default=True, description="Whether chain is active")
+
+
+class ApprovalChainStepRequest(BaseModel):
+    """Approval chain step creation request"""
+    approval_chain_id: str = Field(description="Approval chain ID")
+    step_number: int = Field(gt=0, description="Step number in the chain")
+    approver_role: str = Field(description="Approver role (manager, finance_controller, director)")
+    approver_scope: str = Field(description="Approver scope (site, tenant, store)")
+    escalation_after_hours: Optional[int] = Field(None, gt=0, description="Hours before escalation (optional)")
+    is_required: bool = Field(default=True, description="Whether this step is required")
+
+
+class ApprovalRequestRequest(BaseModel):
+    """Approval request creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    chain_id: str = Field(description="Approval chain ID to use")
+    request_type: str = Field(description="Request type (budget, order, vendor)")
+    request_data: Dict[str, Any] = Field(description="Request details")
+    requested_by: str = Field(description="Requester user ID")
+    total_amount_minor: Optional[int] = Field(None, ge=0, description="Amount in minor units (optional)")
+    currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    due_date: Optional[datetime] = Field(None, description="Due date (optional)")
+
+
+class ApprovalResponseRequest(BaseModel):
+    """Approval response request"""
+    approver_user_id: str = Field(description="Approver user ID")
+    approved: bool = Field(description="Whether to approve or deny")
+    notes: Optional[str] = Field(None, max_length=500, description="Approval notes (optional)")
+
+class ResourceContext(BaseModel):
+    resource_type: str
+    resource_id: Optional[str] = None
+    parent_chain: List[Tuple[str, str]] = Field(default_factory=list)
+
+
+class UserContext(BaseModel):
+    user_id: str
+    tenant_id: str
+    roles: List[str]
+    permissions: Dict[str, List[Dict[str, Optional[str]]]]
+    manager_of: List[str] = Field(default_factory=list)
+    raw_claims: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
