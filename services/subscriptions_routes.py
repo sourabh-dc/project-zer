@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from Models import Tenant, SubscriptionPlan, Feature, PlanFeature, TenantSubscription
 from Schemas import UserContext, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest, TenantSubscriptionRequest
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission, check_tenant_access
+from core.permission_check_helpers import require_permission
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
@@ -374,14 +374,16 @@ async def remove_feature_from_plan(
 async def create_subscription(
         req: TenantSubscriptionRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
+        ctx: UserContext = Depends(
+            require_permission(
+                "subscriptions.tenant.manage",
+                None
+            )
+        )
 ):
     """Create a subscription for a tenant"""
     start = datetime.now()
     try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-        
         req_total.labels(operation="create_subscription", status="start").inc()
 
         # Verify tenant exists
@@ -454,13 +456,15 @@ async def create_subscription(
 async def get_subscription(
         tenant_id: str,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
+        ctx: UserContext = Depends(
+            require_permission(
+                "subscriptions.tenant.manage",
+                None
+            )
+        )
 ):
     """Get subscription details for a tenant"""
     try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
         subscription = db.query(TenantSubscription).filter(
             TenantSubscription.tenant_id == uuid.UUID(tenant_id)
         ).first()
@@ -511,14 +515,16 @@ async def get_subscription(
 async def renew_subscription(
         tenant_id: str,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
+        ctx: UserContext = Depends(
+            require_permission(
+                "subscriptions.tenant.manage",
+                None
+            )
+        )
 ):
-    """Renew a subscription - respects original billing cycle"""
+    """Renew a subscription"""
     start = datetime.now()
     try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
         req_total.labels(operation="renew_subscription", status="start").inc()
 
         subscription = db.query(TenantSubscription).filter(
@@ -528,22 +534,11 @@ async def renew_subscription(
         if not subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
 
-        # Get plan to determine billing cycle
-        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == subscription.plan_code).first()
-        
-        # Calculate period based on plan pricing (yearly or monthly)
-        # If price_yearly_minor exists, assume yearly; otherwise check current period length
-        now = datetime.now(timezone.utc)
-        
-        if subscription.current_period_start and subscription.current_period_end:
-            # Calculate original period length
-            period_length = subscription.current_period_end - subscription.current_period_start
-            subscription.current_period_start = now
-            subscription.current_period_end = now + period_length
+        # Extend subscription by 1 year
+        if subscription.current_period_end:
+            subscription.current_period_end = subscription.current_period_end + timedelta(days=365)
         else:
-            # Default to yearly if no period exists
-            subscription.current_period_start = now
-            subscription.current_period_end = now + timedelta(days=365)
+            subscription.current_period_end = datetime.now(timezone.utc) + timedelta(days=365)
 
         subscription.status = "active"
         subscription.canceled_at = None
@@ -578,16 +573,17 @@ async def renew_subscription(
 async def cancel_subscription(
         tenant_id: str,
         cancel_at_period_end: bool = Query(True),
-        cancellation_reason: Optional[str] = Query(None),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
+        ctx: UserContext = Depends(
+            require_permission(
+                "subscriptions.tenant.manage",
+                None
+            )
+        )
 ):
-    """Cancel a subscription with optional immediate cancellation"""
+    """Cancel a subscription"""
     start = datetime.now()
     try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
         req_total.labels(operation="cancel_subscription", status="start").inc()
 
         subscription = db.query(TenantSubscription).filter(
@@ -599,14 +595,11 @@ async def cancel_subscription(
 
         now = datetime.now(timezone.utc)
         subscription.canceled_at = now
-        subscription.cancellation_reason = cancellation_reason
-        
+
         if cancel_at_period_end:
-            subscription.status = "canceled_pending"
+            subscription.status = "canceling"  # Will be canceled at period end
         else:
-            # Immediate cancellation - refund logic should be here
             subscription.status = "canceled"
-            subscription.current_period_end = now
 
         subscription.updated_at = now
         db.commit()
@@ -623,7 +616,6 @@ async def cancel_subscription(
             "tenant_id": str(subscription.tenant_id),
             "status": subscription.status,
             "canceled_at": subscription.canceled_at.isoformat(),
-            "current_period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
             "canceled": True
         }
     except HTTPException:
@@ -633,120 +625,4 @@ async def cancel_subscription(
         db.rollback()
         req_total.labels(operation="cancel_subscription", status="error").inc()
         logger.error(f"❌ Cancel subscription failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.put("/v1/subscriptions/subscriptions/{tenant_id}/plan", status_code=200)
-async def change_subscription_plan(
-        tenant_id: str,
-        new_plan_code: str = Query(...),
-        prorate: bool = Query(False),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
-):
-    """Change tenant's subscription plan (upgrade/downgrade)"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
-        # Verify subscription exists
-        subscription = db.query(TenantSubscription).filter(
-            TenantSubscription.tenant_id == uuid.UUID(tenant_id)
-        ).first()
-        if not subscription:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        
-        # Verify new plan exists
-        new_plan = db.query(SubscriptionPlan).filter(
-            SubscriptionPlan.code == new_plan_code,
-            SubscriptionPlan.active == True
-        ).first()
-        if not new_plan:
-            raise HTTPException(status_code=404, detail="New plan not found")
-        
-        # Store old plan for response
-        old_plan_code = subscription.plan_code
-        
-        # Update plan
-        subscription.plan_code = new_plan_code
-        subscription.updated_at = datetime.now(timezone.utc)
-        
-        # If prorating (for upgrades), adjust period end
-        if prorate and new_plan.price_yearly_minor:
-            # Add logic to adjust billing period based on price difference
-            # For now, just update the plan
-            pass
-        
-        db.commit()
-        db.refresh(subscription)
-        
-        logger.info(f"✅ Changed plan: {tenant_id} from {old_plan_code} to {new_plan_code}")
-        
-        return {
-            "tenant_id": tenant_id,
-            "old_plan": old_plan_code,
-            "new_plan": subscription.plan_code,
-            "prorated": prorate,
-            "changed_at": subscription.updated_at.isoformat()
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Change plan failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/v1/subscriptions/subscriptions/{tenant_id}/reactivate")
-async def reactivate_subscription(
-        tenant_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.tenant.manage"))
-):
-    """Reactivate a canceled subscription"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
-        subscription = db.query(TenantSubscription).filter(
-            TenantSubscription.tenant_id == uuid.UUID(tenant_id)
-        ).first()
-        
-        if not subscription:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        
-        if subscription.status not in ["canceled", "canceled_pending", "canceled"]:
-            raise HTTPException(status_code=400, detail="Subscription is not canceled")
-        
-        now = datetime.now(timezone.utc)
-        
-        # Reactivate subscription
-        subscription.status = "active"
-        subscription.canceled_at = None
-        subscription.cancellation_reason = None
-        
-        # If period has ended, start new period
-        if subscription.current_period_end and subscription.current_period_end < now:
-            subscription.current_period_start = now
-            # Default to yearly renewal
-            subscription.current_period_end = now + timedelta(days=365)
-        
-        subscription.updated_at = now
-        db.commit()
-        
-        logger.info(f"✅ Reactivated subscription for tenant {tenant_id}")
-        
-        return {
-            "subscription_id": subscription.id,
-            "tenant_id": str(subscription.tenant_id),
-            "status": subscription.status,
-            "reactivated_at": subscription.updated_at.isoformat(),
-            "current_period_start": subscription.current_period_start.isoformat() if subscription.current_period_start else None,
-            "current_period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Reactivate subscription failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
