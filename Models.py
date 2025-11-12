@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text
+from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base
 import uuid
@@ -544,6 +544,42 @@ class PaymentWebhook(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
 
+class Order(Base):
+    """Order entity"""
+    __tablename__ = "orders"
+
+    order_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    site_id = Column(UUID(as_uuid=True), nullable=True)
+    store_id = Column(UUID(as_uuid=True), nullable=True)
+    customer_id = Column(UUID(as_uuid=True), nullable=False)
+    order_number = Column(String(50), nullable=False, unique=True)
+    order_status = Column(String(20), nullable=False, default='pending')
+    order_type = Column(String(20), nullable=False, default='purchase')
+    total_amount_minor = Column(Integer, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    payment_status = Column(String(20), nullable=False, default='pending')
+    fulfillment_status = Column(String(20), nullable=False, default='pending')
+    shipping_address = Column(JSON, nullable=True)
+    billing_address = Column(JSON, nullable=True)
+    order_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class OrderItem(Base):
+    """Order item entity"""
+    __tablename__ = "order_items"
+
+    item_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey('orders.order_id'), nullable=False)
+    product_id = Column(UUID(as_uuid=True), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), nullable=True)
+    quantity = Column(Integer, nullable=False)
+    unit_price_minor = Column(Integer, nullable=False)
+    total_price_minor = Column(Integer, nullable=False)
+    item_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # Create tables
