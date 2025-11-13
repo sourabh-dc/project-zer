@@ -17,6 +17,8 @@ from services.pricing_routes import app as pricing_router
 from services.entitlements_routes import app as entitlements_router
 from services.payments_routes import app as payments_router
 from services.orders_router import app as orders_router
+from services.ledger_routes import app as ledger_router
+from services.billing_routes import app as billing_router
 # FastAPI app
 app = FastAPI(
     title="ZeroQue All in One API",
@@ -41,6 +43,8 @@ app.include_router(pricing_router, tags=["pricing"])
 app.include_router(entitlements_router, tags=["entitlements"])
 app.include_router(payments_router, tags=["payments"])
 app.include_router(orders_router, tags=["orders"])
+app.include_router(ledger_router, tags=["ledger"])
+app.include_router(billing_router, tags=["billing"])
 
 @app.get("/health")
 async def health():
