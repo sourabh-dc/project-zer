@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse, Response
 
-from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope
+from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
+    UserCostCentre, SpendingEvent
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
 from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
@@ -1326,4 +1327,170 @@ async def remove_scope_from_role(
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to remove scope from role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==================================================================================
+# USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
+# ==================================================================================
+
+@app.post("/v1/users/{user_id}/cost-centres", status_code=201)
+async def assign_user_to_cost_centre(
+    user_id: str,
+    cost_centre_id: str = Query(..., description="Cost centre ID"),
+    allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("cost_centres.manage"))
+):
+    """Assign a user to a cost centre with optional budget allocation"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify cost centre exists
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+        
+        # Check if assignment already exists
+        existing = db.query(UserCostCentre).filter(
+            UserCostCentre.user_id == uuid.UUID(user_id),
+            UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=409, detail="User already assigned to this cost centre")
+        
+        # Create assignment
+        user_cc = UserCostCentre(
+            id=uuid.uuid4(),
+            user_id=uuid.UUID(user_id),
+            cost_centre_id=uuid.UUID(cost_centre_id),
+            allocated_budget_minor=allocated_budget_minor,
+            spent_minor=0,
+            currency_code=cc.currency_code
+        )
+        db.add(user_cc)
+        db.commit()
+        db.refresh(user_cc)
+        
+        logger.info(f"✅ Assigned user {user_id} to cost centre {cost_centre_id} with budget {allocated_budget_minor}")
+        
+        return {
+            "id": str(user_cc.id),
+            "user_id": user_id,
+            "cost_centre_id": cost_centre_id,
+            "allocated_budget_minor": allocated_budget_minor,
+            "spent_minor": 0,
+            "available_minor": allocated_budget_minor,
+            "currency_code": cc.currency_code
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to assign user to cost centre: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/budget")
+async def get_user_budget(
+    user_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get user's budget information"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get cost centre assignment
+        user_cc = db.query(UserCostCentre).filter(
+            UserCostCentre.user_id == uuid.UUID(user_id)
+        ).first()
+        
+        if not user_cc:
+            return {
+                "user_id": user_id,
+                "has_budget": False,
+                "message": "User not assigned to any cost centre"
+            }
+        
+        # Get cost centre info
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
+        
+        available = user_cc.allocated_budget_minor - user_cc.spent_minor
+        
+        return {
+            "user_id": user_id,
+            "has_budget": True,
+            "cost_centre_id": str(user_cc.cost_centre_id),
+            "cost_centre_name": cc.name if cc else "Unknown",
+            "allocated_budget_minor": user_cc.allocated_budget_minor,
+            "spent_minor": user_cc.spent_minor,
+            "available_minor": available,
+            "currency_code": user_cc.currency_code,
+            "cost_centre_budget_minor": cc.budget_minor if cc else 0,
+            "cost_centre_spent_minor": cc.spent_minor if cc else 0,
+            "cost_centre_available_minor": (cc.budget_minor - cc.spent_minor) if cc else 0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get user budget: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/spending-history")
+async def get_user_spending_history(
+    user_id: str,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get user's spending history"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get spending events
+        events = db.query(SpendingEvent).filter(
+            SpendingEvent.user_id == uuid.UUID(user_id)
+        ).order_by(SpendingEvent.created_at.desc()).limit(limit).offset(offset).all()
+        
+        total = db.query(func.count(SpendingEvent.event_id)).filter(
+            SpendingEvent.user_id == uuid.UUID(user_id)
+        ).scalar()
+        
+        return {
+            "user_id": user_id,
+            "events": [
+                {
+                    "event_id": str(e.event_id),
+                    "event_type": e.event_type,
+                    "amount_minor": e.amount_minor,
+                    "currency_code": e.currency_code,
+                    "cost_centre_id": str(e.cost_centre_id),
+                    "order_id": str(e.order_id) if e.order_id else None,
+                    "approval_request_id": str(e.approval_request_id) if e.approval_request_id else None,
+                    "metadata": e.metadata,
+                    "created_at": e.created_at.isoformat()
+                }
+                for e in events
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get spending history: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")

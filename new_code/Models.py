@@ -175,6 +175,18 @@ class CostCentre(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+class UserCostCentre(Base):
+    __tablename__ = "user_cost_centres"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
+    allocated_budget_minor = Column(BigInteger, nullable=False, default=0)
+    spent_minor = Column(BigInteger, nullable=False, default=0)
+    currency_code = Column(String(3), default="GBP")
+
+    user = relationship("User", back_populates="cost_centres")
+    cost_centre = relationship("CostCentre", back_populates="members")
 
 class SubscriptionPlan(Base):
     """Subscription plan model - defines pricing tiers"""
@@ -561,6 +573,7 @@ class Order(Base):
     currency = Column(String(3), nullable=False, default='GBP')
     payment_status = Column(String(20), nullable=False, default='pending')
     fulfillment_status = Column(String(20), nullable=False, default='pending')
+    approval_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
     shipping_address = Column(JSON, nullable=True)
     billing_address = Column(JSON, nullable=True)
     order_metadata = Column(JSON, nullable=True)
@@ -882,6 +895,26 @@ class IdempotencyRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
 
+
+class SpendingEvent(Base):
+    """Spending events for budget tracking and audit"""
+    __tablename__ = "spending_events"
+    
+    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(50), nullable=False)  # budget_allocated, budget_spent, order_created
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=True, index=True)
+    approval_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
+    amount_minor = Column(BigInteger, nullable=False)
+    currency_code = Column(String(3), default="GBP")
+    metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# Add relationships
+User.cost_centres = relationship("UserCostCentre", back_populates="user")
+CostCentre.members = relationship("UserCostCentre", back_populates="cost_centre")
 
 # Create tables
 try:
