@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings - simple and powerful"""
     DATABASE_URL: str = Field(
-        default="postgresql://postgres:password@localhost:5432/zeroque_dev",
+        default="postgresql+psycopg://postgres:password@localhost:5432/zeroque_dev",
         description="PostgreSQL connection URL"
     )
     REDIS_URL: str = Field(

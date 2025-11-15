@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
-    Date, Numeric, Index
+    Date, Numeric
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
@@ -16,7 +16,6 @@ class Tenant(Base):
     """Tenant organization model"""
     __tablename__ = "tenants"
     tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
     name = Column(String(255), nullable=False, unique=True)
     tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
     active = Column(Boolean, default=True, index=True)
@@ -26,16 +25,17 @@ class Tenant(Base):
 
 
 class Site(Base):
-    """Site model - physical locations that can be managed by multiple tenants"""
+    """Site model - physical locations under a tenant"""
     __tablename__ = "sites"
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     site_type = Column(String(50), nullable=False)
     geo = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
-    tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
+
+
 class Store(Base):
     """Store model - retail locations under a site"""
     __tablename__ = "stores"
@@ -190,23 +190,18 @@ class UserCostCentre(Base):
     cost_centre = relationship("CostCentre", back_populates="members")
 
 class SubscriptionPlan(Base):
-    """Subscription plan - TODO: migrate to UUID for consistency"""
+    """Subscription plan model - defines pricing tiers"""
     __tablename__ = "subscription_plans"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Keep INTEGER for now, needs migration to UUID
+    id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
-    price_yearly_minor = Column(Integer, nullable=False)
-    price_monthly_minor = Column(Integer, nullable=True)  # NEW: monthly option
+    price_yearly_minor = Column(Integer, nullable=False)  # Price in minor units (pence/cents)
     currency = Column(String(3), default="GBP", nullable=False)
-    
-    # NEW: Billing cycle options
-    billing_cycle = Column(String(20), default="monthly")  # monthly, yearly
-    
     active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 
 class Feature(Base):
     """Feature model - defines available system features"""
@@ -216,28 +211,19 @@ class Feature(Base):
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
     category = Column(String(50), nullable=True)
-    usage_type = Column(String(50), nullable=False, default="count")  # count, boolean, storage, api_calls
-    unit = Column(String(50), nullable=True)  # reports, users, GB, requests
-    reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
-    
     active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class PlanFeature(Base):
-    """Plan-Feature mapping - with validated limits"""
+    """Plan-Feature mapping - links features to plans with limits"""
     __tablename__ = "plan_features"
-    
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), nullable=False, index=True)
     feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
-    
-    # ENHANCED LIMITS with JSON schema validation
-    limits = Column(JSONB, nullable=True)  # { "max_value": 50, "warn_at": 40 }
-    
+    limits = Column(JSONB, nullable=True)  # e.g., {"rate_limit": 1000, "tier": "basic"}
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class TenantSubscription(Base):
@@ -253,7 +239,6 @@ class TenantSubscription(Base):
     current_period_end = Column(DateTime(timezone=True), nullable=True)
     trial_end = Column(DateTime(timezone=True), nullable=True)
     canceled_at = Column(DateTime(timezone=True), nullable=True)
-    cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -286,54 +271,6 @@ class SubscriptionUsage(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class StoreProduct(Base):
-    """Store-specific product selection and pricing"""
-    __tablename__ = "store_products"
-    
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    # Store-specific pricing and availability
-    price_minor = Column(Integer, nullable=False)  # Store-specific selling price
-    currency = Column(String(3), default="GBP", nullable=False)
-    is_available = Column(Boolean, default=True, nullable=False, index=True)
-    
-    # Store-level inventory tracking
-    stock_quantity = Column(Integer, default=0, nullable=False)
-    low_stock_threshold = Column(Integer, default=10, nullable=False)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_store_product_unique', 'store_id', 'product_id', unique=True),
-    )
-
-
-class StoreVariant(Base):
-    """Store-specific variant overrides for products"""
-    __tablename__ = "store_variants"
-    
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_product_id = Column(SQLUUID(as_uuid=True), ForeignKey("store_products.id", ondelete="CASCADE"), nullable=False, index=True)
-    variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    # Optional variant-level overrides
-    price_minor = Column(Integer, nullable=True)  # If null, use StoreProduct price
-    stock_quantity = Column(Integer, nullable=True)  # Track variant stock per store
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_store_variant_unique', 'store_product_id', 'variant_id', unique=True),
-    )
-
-
-
 class Category(Base):
     """Product category model"""
     __tablename__ = "categories"
@@ -353,7 +290,6 @@ class Product(Base):
     __tablename__ = "products"
     product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"), nullable=True, index=True)
     category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
     sku = Column(String(100), nullable=False, index=True)
     name = Column(String(255), nullable=False)
@@ -480,11 +416,6 @@ class ApprovalRequestApprover(Base):
     escalation_sent = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_approval_request_approver_status', 'status'),
-        Index('ix_approval_request_approver_step', 'request_id', 'step_number'),
-    )
 
 #New Code - Sebin
 class PaymentTransaction(Base):
@@ -978,7 +909,7 @@ class SpendingEvent(Base):
     approval_request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency_code = Column(String(3), default="GBP")
-    event_metadata = Column(JSONB, nullable=True)
+    metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -986,6 +917,12 @@ class SpendingEvent(Base):
 User.cost_centres = relationship("UserCostCentre", back_populates="user")
 CostCentre.members = relationship("UserCostCentre", back_populates="cost_centre")
 
+# Create tables
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("✅ Database tables initialized")
+except Exception as e:
+    logger.error(f"❌ Table initialization failed: {e}")
 class SiteTenant(Base):
     """Junction table for many-to-many relationship between sites and tenants"""
     __tablename__ = "site_tenants"
@@ -994,17 +931,7 @@ class SiteTenant(Base):
     site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Add unique constraint to prevent duplicates
-    __table_args__ = (
-        Index('ix_site_tenant_unique', 'site_id', 'tenant_id', unique=True),
-    )
-
-
-# Create tables
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("✅ Database tables initialized")
-except Exception as e:
-    logger.error(f"❌ Table initialization failed: {e}")
-
+# Add relationships for many-to-many Site-Tenant
+Site.tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
+Tenant.sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
+class SubscriptionUsage(Base):

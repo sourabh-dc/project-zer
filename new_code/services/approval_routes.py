@@ -10,7 +10,7 @@ from Models import Tenant, User, ApprovalChain, ApprovalChainStep, ApprovalReque
 from Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
     ApprovalResponseRequest
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission, resolve_approvers_for_step
+from core.permission_check_helpers import require_permission, resolve_approvers_for_step, check_tenant_access
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
@@ -24,12 +24,7 @@ app = APIRouter()
 async def create_approval_chain(
         req: ApprovalChainRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.chains.manage",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.chains.manage"))
 ):
     """Create a new approval chain"""
     start = datetime.now()
@@ -91,12 +86,7 @@ async def list_approval_chains(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.chains.manage",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.chains.manage"))
 ):
     """List approval chains"""
     try:
@@ -139,12 +129,7 @@ async def list_approval_chains(
 async def create_approval_chain_step(
         req: ApprovalChainStepRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.chains.manage",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.chains.manage"))
 ):
     """Create a new approval chain step"""
     start = datetime.now()
@@ -206,12 +191,7 @@ async def create_approval_chain_step(
 async def list_chain_steps(
         chain_id: str,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.chains.manage",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.chains.manage"))
 ):
     """List steps for an approval chain"""
     try:
@@ -254,35 +234,33 @@ async def list_chain_steps(
 async def create_approval_request(
         req: ApprovalRequestRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.requests.create",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.requests.create"))
 ):
     """Create a new approval request"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_approval_request", status="start").inc()
 
-        # Verify tenant, chain, and user exist
+        # CRITICAL: Tenant isolation
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
+
+        # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        chain = db.query(ApprovalChain).filter(ApprovalChain.chain_id == uuid.UUID(req.chain_id)).first()
+        # Verify chain belongs to tenant
+        chain = db.query(ApprovalChain).filter(
+            ApprovalChain.chain_id == uuid.UUID(req.chain_id),
+            ApprovalChain.tenant_id == uuid.UUID(req.tenant_id)
+        ).first()
         if not chain:
             raise HTTPException(status_code=404, detail="Approval chain not found")
-
-        user = db.query(User).filter(User.user_id == uuid.UUID(req.requested_by)).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="Requester user not found")
 
         # Generate request number
         request_number = f"REQ-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
-        # Create approval request
+        # CRITICAL: Use authenticated user as requester
         approval_request = ApprovalRequest(
             request_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
@@ -290,7 +268,7 @@ async def create_approval_request(
             request_number=request_number,
             request_type=req.request_type,
             request_data=req.request_data,
-            requested_by=uuid.UUID(req.requested_by),
+            requested_by=uuid.UUID(ctx.user_id),  # FIXED: Use authenticated user
             request_status="pending",
             current_step_number=1,
             total_amount_minor=req.total_amount_minor,
@@ -305,6 +283,9 @@ async def create_approval_request(
             ApprovalChainStep.approval_chain_id == uuid.UUID(req.chain_id)
         ).order_by(ApprovalChainStep.step_number).all()
 
+        if not steps:
+            raise HTTPException(status_code=400, detail="Approval chain has no steps")
+
         for step in steps:
             approver_user_ids = resolve_approvers_for_step(
                 db,
@@ -312,13 +293,13 @@ async def create_approval_request(
                 req.tenant_id,
                 req.request_data
             )
+            
+            # FIXED: No self-approval fallback
             if not approver_user_ids:
-                logger.warning(
-                    "No approvers resolved for step %s in chain %s; falling back to requester",
-                    step.step_number,
-                    req.chain_id
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"No approvers found for step {step.step_number}. Check chain configuration."
                 )
-                approver_user_ids = [req.requested_by]
 
             for approver_user_id in approver_user_ids:
                 approver = ApprovalRequestApprover(
@@ -376,12 +357,7 @@ async def list_approval_requests(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.requests.view",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.requests.view"))
 ):
     """List approval requests"""
     try:
@@ -431,12 +407,7 @@ async def list_approval_requests(
 async def get_approval_request(
         request_id: str,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.requests.view",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.requests.view"))
 ):
     """Get approval request details"""
     try:
@@ -493,12 +464,7 @@ async def get_approval_request(
 async def get_request_approvers(
         request_id: str,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.requests.view",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.requests.view"))
 ):
     """Get all approvers for an approval request"""
     try:
@@ -554,15 +520,13 @@ async def respond_to_approval_request(
         request_id: str,
         req: ApprovalResponseRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "approvals.requests.respond",
-                None
-            )
-        )
+        ctx: UserContext = Depends(require_permission("approvals.requests.respond"))
 ):
     """Respond to an approval request (approve or deny)"""
     start = datetime.now()
+    budget_allocated = False
+    allocated_amount_minor = 0
+    
     try:
         req_total.labels(operation="respond_approval", status="start").inc()
 
@@ -574,8 +538,8 @@ async def respond_to_approval_request(
         if not approval_request:
             raise HTTPException(status_code=404, detail="Approval request not found")
 
-        if str(approval_request.tenant_id) != ctx.tenant_id and "*" not in ctx.permissions:
-            raise HTTPException(status_code=403, detail="Request outside of scope")
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, approval_request.tenant_id)
 
         if approval_request.request_status != "pending":
             raise HTTPException(status_code=400,
@@ -618,49 +582,59 @@ async def respond_to_approval_request(
                 
                 # Handle budget allocation for budget_request type
                 if approval_request.request_type == "budget_request":
-                    try:
-                        request_data = approval_request.request_data or {}
-                        user_id = request_data.get("user_id")
-                        amount_minor = request_data.get("amount_minor", 0)
+                    request_data = approval_request.request_data or {}
+                    user_id = request_data.get("user_id")
+                    amount_minor = request_data.get("amount_minor", 0)
+                    
+                    if user_id and amount_minor > 0:
+                        # FIXED: Use row locking to prevent race conditions
+                        user_cc = db.query(UserCostCentre).filter(
+                            UserCostCentre.user_id == uuid.UUID(user_id)
+                        ).with_for_update().first()
                         
-                        if user_id and amount_minor > 0:
-                            user_cc = db.query(UserCostCentre).filter(
-                                UserCostCentre.user_id == uuid.UUID(user_id)
-                            ).first()
+                        if user_cc:
+                            # Allocate budget to user
+                            user_cc.allocated_budget_minor += amount_minor
                             
-                            if user_cc:
-                                # Allocate budget to user
-                                user_cc.allocated_budget_minor += amount_minor
-                                
-                                # Create spending event for audit
-                                spending_event = SpendingEvent(
-                                    event_id=uuid.uuid4(),
-                                    event_type="budget_allocated",
-                                    user_id=uuid.UUID(user_id),
-                                    cost_centre_id=user_cc.cost_centre_id,
-                                    order_id=None,
-                                    approval_request_id=approval_request.request_id,
-                                    amount_minor=amount_minor,
-                                    currency_code=user_cc.currency_code,
-                                    metadata={
-                                        "request_number": approval_request.request_number,
-                                        "approved_by": req.approver_user_id
-                                    }
-                                )
-                                db.add(spending_event)
-                                
-                                logger.info(f"✅ Budget allocated: {amount_minor} to user {user_id} via approval {request_id}")
-                            else:
-                                logger.warning(f"⚠️  User {user_id} not found in cost centre assignments")
-                    except Exception as e:
-                        logger.error(f"❌ Budget allocation failed (non-critical): {e}")
-                        # Don't fail the approval even if budget allocation fails
+                            # Create spending event for audit
+                            spending_event = SpendingEvent(
+                                event_id=uuid.uuid4(),
+                                event_type="budget_allocated",
+                                user_id=uuid.UUID(user_id),
+                                cost_centre_id=user_cc.cost_centre_id,
+                                order_id=None,
+                                approval_request_id=approval_request.request_id,
+                                amount_minor=amount_minor,
+                                currency_code=user_cc.currency_code,
+                                event_metadata={
+                                    "request_number": approval_request.request_number,
+                                    "approved_by": req.approver_user_id
+                                }
+                            )
+                            db.add(spending_event)
+                            
+                            budget_allocated = True
+                            allocated_amount_minor = amount_minor
+                            
+                            logger.info(f"✅ Budget allocated: {amount_minor} to user {user_id} via approval {request_id}")
+                        else:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"User {user_id} not found in cost centre assignments"
+                            )
             else:
                 # Move to next step
                 approval_request.current_step_number += 1
 
         approval_request.updated_at = datetime.now(timezone.utc)
-        db.commit()
+        
+        # FIXED: Wrap budget allocation in same transaction - commit both approval and budget
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"❌ Budget allocation failed: {e}")
+            raise HTTPException(status_code=500, detail="Budget allocation failed")
 
         req_total.labels(operation="respond_approval", status="success").inc()
         req_duration.labels(operation="respond_approval").observe(
@@ -678,7 +652,9 @@ async def respond_to_approval_request(
             "responded_at": approver.responded_at.isoformat(),
             "request_status": approval_request.request_status,
             "current_step": approval_request.current_step_number,
-            "completed": approval_request.request_status in ["approved", "denied"]
+            "completed": approval_request.request_status in ["approved", "denied"],
+            "budget_allocated": budget_allocated,
+            "allocated_amount_minor": allocated_amount_minor
         }
     except ValueError:
         req_total.labels(operation="respond_approval", status="error").inc()
@@ -690,4 +666,73 @@ async def respond_to_approval_request(
         db.rollback()
         req_total.labels(operation="respond_approval", status="error").inc()
         logger.error(f"❌ Respond to approval failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/v1/approvals/requests/{request_id}/cancel")
+async def cancel_approval_request(
+        request_id: str,
+        cancellation_reason: Optional[str] = Query(None, description="Cancellation reason"),
+        db: Session = Depends(get_db),
+        ctx: UserContext = Depends(require_permission("approvals.requests.create"))
+):
+    """Allow requesters to cancel pending requests"""
+    try:
+        # Get the approval request
+        approval_request = db.query(ApprovalRequest).filter(
+            ApprovalRequest.request_id == uuid.UUID(request_id)
+        ).first()
+
+        if not approval_request:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+
+        # SECURITY: Only requester or admin can cancel
+        if str(approval_request.requested_by) != ctx.user_id and "*" not in ctx.permissions:
+            raise HTTPException(status_code=403, detail="Only the requester can cancel this request")
+
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, approval_request.tenant_id)
+
+        # Only allow cancellation of pending requests
+        if approval_request.request_status != "pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel request with status: {approval_request.request_status}"
+            )
+
+        # Update request status
+        approval_request.request_status = "canceled"
+        approval_request.completed_date = datetime.now(timezone.utc)
+        approval_request.updated_at = datetime.now(timezone.utc)
+
+        # Update all pending approvers to canceled
+        pending_approvers = db.query(ApprovalRequestApprover).filter(
+            ApprovalRequestApprover.request_id == uuid.UUID(request_id),
+            ApprovalRequestApprover.status == "pending"
+        ).all()
+
+        for approver in pending_approvers:
+            approver.status = "canceled"
+            approver.notes = cancellation_reason or "Request canceled by requester"
+            approver.responded_at = datetime.now(timezone.utc)
+
+        db.commit()
+
+        logger.info(f"✅ Approval request {request_id} canceled by {ctx.user_id}")
+
+        return {
+            "request_id": request_id,
+            "request_number": approval_request.request_number,
+            "status": approval_request.request_status,
+            "canceled_at": approval_request.completed_date.isoformat(),
+            "canceled_by": ctx.user_id,
+            "cancellation_reason": cancellation_reason
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid request ID format")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Cancel approval request failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")

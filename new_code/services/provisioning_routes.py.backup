@@ -6,18 +6,18 @@ from typing import Optional
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from sqlalchemy import text, func, Index
+from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse, Response
 
 from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
-    UserCostCentre, SpendingEvent, SiteTenant
+    UserCostCentre, SpendingEvent
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
 from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
 from core.db_config import SessionLocal, get_db
-from core.permission_check_helpers import require_permission, check_tenant_access
+from core.permission_check_helpers import require_permission
 from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
@@ -221,20 +221,17 @@ async def create_site(
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("sites.manage"))
 ):
-    """Create a new site and associate it with a tenant"""
+    """Create a new site under a tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_site", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # Create site (no tenant_id here)
+        # Create site
         site = Site(
             site_id=uuid.uuid4(),
             name=req.name,
@@ -242,7 +239,7 @@ async def create_site(
             geo=req.geo
         )
         db.add(site)
-        db.flush()  # Get site_id
+        db.flush()  # Get the site_id
         
         # Create site-tenant relationship
         site_tenant = SiteTenant(
@@ -251,6 +248,7 @@ async def create_site(
             tenant_id=uuid.UUID(req.tenant_id)
         )
         db.add(site_tenant)
+        db.add(site)
         db.commit()
         db.refresh(site)
 
@@ -259,10 +257,11 @@ async def create_site(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
+        logger.info(f"✅ Created site: {site.site_id} ({site.name})")
 
         return {
             "site_id": str(site.site_id),
+            "tenant_id": str(site.tenant_id),
             "name": site.name,
             "site_type": site.site_type,
             "created_at": site.created_at.isoformat()
@@ -283,143 +282,7 @@ async def create_site(
         logger.error(f"❌ Site creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=201)
-async def add_tenant_to_site(
-    site_id: str,
-    tenant_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
-):
-    """Allow a site to be managed by an additional tenant"""
-    try:
-        # Verify site exists
-        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
-        if not site:
-            raise HTTPException(status_code=404, detail="Site not found")
-        
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-        
-        # Check if association already exists
-        existing = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == uuid.UUID(tenant_id)
-        ).first()
-        
-        if existing:
-            raise HTTPException(status_code=409, detail="Site is already associated with this tenant")
-        
-        # Create association
-        site_tenant = SiteTenant(
-            id=uuid.uuid4(),
-            site_id=uuid.UUID(site_id),
-            tenant_id=uuid.UUID(tenant_id)
-        )
-        db.add(site_tenant)
-        db.commit()
-        
-        logger.info(f"✅ Added tenant {tenant_id} to site {site_id}")
-        
-        return {
-            "site_id": site_id,
-            "tenant_id": tenant_id,
-            "associated": True
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Add tenant to site failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/v1/sites/{site_id}/tenants")
-async def list_site_tenants(
-    site_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
-):
-    """List all tenants associated with a site"""
-    try:
-        # Verify site exists and is accessible by user's tenant
-        site_access = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == ctx.tenant_id
-        ).first()
-        
-        if not site_access:
-            raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
-        
-        # Get all tenants for the site
-        tenants = db.query(Tenant).join(
-            SiteTenant, Tenant.tenant_id == SiteTenant.tenant_id
-        ).filter(
-            SiteTenant.site_id == uuid.UUID(site_id)
-        ).all()
-        
-        return {
-            "site_id": site_id,
-            "tenants": [
-                {
-                    "tenant_id": str(t.tenant_id),
-                    "name": t.name,
-                    "type": t.tenant_type,
-                    "created_at": t.created_at.isoformat()
-                }
-                for t in tenants
-            ],
-            "total": len(tenants)
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid site ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ List site tenants failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.delete("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=204)
-async def remove_tenant_from_site(
-    site_id: str,
-    tenant_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
-):
-    """Remove a tenant from a site"""
-    try:
-        # Find the association
-        site_tenant = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == uuid.UUID(tenant_id)
-        ).first()
-
-        if not site_tenant:
-            raise HTTPException(status_code=404, detail="Site-tenant association not found")
-
-        # Prevent removing the last tenant
-        tenant_count = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(site_id)
-        ).count()
-        
-        if tenant_count <= 1:
-            raise HTTPException(status_code=400, detail="Cannot remove the only tenant from a site")
-
-        db.delete(site_tenant)
-        db.commit()
-
-        logger.info(f"✅ Removed tenant {tenant_id} from site {site_id}")
-
-        return Response(status_code=204)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid site ID or tenant ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Remove tenant from site failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-        
 @app.get("/v1/sites")
 async def list_sites(
         tenant_id: Optional[str] = Query(None),
@@ -430,14 +293,9 @@ async def list_sites(
 ):
     """List sites with optional tenant filtering"""
     try:
-        # Start with SiteTenant join to support many-to-many
-        q = db.query(Site).join(SiteTenant, Site.site_id == SiteTenant.site_id)
-        
-        # If tenant_id provided, filter by it; otherwise filter by user's tenant
+        q = db.query(Site)
         if tenant_id:
-            q = q.filter(SiteTenant.tenant_id == uuid.UUID(tenant_id))
-        else:
-            q = q.filter(SiteTenant.tenant_id == ctx.tenant_id)
+            q = q.filter(Site.tenant_id == uuid.UUID(tenant_id))
 
         total = q.count()
         sites = q.order_by(Site.created_at.desc()).limit(limit).offset(offset).all()
@@ -446,6 +304,7 @@ async def list_sites(
             "sites": [
                 {
                     "site_id": str(s.site_id),
+                    "tenant_id": str(s.tenant_id),
                     "name": s.name,
                     "site_type": s.site_type,
                     "created_at": s.created_at.isoformat()
@@ -462,34 +321,26 @@ async def list_sites(
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
 @app.post("/v1/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("stores.manage"))
 ):
-    """Create a new store under a site for the user's tenant"""
+    """Create a new store under a site"""
     start = datetime.now()
-    try:
-        req_total.labels(operation="create_store", status="start").inc()
-
-        # Verify site exists and is accessible by user's tenant
-        site_tenant = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(req.site_id),
-            SiteTenant.tenant_id == ctx.tenant_id  # Use user's tenant from context
-        ).first()
-        
+        # Get first tenant from site-tenant relationship
+        site_tenant = db.query(SiteTenant).filter(SiteTenant.site_id == uuid.UUID(req.site_id)).first()
         if not site_tenant:
-            raise HTTPException(
-                status_code=404, 
-                detail="Site not found or not accessible by your tenant"
-            )
-
+            raise HTTPException(status_code=404, detail="No tenant associated with this site")
+        
         # Create store
         store = Store(
             store_id=uuid.uuid4(),
             site_id=uuid.UUID(req.site_id),
-            tenant_id=ctx.tenant_id,  # Use user's tenant
+            tenant_id=site_tenant.tenant_id,            site_id=uuid.UUID(req.site_id),
+            tenant_id=site.tenant_id,
             name=req.name,
             store_type=req.type,
             geo=req.geo
@@ -503,7 +354,7 @@ async def create_store(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created store: {store.store_id} ({store.name}) for tenant: {ctx.tenant_id}")
+        logger.info(f"✅ Created store: {store.store_id} ({store.name})")
 
         return {
             "store_id": str(store.store_id),
@@ -513,7 +364,6 @@ async def create_store(
             "store_type": store.store_type,
             "created_at": store.created_at.isoformat()
         }
-    
     except ValueError:
         req_total.labels(operation="create_store", status="error").inc()
         raise HTTPException(status_code=400, detail="Invalid site ID format")
@@ -541,18 +391,8 @@ async def list_stores(
 ):
     """List stores with optional site filtering"""
     try:
-        q = db.query(Store).filter(Store.tenant_id == ctx.tenant_id)  # Always filter by user's tenant
-        
+        q = db.query(Store)
         if site_id:
-            # Verify site access before filtering stores
-            site_access = db.query(SiteTenant).filter(
-                SiteTenant.site_id == uuid.UUID(site_id),
-                SiteTenant.tenant_id == ctx.tenant_id
-            ).first()
-            
-            if not site_access:
-                raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
-            
             q = q.filter(Store.site_id == uuid.UUID(site_id))
 
         total = q.count()
@@ -595,9 +435,6 @@ async def create_user(
     start = datetime.now()
     try:
         req_total.labels(operation="create_user", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -678,8 +515,6 @@ async def list_users(
         q = db.query(User).filter(User.active == True)
         if tenant_id:
             q = q.filter(User.tenant_id == uuid.UUID(tenant_id))
-        else:
-            q = q.filter(User.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
         total = q.count()
         users = q.order_by(User.created_at.desc()).limit(limit).offset(offset).all()
@@ -721,9 +556,6 @@ async def bulk_import_users(
     start = datetime.now()
     try:
         req_total.labels(operation="bulk_import_users", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -1084,9 +916,6 @@ async def create_vendor(
     try:
         req_total.labels(operation="create_vendor", status="start").inc()
 
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -1149,11 +978,8 @@ async def list_vendors(
 ):
     """List vendors with optional tenant filtering"""
     q = db.query(Vendor)
-    
     if tenant_id:
         q = q.filter(Vendor.tenant_id == uuid.UUID(tenant_id))
-    else:
-        q = q.filter(Vendor.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     vendors = q.order_by(Vendor.created_at.desc()).limit(limit).offset(offset).all()
@@ -1186,9 +1012,6 @@ async def create_cost_centre(
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -1264,11 +1087,8 @@ async def list_cost_centres(
 ):
     """List cost centres with optional tenant filtering"""
     q = db.query(CostCentre).filter(CostCentre.status == "active")
-    
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
-    else:
-        q = q.filter(CostCentre.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     ccs = q.order_by(CostCentre.created_at.desc()).limit(limit).offset(offset).all()
@@ -1666,7 +1486,7 @@ async def get_user_spending_history(
                     "cost_centre_id": str(e.cost_centre_id),
                     "order_id": str(e.order_id) if e.order_id else None,
                     "approval_request_id": str(e.approval_request_id) if e.approval_request_id else None,
-                    "metadata": e.event_metadata,
+                    "metadata": e.metadata,
                     "created_at": e.created_at.isoformat()
                 }
                 for e in events

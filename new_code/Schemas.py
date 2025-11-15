@@ -35,9 +35,44 @@ class StoreRequest(BaseModel):
     """Store creation request"""
     name: str = Field(min_length=1, max_length=255, description="Store name")
     type: str = Field(description="Store type")
+    site_id: str = Field(description="Site ID")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
 
 
+# Add to Schemas.py
+
+class CheckEntitlementRequest(BaseModel):
+    tenant_id: str
+    feature_code: str
+    requested_count: Optional[int] = 1  # NEW: for checking batch operations
+
+class RecordUsageRequest(BaseModel):
+    tenant_id: str
+    feature_code: str
+    usage_type: str
+    count: int = 1
+
+class FeatureRequest(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    usage_type: str = "count"  # NEW
+    unit: Optional[str] = None   # NEW
+    reset_period: str = "monthly"  # NEW
+
+class PlanFeatureRequest(BaseModel):
+    limits: Optional[dict] = None  # e.g., {"max_value": 50, "warn_at": 40}
+
+class SubscriptionPlanRequest(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    price_yearly_minor: int
+    price_monthly_minor: Optional[int] = None
+    currency: str = "GBP"
+    billing_cycle: str = "yearly"  # NEW
+    
 class UserRequest(BaseModel):
     """User creation request"""
     email: EmailStr = Field(description="Valid email address")
@@ -83,6 +118,7 @@ class CostCentreRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200, description="Cost centre name")
     budget_minor: int = Field(ge=0, description="Budget in minor units (required)")
     manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
+    tenant_id: str = Field(description="Tenant ID")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
 
 
@@ -148,6 +184,7 @@ class CategoryRequest(BaseModel):
 class ProductRequest(BaseModel):
     """Product creation request"""
     tenant_id: str = Field(description="Tenant ID")
+    vendor_id: Optional[str] = Field(None, description="Vendor ID (optional)")
     category_id: Optional[str] = Field(None, description="Category ID (optional)")
     sku: str = Field(min_length=1, max_length=100, description="Product SKU")
     name: str = Field(min_length=1, max_length=255, description="Product name")
@@ -233,10 +270,16 @@ class ApprovalRequestRequest(BaseModel):
     chain_id: str = Field(description="Approval chain ID to use")
     request_type: str = Field(description="Request type (budget, order, vendor)")
     request_data: Dict[str, Any] = Field(description="Request details")
-    requested_by: str = Field(description="Requester user ID")
-    total_amount_minor: Optional[int] = Field(None, ge=0, description="Amount in minor units (optional)")
+    total_amount_minor: Optional[int] = Field(None, description="Amount in minor units (optional)")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
     due_date: Optional[datetime] = Field(None, description="Due date (optional)")
+    
+    @field_validator('total_amount_minor')
+    @classmethod
+    def validate_amount(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("Amount must be positive")
+        return v
 
 
 class ApprovalResponseRequest(BaseModel):
@@ -458,7 +501,27 @@ class InvoiceResponse(BaseModel):
     updated_at: datetime
     lines: List[Dict[str, Any]] = []
 
+# Add to Schemas.py
 
+class StoreProductRequest(BaseModel):
+    store_id: str
+    product_id: str
+    price_minor: int
+    currency: str = "GBP"
+    is_available: Optional[bool] = True
+    stock_quantity: Optional[int] = 0
+    low_stock_threshold: Optional[int] = 10
+
+class StoreProductResponse(BaseModel):
+    id: str
+    store_id: str
+    product_id: str
+    price_minor: int
+    currency: str
+    is_available: bool
+    stock_quantity: int
+    created_at: str
+    
 class SettlementItemRequest(BaseModel):
     """Request model for settlement items"""
     order_id: Optional[str] = Field(None, description="Order ID")

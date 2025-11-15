@@ -125,6 +125,12 @@ def check_scope(
     return False
 
 
+def check_tenant_access(ctx: UserContext, tenant_id: uuid.UUID):
+    """Check if user has access to tenant data"""
+    if str(ctx.tenant_id) != str(tenant_id) and "admin" not in ctx.permissions:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to tenant data")
+
+
 def require_permission(permission_code: str, resource_resolver=None):
     async def dependency(
             ctx: UserContext = Depends(get_user_context)
