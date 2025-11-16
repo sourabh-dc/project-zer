@@ -4,7 +4,7 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from fastapi import Depends, APIRouter, HTTPException, Query
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +18,81 @@ from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
 app = APIRouter()
+
+# Event Grid webhook: call internal endpoint to auto-provision base subscription
+@app.post("/v1/subscriptions/subscriptions/autoprovision-hook")
+async def subscriptions_autoprovision_hook(
+        request: Request,
+        db: Session = Depends(get_db),
+):
+    from fastapi import status
+    import os
+    import json as _json
+    import requests as _req
+
+    # Optional shared secret validation
+    expected_secret = os.getenv("EVENT_GRID_WEBHOOK_SECRET")
+    received_secret = request.query_params.get("secret") or request.headers.get("x-eg-secret")
+    aeg_event_type = request.headers.get("aeg-event-type")
+
+    # Parse body once
+    body = await request.body()
+    try:
+        events = _json.loads(body.decode() if isinstance(body, (bytes, bytearray)) else body)
+    except Exception:
+        events = []
+
+    # Allow validation handshake without secret
+    if expected_secret and received_secret != expected_secret and aeg_event_type != "SubscriptionValidation":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
+
+    # Validation handshake (EventGrid schema)
+    if aeg_event_type == "SubscriptionValidation" and events:
+        validation_code = events[0].get("data", {}).get("validationCode")
+        if not validation_code:
+            raise HTTPException(status_code=400, detail="Missing validation code")
+        return {"validationResponse": validation_code}
+
+    # Notifications
+    created_any = False
+    base_url = os.getenv("INTERNAL_SUBSCRIPTIONS_BASE_URL", "http://localhost:8000")
+    plan_code = os.getenv("AUTOPROVISION_DEFAULT_PLAN_CODE", "free")
+    billing_cycle = os.getenv("AUTOPROVISION_BILLING_CYCLE", "yearly")
+    auth_header = os.getenv("INTERNAL_SUBSCRIPTIONS_AUTH_HEADER")
+
+    headers = {"Content-Type": "application/json"}
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    for evt in events or []:
+        try:
+            event_type = evt.get("eventType") or evt.get("type")
+            data = evt.get("data") or {}
+            tenant_id = data.get("tenant_id")
+            if event_type == "tenant.created" and tenant_id:
+                payload = {
+                    "tenant_id": tenant_id,
+                    "plan_code": plan_code,
+                    "payment_method": "internal",
+                    "billing_cycle": billing_cycle,
+                }
+                try:
+                    resp = _req.post(f"{base_url}/v1/subscriptions/subscriptions", json=payload, headers=headers, timeout=5)
+                    if 200 <= resp.status_code < 300:
+                        created_any = True
+                        logger.info(f"✅ Auto-provisioned via endpoint for tenant {tenant_id}")
+                    elif resp.status_code == 409:
+                        created_any = True
+                        logger.info(f"ℹ️ Subscription already exists for tenant {tenant_id}; treating as success")
+                    else:
+                        logger.error(f"❌ Autoprovision endpoint failed: {resp.status_code} {resp.text}")
+                except Exception as call_err:
+                    logger.error(f"❌ Error calling subscriptions endpoint: {call_err}")
+        except Exception as e:
+            logger.error(f"Autoprovision handler error: {e}")
+            db.rollback()
+
+    return {"processed": True, "created": created_any}
 
 @app.post("/v1/subscriptions/plans", status_code=201)
 async def create_subscription_plan(

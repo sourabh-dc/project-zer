@@ -22,6 +22,7 @@ from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
+from utils.event_grid import publish_tenant_created_event
 
 
 app = APIRouter()
@@ -67,6 +68,12 @@ async def create_tenant(
         )
 
         logger.info(f"✅ Created tenant: {tenant.tenant_id} ({tenant.name})")
+
+        # Publish tenant.created event via Event Grid (best-effort)
+        try:
+            publish_tenant_created_event(str(tenant.tenant_id))
+        except Exception as eg_err:
+            logger.warning(f"Event Grid publish failed (tenant.created): {eg_err}")
 
         return {
             "tenant_id": str(tenant.tenant_id),
