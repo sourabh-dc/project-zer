@@ -382,7 +382,6 @@ async def checkout_legacy(request: Request, payload: dict = Body(...)):
         "message": "This endpoint is deprecated. Please use /cv/webhook/checkout with provider parameter."
     }
 
-
 # =============================================================================
 # EVENT HANDLERS
 # =============================================================================

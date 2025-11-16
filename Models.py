@@ -845,42 +845,6 @@ class AccountBalanceNew(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class OutboxEvent(Base):
-    """Outbox pattern for reliable event publishing"""
-    __tablename__ = "outbox_events"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=True)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class AuditLog(Base):
-    """Audit trail for all operations"""
-    __tablename__ = "audit_logs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=True)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(50), nullable=False)
-    resource_id = Column(String(255), nullable=True)
-    details = Column(JSONB, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    session_id = Column(String(100), nullable=True)
-    correlation_id = Column(String(100), nullable=True)
-    severity = Column(String(20), nullable=False, default="info")
-    category = Column(String(50), nullable=False, default="system")
-    retention_until = Column(DateTime(timezone=True), nullable=True)
-
-
 class IdempotencyRecord(Base):
     """Idempotency records to prevent duplicate operations"""
     __tablename__ = "idempotency_records"
@@ -970,6 +934,53 @@ class CvUnknownItemReview(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class Device(Base):
+    """Device registry for hardware monitoring"""
+    __tablename__ = "devices"
+
+    device_id = Column(String(100), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    site_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    device_type = Column(String(50), nullable=False)
+    device_name = Column(String(255), nullable=False)
+    zone = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default='online')
+    health_score = Column(Integer, nullable=True)
+    last_heartbeat = Column(DateTime(timezone=True), nullable=True)
+    device_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class DeviceStatusLog(Base):
+    """Device status change logs"""
+    __tablename__ = "device_status_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id = Column(String(100), nullable=False, index=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    status = Column(String(20), nullable=False)
+    health_score = Column(Integer, nullable=True)
+    details = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DeviceAlert(Base):
+    """Device alerts for offline/error states"""
+    __tablename__ = "device_alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id = Column(String(100), nullable=False, index=True)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    alert_type = Column(String(50), nullable=False)
+    severity = Column(String(20), nullable=False, default='warning')
+    message = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default='open')
+    acknowledged_by = Column(String(255), nullable=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # Add relationships
