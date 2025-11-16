@@ -7,8 +7,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, List, Tuple, Any
 
 import bcrypt
+import httpx
 import jwt
 from fastapi import HTTPException, Depends, Header
+from jose import JWTError
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from starlette import status

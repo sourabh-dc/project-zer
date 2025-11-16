@@ -169,7 +169,7 @@ async def update_tenant(
         req_total.labels(operation="update_tenant", status="start").inc()
 
         # Find tenant
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -458,7 +458,7 @@ async def create_user(
         user = User(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
-            email=req.email.lower(),
+            email=str(req.email).lower(),
             display_name=req.display_name,
             password_hash=password_hash,
             active=True,
