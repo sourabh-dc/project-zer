@@ -908,7 +908,6 @@ class SpendingEvent(Base):
     approval_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency_code = Column(String(3), default="GBP")
-    metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
