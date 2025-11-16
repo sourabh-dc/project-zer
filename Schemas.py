@@ -24,6 +24,7 @@ class TenantRequest(BaseModel):
 
 
 class SiteRequest(BaseModel):
+    tenant_id: str = Field(description="Tenant ID")
     """Site creation request"""
     name: str = Field(min_length=1, max_length=255, description="Site name")
     type: str = Field(description="Site type")
@@ -70,6 +71,7 @@ class RoleRequest(BaseModel):
 
 
 class VendorRequest(BaseModel):
+    tenant_id: str = Field(description="Tenant ID")
     """Vendor creation request"""
     name: str = Field(min_length=1, max_length=255, description="Vendor name")
     contact_email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
