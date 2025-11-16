@@ -15,6 +15,7 @@ from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre
     UserCostCentre, SpendingEvent
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
+from core.aifi_services import cv_create_customer
 from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
 from core.db_config import SessionLocal, get_db
 from core.permission_check_helpers import require_permission
@@ -476,7 +477,8 @@ async def create_user(
         )
 
         logger.info(f"✅ Created user: {user.user_id} ({user.email})")
-
+        await cv_create_customer({"externalId": user.user_id, "email": user.email, "firstName": user.display_name.split(" ")[0],
+                               "lastName": user.display_name.split(" ")[1]})
         return {
             "user_id": str(user.user_id),
             "tenant_id": str(user.tenant_id),

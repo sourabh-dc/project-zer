@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from Models import Tenant, Category, Product, Variant
 from Schemas import UserContext, CategoryRequest, ProductRequest, VariantRequest
+from core.aifi_services import cv_create_product
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission
 from utils.logger import logger
@@ -199,7 +200,14 @@ async def create_product(
         )
 
         logger.info(f"✅ Created product: {product.product_id} ({product.name})")
-
+        await cv_create_product({
+            "externalId": product.product_id,
+            "name": product.name,
+            "barcode": "",
+            "price": product.base_price_minor,
+            "weight": "",
+            "thumbnail": ""
+        })
         return {
             "product_id": str(product.product_id),
             "tenant_id": str(product.tenant_id),
