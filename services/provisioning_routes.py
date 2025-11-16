@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse, Response
 
-from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre
+from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
+    UserCostCentre, SpendingEvent
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
 from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
@@ -161,7 +162,7 @@ async def update_tenant(
         req_total.labels(operation="update_tenant", status="start").inc()
 
         # Find tenant
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -217,7 +218,6 @@ async def update_tenant(
 @app.post("/v1/sites", status_code=201)
 async def create_site(
         req: SiteRequest,
-        tenant_id: str = Query(..., description="Tenant ID"),
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("sites.manage"))
 ):
@@ -227,14 +227,14 @@ async def create_site(
         req_total.labels(operation="create_site", status="start").inc()
 
         # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # Create site
         site = Site(
             site_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(tenant_id),
+            tenant_id=uuid.UUID(req.tenant_id),
             name=req.name,
             site_type=req.type,
             geo=req.geo
@@ -902,7 +902,6 @@ async def remove_role_from_user(
 @app.post("/v1/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
-        tenant_id: str = Query(..., description="Tenant ID"),
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("vendors.manage"))
 ):
@@ -912,14 +911,14 @@ async def create_vendor(
         req_total.labels(operation="create_vendor", status="start").inc()
 
         # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # Create vendor
         vendor = Vendor(
             vendor_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(tenant_id),
+            tenant_id=uuid.UUID(req.tenant_id),
             name=req.name,
             contact_email=req.contact_email,
             description=req.description,
@@ -1009,7 +1008,7 @@ async def create_cost_centre(
         req_total.labels(operation="create_cost_centre", status="start").inc()
 
         # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -1024,7 +1023,7 @@ async def create_cost_centre(
         # Create cost centre
         cc = CostCentre(
             cost_centre_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(tenant_id),
+            tenant_id=uuid.UUID(req.tenant_id),
             name=req.name,
             manager_user_id=manager_user_uuid,
             budget_minor=req.budget_minor,
@@ -1106,3 +1105,392 @@ async def list_cost_centres(
         "limit": limit,
         "offset": offset
     }
+# ==================================================================================
+# RBAC ENDPOINTS - Role-Based Access Control with Scopes
+# ==================================================================================
+
+@app.post("/v1/permissions", status_code=201)
+async def create_permission(
+    code: str,
+    description: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
+):
+    """Create a new permission"""
+    try:
+        # Check if exists
+        existing = db.query(Permission).filter(Permission.code == code).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Permission already exists")
+        
+        perm = Permission(
+            permission_id=uuid.uuid4(),
+            code=code,
+            description=description
+        )
+        db.add(perm)
+        db.commit()
+        db.refresh(perm)
+        
+        return {
+            "permission_id": str(perm.permission_id),
+            "code": perm.code,
+            "description": perm.description
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Permission creation failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/permissions")
+async def list_permissions(
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
+):
+    """List all permissions"""
+    permissions = db.query(Permission).all()
+    return {
+        "permissions": [
+            {"permission_id": str(p.permission_id), "code": p.code, "description": p.description}
+            for p in permissions
+        ]
+    }
+
+@app.post("/v1/roles/{role_id}/permissions/{permission_id}", status_code=201)
+async def add_permission_to_role(
+    role_id: str,
+    permission_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+):
+    """Add permission to role"""
+    try:
+        # Check if already exists
+        existing = db.query(RolePermission).filter(
+            RolePermission.role_id == uuid.UUID(role_id),
+            RolePermission.permission_id == uuid.UUID(permission_id)
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=409, detail="Permission already assigned to role")
+        
+        rp = RolePermission(
+            id=uuid.uuid4(),
+            role_id=uuid.UUID(role_id),
+            permission_id=uuid.UUID(permission_id)
+        )
+        db.add(rp)
+        db.commit()
+        
+        return {"message": "Permission added to role"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to add permission to role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/v1/roles/{role_id}/permissions/{permission_id}", status_code=204)
+async def remove_permission_from_role(
+    role_id: str,
+    permission_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+):
+    """Remove permission from role"""
+    try:
+        assignment = db.query(RolePermission).filter(
+            RolePermission.role_id == uuid.UUID(role_id),
+            RolePermission.permission_id == uuid.UUID(permission_id)
+        ).first()
+
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Permission not assigned to role")
+
+        db.delete(assignment)
+        db.commit()
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid role or permission ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to remove permission from role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/roles/{role_id}/permissions")
+async def get_role_permissions(
+    role_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+):
+    """Get all permissions for a role"""
+    role_perms = db.query(RolePermission, Permission).join(
+        Permission, RolePermission.permission_id == Permission.permission_id
+    ).filter(
+        RolePermission.role_id == uuid.UUID(role_id)
+    ).all()
+    
+    return {
+        "role_id": role_id,
+        "permissions": [
+            {
+                "permission_id": str(p.permission_id),
+                "code": p.code,
+                "description": p.description
+            }
+            for rp, p in role_perms
+        ]
+    }
+
+@app.post("/v1/roles/{role_id}/scopes", status_code=201)
+async def add_scope_to_role(
+    role_id: str,
+    resource_type: str,
+    resource_id: Optional[str] = None,
+    grant_type: str = "include",
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
+):
+    """Add scope to role (tenant, site, store, cost_centre level)"""
+    try:
+        scope = RoleScope(
+            id=uuid.uuid4(),
+            role_id=uuid.UUID(role_id),
+            resource_type=resource_type,
+            resource_id=uuid.UUID(resource_id) if resource_id else None,
+            grant_type=grant_type
+        )
+        db.add(scope)
+        db.commit()
+        
+        return {
+            "message": f"Scope added: {resource_type}",
+            "scope_id": str(scope.id)
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to add scope: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/roles/{role_id}/scopes")
+async def get_role_scopes(
+    role_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
+):
+    """Get all scopes for a role"""
+    scopes = db.query(RoleScope).filter(RoleScope.role_id == uuid.UUID(role_id)).all()
+    
+    return {
+        "role_id": role_id,
+        "scopes": [
+            {
+                "scope_id": str(s.id),
+                "resource_type": s.resource_type,
+                "resource_id": str(s.resource_id) if s.resource_id else None,
+                "grant_type": s.grant_type
+            }
+            for s in scopes
+        ]
+    }
+
+
+@app.delete("/v1/roles/{role_id}/scopes/{scope_id}", status_code=204)
+async def remove_scope_from_role(
+    role_id: str,
+    scope_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
+):
+    """Remove a scope from a role"""
+    try:
+        scope = db.query(RoleScope).filter(
+            RoleScope.role_id == uuid.UUID(role_id),
+            RoleScope.id == uuid.UUID(scope_id)
+        ).first()
+
+        if not scope:
+            raise HTTPException(status_code=404, detail="Scope not found for role")
+
+        db.delete(scope)
+        db.commit()
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid role or scope ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to remove scope from role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==================================================================================
+# USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
+# ==================================================================================
+
+@app.post("/v1/users/{user_id}/cost-centres", status_code=201)
+async def assign_user_to_cost_centre(
+    user_id: str,
+    cost_centre_id: str = Query(..., description="Cost centre ID"),
+    allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("cost_centres.manage"))
+):
+    """Assign a user to a cost centre with optional budget allocation"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify cost centre exists
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+        
+        # Check if assignment already exists
+        existing = db.query(UserCostCentre).filter(
+            UserCostCentre.user_id == uuid.UUID(user_id),
+            UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=409, detail="User already assigned to this cost centre")
+        
+        # Create assignment
+        user_cc = UserCostCentre(
+            id=uuid.uuid4(),
+            user_id=uuid.UUID(user_id),
+            cost_centre_id=uuid.UUID(cost_centre_id),
+            allocated_budget_minor=allocated_budget_minor,
+            spent_minor=0,
+            currency_code=cc.currency_code
+        )
+        db.add(user_cc)
+        db.commit()
+        db.refresh(user_cc)
+        
+        logger.info(f"✅ Assigned user {user_id} to cost centre {cost_centre_id} with budget {allocated_budget_minor}")
+        
+        return {
+            "id": str(user_cc.id),
+            "user_id": user_id,
+            "cost_centre_id": cost_centre_id,
+            "allocated_budget_minor": allocated_budget_minor,
+            "spent_minor": 0,
+            "available_minor": allocated_budget_minor,
+            "currency_code": cc.currency_code
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to assign user to cost centre: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/budget")
+async def get_user_budget(
+    user_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get user's budget information"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get cost centre assignment
+        user_cc = db.query(UserCostCentre).filter(
+            UserCostCentre.user_id == uuid.UUID(user_id)
+        ).first()
+        
+        if not user_cc:
+            return {
+                "user_id": user_id,
+                "has_budget": False,
+                "message": "User not assigned to any cost centre"
+            }
+        
+        # Get cost centre info
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
+        
+        available = user_cc.allocated_budget_minor - user_cc.spent_minor
+        
+        return {
+            "user_id": user_id,
+            "has_budget": True,
+            "cost_centre_id": str(user_cc.cost_centre_id),
+            "cost_centre_name": cc.name if cc else "Unknown",
+            "allocated_budget_minor": user_cc.allocated_budget_minor,
+            "spent_minor": user_cc.spent_minor,
+            "available_minor": available,
+            "currency_code": user_cc.currency_code,
+            "cost_centre_budget_minor": cc.budget_minor if cc else 0,
+            "cost_centre_spent_minor": cc.spent_minor if cc else 0,
+            "cost_centre_available_minor": (cc.budget_minor - cc.spent_minor) if cc else 0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get user budget: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/spending-history")
+async def get_user_spending_history(
+    user_id: str,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get user's spending history"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get spending events
+        events = db.query(SpendingEvent).filter(
+            SpendingEvent.user_id == uuid.UUID(user_id)
+        ).order_by(SpendingEvent.created_at.desc()).limit(limit).offset(offset).all()
+        
+        total = db.query(func.count(SpendingEvent.event_id)).filter(
+            SpendingEvent.user_id == uuid.UUID(user_id)
+        ).scalar()
+        
+        return {
+            "user_id": user_id,
+            "events": [
+                {
+                    "event_id": str(e.event_id),
+                    "event_type": e.event_type,
+                    "amount_minor": e.amount_minor,
+                    "currency_code": e.currency_code,
+                    "cost_centre_id": str(e.cost_centre_id),
+                    "order_id": str(e.order_id) if e.order_id else None,
+                    "approval_request_id": str(e.approval_request_id) if e.approval_request_id else None,
+                    "metadata": e.metadata,
+                    "created_at": e.created_at.isoformat()
+                }
+                for e in events
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get spending history: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

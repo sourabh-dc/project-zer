@@ -5,7 +5,8 @@ from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from Models import Tenant, User, ApprovalChain, ApprovalChainStep, ApprovalRequest, ApprovalRequestApprover
+from Models import Tenant, User, ApprovalChain, ApprovalChainStep, ApprovalRequest, ApprovalRequestApprover, \
+    UserCostCentre, SpendingEvent
 from Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
     ApprovalResponseRequest
 from core.db_config import get_db
@@ -614,6 +615,46 @@ async def respond_to_approval_request(
                 # Last step completed and approved
                 approval_request.request_status = "approved"
                 approval_request.completed_date = datetime.now(timezone.utc)
+                
+                # Handle budget allocation for budget_request type
+                if approval_request.request_type == "budget_request":
+                    try:
+                        request_data = approval_request.request_data or {}
+                        user_id = request_data.get("user_id")
+                        amount_minor = request_data.get("amount_minor", 0)
+                        
+                        if user_id and amount_minor > 0:
+                            user_cc = db.query(UserCostCentre).filter(
+                                UserCostCentre.user_id == uuid.UUID(user_id)
+                            ).first()
+                            
+                            if user_cc:
+                                # Allocate budget to user
+                                user_cc.allocated_budget_minor += amount_minor
+                                
+                                # Create spending event for audit
+                                spending_event = SpendingEvent(
+                                    event_id=uuid.uuid4(),
+                                    event_type="budget_allocated",
+                                    user_id=uuid.UUID(user_id),
+                                    cost_centre_id=user_cc.cost_centre_id,
+                                    order_id=None,
+                                    approval_request_id=approval_request.request_id,
+                                    amount_minor=amount_minor,
+                                    currency_code=user_cc.currency_code,
+                                    metadata={
+                                        "request_number": approval_request.request_number,
+                                        "approved_by": req.approver_user_id
+                                    }
+                                )
+                                db.add(spending_event)
+                                
+                                logger.info(f"✅ Budget allocated: {amount_minor} to user {user_id} via approval {request_id}")
+                            else:
+                                logger.warning(f"⚠️  User {user_id} not found in cost centre assignments")
+                    except Exception as e:
+                        logger.error(f"❌ Budget allocation failed (non-critical): {e}")
+                        # Don't fail the approval even if budget allocation fails
             else:
                 # Move to next step
                 approval_request.current_step_number += 1
