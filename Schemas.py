@@ -719,3 +719,171 @@ class LedgerReportRequest(BaseModel):
     account: Optional[str] = None
     cost_centre_id: Optional[str] = None
     currency: Optional[str] = None
+
+class ProviderConfig(BaseModel):
+    """Provider configuration schema"""
+    provider: str = Field(..., description="Provider name (aifi, etc.)")
+    api_key: str = Field(..., description="API key")
+    base_url: str = Field(..., description="Base URL")
+    location_id: Optional[str] = Field(None, description="Location ID if required")
+    store_id: Optional[str] = Field(None, description="Store ID if required")
+
+
+class ZeroqueRailRequest(BaseModel):
+    """Request to create/update zeroque rail"""
+    type: str = Field("cv", description="Rail type")
+    name: str = Field(..., description="Provider name")
+    config: ProviderConfig = Field(..., description="Provider configuration")
+    active: bool = Field(True, description="Whether rail is active")
+
+
+class ProviderParam(BaseModel):
+    """Provider parameter for multi-provider support"""
+    provider: str = Field(..., description="Provider name")
+
+
+class EntryCodeCreate(BaseModel):
+    """Create entry code request"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    user_id: str = Field(..., description="User ID")
+    provider: Optional[str] = Field(None, description="Provider override")
+    group_size: Optional[int] = Field(None, description="Group size")
+    displayable: bool = Field(True, description="Generate QR code")
+    extra: Optional[Dict[str, Any]] = Field(None, description="Additional data")
+
+    @field_validator('tenant_id', 'user_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('Invalid UUID format')
+
+
+class EntryVerifyRequest(BaseModel):
+    """Verify entry code request"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    verification_code: str = Field(..., description="Verification code")
+    store_id: str = Field(..., description="Store ID")
+    entry_id: str = Field(..., description="Entry ID")
+    provider: Optional[str] = Field(None, description="Provider override")
+    group_size: Optional[int] = Field(None, description="Group size")
+    check_in_device_id: Optional[int] = Field(None, description="Check-in device ID")
+
+    @field_validator('tenant_id', 'store_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('Invalid UUID format')
+
+
+class EntryVerifyResponse(BaseModel):
+    """Entry verification response"""
+    status: str = Field(..., description="Verification status")
+    session_id: Optional[str] = Field(None, description="Session ID")
+    reason: Optional[str] = Field(None, description="Failure reason")
+    shopper_role: Optional[str] = Field(None, description="Shopper role")
+
+
+class EntryWebhookDecision(BaseModel):
+    """Entry webhook decision"""
+    status: str = Field(..., description="Decision status")
+    reason: Optional[str] = Field(None, description="Decision reason")
+
+
+class CardEntryRequest(BaseModel):
+    """Card-based entry request"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    user_id: str = Field(..., description="User ID")
+    store_id: str = Field(..., description="Store ID")
+    card_number: str = Field(..., description="Card number (last 4 digits or full encrypted)")
+    card_type: str = Field("rfid", description="Card type: 'rfid', 'nfc', 'magnetic'")
+    device_id: Optional[str] = Field(None, description="Entry device ID")
+    provider: Optional[str] = Field(None, description="Provider override")
+
+    @field_validator('tenant_id', 'user_id', 'store_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('Invalid UUID format')
+
+
+class BiometricEntryRequest(BaseModel):
+    """Biometric-based entry request"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    user_id: str = Field(..., description="User ID")
+    store_id: str = Field(..., description="Store ID")
+    biometric_type: str = Field(..., description="Biometric type: 'fingerprint', 'face', 'palm', 'iris'")
+    biometric_data: str = Field(..., description="Base64-encoded biometric template/hash")
+    device_id: Optional[str] = Field(None, description="Entry device ID")
+    confidence_score: Optional[float] = Field(None, description="Biometric match confidence (0-1)")
+    provider: Optional[str] = Field(None, description="Provider override")
+
+    @field_validator('tenant_id', 'user_id', 'store_id')
+    @classmethod
+    def validate_uuids(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('Invalid UUID format')
+
+
+class SimpleOK(BaseModel):
+    """Simple OK response"""
+    ok: bool = Field(..., description="Success status")
+
+
+class CustomerUpsert(BaseModel):
+    """Customer upsert schema"""
+    external_id: str = Field(..., description="External customer ID")
+    email: Optional[str] = Field(None, description="Customer email")
+    first_name: Optional[str] = Field(None, description="First name")
+    last_name: Optional[str] = Field(None, description="Last name")
+    phone: Optional[str] = Field(None, description="Phone number")
+    role: str = Field("customer", description="Customer role")
+    password: Optional[str] = Field(None, description="Password")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+
+class ProductUpsert(BaseModel):
+    """Product upsert schema"""
+    external_id: str = Field(..., description="External product ID")
+    name: str = Field(..., description="Product name")
+    price: Optional[float] = Field(None, description="Product price")
+    barcode: Optional[str] = Field(None, description="Product barcode")
+    restricted: bool = Field(False, description="Restricted item")
+    tax_code: Optional[str] = Field(None, description="Tax code")
+    variants: List[dict] = Field(default_factory=list, description="Product variants")
+
+
+class InventoryAdjust(BaseModel):
+    """Inventory adjustment schema"""
+    product_id: str = Field(..., description="Product ID")
+    quantity_difference: Optional[int] = Field(None, description="Quantity difference")
+    quantity: Optional[int] = Field(None, description="Absolute quantity")
+
+
+class SyncBatchRequest(BaseModel):
+    """Batch sync request"""
+    tenant_id: str = Field(..., description="Tenant ID")
+    provider: Optional[str] = Field(None, description="Provider override")
+    customers: List[CustomerUpsert] = Field(default_factory=list, description="Customers to sync")
+    products: List[ProductUpsert] = Field(default_factory=list, description="Products to sync")
+    inventory: List[InventoryAdjust] = Field(default_factory=list, description="Inventory adjustments")
+
+    @field_validator('tenant_id')
+    @classmethod
+    def validate_tenant_id(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('Invalid tenant_id format')

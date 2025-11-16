@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
-    Date, Numeric
+    Date, Numeric, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
@@ -909,6 +909,67 @@ class SpendingEvent(Base):
     amount_minor = Column(BigInteger, nullable=False)
     currency_code = Column(String(3), default="GBP")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class ZeroqueRail(Base):
+    """CV provider configuration"""
+    __tablename__ = "zeroque_rails"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    type = Column(String(50), nullable=False)
+    name = Column(String(100), nullable=False)
+    config = Column(JSONB, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('tenant_id', 'type', 'name', name='uq_zeroque_rails_tenant_type_name'),
+    )
+
+
+class ProviderMapping(Base):
+    """External provider ID mappings"""
+    __tablename__ = "provider_mappings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    provider = Column(String(50), nullable=False)
+    entity_type = Column(String(50), nullable=False)
+    local_id = Column(String(255), nullable=False)
+    external_id = Column(String(255), nullable=False)
+    mapping_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('provider', 'entity_type', 'local_id', name='uq_provider_mappings_provider_entity_local'),
+        UniqueConstraint('provider', 'entity_type', 'external_id',
+                         name='uq_provider_mappings_provider_entity_external'),
+    )
+
+
+class CvUnknownItemReview(Base):
+    """Unknown item reviews for reconciliation"""
+    __tablename__ = "cv_unknown_item_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    site_id = Column(UUID(as_uuid=True), nullable=True)
+    store_id = Column(UUID(as_uuid=True), nullable=True)
+    provider = Column(String(50), nullable=False)
+    external_sku = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
+    qty = Column(Integer, nullable=False)
+    price_minor = Column(Integer, nullable=False)
+    payload_json = Column(JSONB, nullable=False)
+    status = Column(String(20), nullable=False, default='pending')
+    mapped_sku = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    resolved_by = Column(String(255), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 # Add relationships
