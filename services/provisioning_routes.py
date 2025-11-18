@@ -2,22 +2,20 @@ import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from sqlalchemy import text, func
+from sqlalchemy import  func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
 from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
     UserCostCentre, SpendingEvent
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
 from core.aifi_services import cv_create_customer
-from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
-from core.db_config import SessionLocal, get_db
+from core.config import SETTINGS
+from core.db_config import get_db
 from core.permission_check_helpers import require_permission
 from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger

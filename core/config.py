@@ -11,7 +11,6 @@ load_dotenv()
 
 # Get values from environment
 keyvault_name = os.getenv("KEYVAULT_NAME")
-
 vault_url = f"https://{keyvault_name}.vault.azure.net"
 
 # Authenticate using App Registration credentials
@@ -19,14 +18,16 @@ credential = DefaultAzureCredential()
 client = SecretClient(vault_url=vault_url, credential=credential)
 
 # Retrieve the secret
-retrieved_secret = client.get_secret("dbName")
-print(f"Secret value: {retrieved_secret.value}")
+db_name = client.get_secret("dbName").value
+db_password = client.get_secret("dbPassword").value
+db_host = client.get_secret("dbHost").value
+db_username = client.get_secret("dbUsername").value
 
 
 class Settings(BaseSettings):
     """Application settings - simple and powerful"""
     DATABASE_URL: str = Field(
-        default="postgresql://postgres:password@localhost:5432/zeroque_dev",
+        default=f"postgresql://{db_username}:{db_password}@{db_host}:5432/{db_name}",
         description="PostgreSQL connection URL"
     )
     REDIS_URL: str = Field(
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
     JWT_SECRET: Optional[str] = Field(default="mock-secret", description="JWT shared secret for HS algorithms")
     JWT_JWKS_URL: Optional[str] = Field(default=None, description="JWKS endpoint for RSA/EC algorithms")
     JWT_CACHE_SECONDS: int = Field(default=300, description="How long to cache JWKS keys")
-    PORT: int = Field(default=8000, description="Service port")
+    PORT: int = Field(default=80, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     BOOTSTRAP_ADMIN_EMAIL: str = Field(default="admin@zeroque.local", description="Bootstrap admin email")
     BOOTSTRAP_ADMIN_API_KEY: str = Field(default="zq_bootstrap_admin_key", description="Bootstrap admin API key")

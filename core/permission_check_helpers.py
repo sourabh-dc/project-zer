@@ -15,7 +15,7 @@ from Schemas import ResourceContext, UserContext
 from core.config import SETTINGS
 from core.db_config import SessionLocal
 from core.user_auth import get_user_context, set_rls_context
-from utils.redis_client import redis_client
+# from utils.redis_client import redis_client
 from utils.logger import logger
 
 
@@ -231,37 +231,37 @@ def resolve_approvers_for_step(
     return deduped
 
 
-def get_tenant_from_cache(tenant_id: str, db: Session) -> Optional[Tenant]:
-    """Get tenant with Redis caching"""
-    cache_key = f"tenant:{tenant_id}"
-
-    # Try cache first
-    if redis_client:
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                data = json.loads(cached)
-                tenant = Tenant()
-                tenant.tenant_id = uuid.UUID(data["tenant_id"])
-                tenant.name = data["name"]
-                tenant.tenant_type = data["type"]
-                tenant.active = data["active"]
-                return tenant
-        except Exception as e:
-            logger.warning(f"Tenant cache read failed: {e}")
-
-    # Query database
-    tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
-    if tenant and redis_client:
-        try:
-            data = {
-                "tenant_id": str(tenant.tenant_id),
-                "name": tenant.name,
-                "type": tenant.tenant_type,
-                "active": tenant.active
-            }
-            redis_client.setex(cache_key, SETTINGS.CACHE_TTL_SECONDS, json.dumps(data))
-        except Exception as e:
-            logger.warning(f"Tenant cache write failed: {e}")
-
-    return tenant
+# def get_tenant_from_cache(tenant_id: str, db: Session) -> Optional[Tenant]:
+#     """Get tenant with Redis caching"""
+#     cache_key = f"tenant:{tenant_id}"
+#
+#     # Try cache first
+#     if redis_client:
+#         try:
+#             cached = redis_client.get(cache_key)
+#             if cached:
+#                 data = json.loads(cached)
+#                 tenant = Tenant()
+#                 tenant.tenant_id = uuid.UUID(data["tenant_id"])
+#                 tenant.name = data["name"]
+#                 tenant.tenant_type = data["type"]
+#                 tenant.active = data["active"]
+#                 return tenant
+#         except Exception as e:
+#             logger.warning(f"Tenant cache read failed: {e}")
+#
+#     # Query database
+#     tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+#     if tenant and redis_client:
+#         try:
+#             data = {
+#                 "tenant_id": str(tenant.tenant_id),
+#                 "name": tenant.name,
+#                 "type": tenant.tenant_type,
+#                 "active": tenant.active
+#             }
+#             redis_client.setex(cache_key, SETTINGS.CACHE_TTL_SECONDS, json.dumps(data))
+#         except Exception as e:
+#             logger.warning(f"Tenant cache write failed: {e}")
+#
+#     return tenant

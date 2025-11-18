@@ -56,15 +56,15 @@ async def health():
 async def metrics():
     """Prometheus metrics endpoint"""
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    logger.info(f"🚀 Starting {SERVICE_NAME} v{SERVICE_VERSION}")
-    logger.info(f"📊 Database: {SETTINGS.DATABASE_URL.split('@')[1] if '@' in SETTINGS.DATABASE_URL else 'configured'}")
-    logger.info(f"💾 Redis: {'enabled' if redis_client else 'disabled'}")
-    logger.info(f"🔒 RLS: enabled for tenant isolation")
-
-    uvicorn.run(app, host="0.0.0.0", port=SETTINGS.PORT)
+#
+#
+# if __name__ == "__main__":
+#     import uvicorn
+#
+#     logger.info(f"🚀 Starting {SERVICE_NAME} v{SERVICE_VERSION}")
+#     logger.info(f"📊 Database: {SETTINGS.DATABASE_URL.split('@')[1] if '@' in SETTINGS.DATABASE_URL else 'configured'}")
+#     logger.info(f"💾 Redis: {'enabled' if redis_client else 'disabled'}")
+#     logger.info(f"🔒 RLS: enabled for tenant isolation")
+#
+#     uvicorn.run(app, host="0.0.0.0", port=SETTINGS.PORT)
 
