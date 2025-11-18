@@ -1,7 +1,26 @@
 from typing import Optional
-
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get values from environment
+keyvault_name = os.getenv("KEYVAULT_NAME")
+
+vault_url = f"https://{keyvault_name}.vault.azure.net"
+
+# Authenticate using App Registration credentials
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=vault_url, credential=credential)
+
+# Retrieve the secret
+retrieved_secret = client.get_secret("dbName")
+print(f"Secret value: {retrieved_secret.value}")
 
 
 class Settings(BaseSettings):

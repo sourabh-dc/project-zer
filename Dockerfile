@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "main.py"]
+CMD ["uvicorn", "zeroque_infra_app:app", "--host", "0.0.0.0", "--port", "8000"]
