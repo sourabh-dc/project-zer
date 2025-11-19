@@ -1,0 +1,16 @@
+2025-11-18 17:32:52 - zeroque - INFO - ✅ Redis connected
+2025-11-18 17:32:53 - zeroque - INFO - ✅ Database tables initialized
+2025-11-18 17:32:53 - zeroque - WARNING - ⚠️  SERVICE_BUS_CONNECTION_STRING not set. Service Bus disabled.
+INFO:     Started server process [71449]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8100 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56698 - "GET /health HTTP/1.1" 200 OK
+2025-11-18 17:33:03 - zeroque - ERROR - ❌ Integrity error creating site: null value in column "tenant_id" of relation "sites" violates not-null constraint
+DETAIL:  Failing row contains (da10536c-3d1e-4a7b-b809-f28b0ddd7361, null, Test Site Final, warehouse, null, 2025-11-18 17:33:03.123588+05:30, 2025-11-18 17:33:03.123588+05:30). | Detail: []
+2025-11-18 17:33:03 - zeroque - ERROR -    Tenant ID: 99dfda51-0b9a-404f-aeb2-89f127e05be5
+INFO:     127.0.0.1:56701 - "POST /v1/sites HTTP/1.1" 400 Bad Request
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [71449]
