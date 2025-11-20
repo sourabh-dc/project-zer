@@ -1013,6 +1013,52 @@ class SiteTenant(Base):
         Index('ix_site_tenant_unique', 'site_id', 'tenant_id', unique=True),
     )
 
+class ApproverLimit(Base):
+    __tablename__ = "approver_limits"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=True, index=True)
+    currency_code = Column(String(3), default="INR")
+    daily_limit_minor = Column(BigInteger, default=5000000)      # ₹50,000
+    monthly_limit_minor = Column(BigInteger, default=50000000)  # ₹5,00,000
+    daily_spent_minor = Column(BigInteger, default=0)
+    monthly_spent_minor = Column(BigInteger, default=0)
+    last_reset_daily = Column(Date, server_default=func.current_date())
+    last_reset_monthly = Column(Date, server_default=func.date_trunc('month', func.current_date()))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    
+    # Index for efficient queries
+    __table_args__ = (
+        Index('ix_approver_limit_user_cc', 'user_id', 'cost_centre_id'),
+        Index('ix_approver_limit_tenant', 'tenant_id'),
+    )
+
+class InstantBudgetRequest(Base):
+    __tablename__ = "instant_budget_requests"
+    request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True, index=True)
+    requested_amount_minor = Column(BigInteger, nullable=False)
+    approved_amount_minor = Column(BigInteger, default=0)
+    remaining_amount_minor = Column(BigInteger, nullable=False)  # for split
+    status = Column(String(20), default="pending", index=True)  # pending, approved, rejected, expired, partial
+    reason = Column(Text, nullable=True)
+    requested_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    
+    # Indexes for efficient queries
+    __table_args__ = (
+        Index('ix_instant_budget_status_expires', 'status', 'expires_at'),
+    )
 
 # Create tables
 try:

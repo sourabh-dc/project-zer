@@ -1,16 +1,1294 @@
-2025-11-18 17:32:52 - zeroque - INFO - ✅ Redis connected
-2025-11-18 17:32:53 - zeroque - INFO - ✅ Database tables initialized
-2025-11-18 17:32:53 - zeroque - WARNING - ⚠️  SERVICE_BUS_CONNECTION_STRING not set. Service Bus disabled.
-INFO:     Started server process [71449]
+2025-11-20 23:25:23 - zeroque - WARNING - ⚠️  Redis unavailable: Error 61 connecting to localhost:6379. Connection refused., caching disabled
+2025-11-20 23:25:23 - zeroque - INFO - ✅ Database tables initialized
+2025-11-20 23:25:23 - zeroque - WARNING - ⚠️  SERVICE_BUS_CONNECTION_STRING not set. Service Bus disabled.
+/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/main.py:54: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+2025-11-20 23:25:23 - zeroque - INFO - 🚀 Starting zeroque v2.0.0
+2025-11-20 23:25:23 - zeroque - INFO - 📊 Database: localhost:5432/zeroque_dev
+2025-11-20 23:25:23 - zeroque - INFO - 💾 Redis: disabled
+2025-11-20 23:25:23 - zeroque - INFO - 🔒 RLS: enabled for tenant isolation
+INFO:     Started server process [47140]
 INFO:     Waiting for application startup.
+2025-11-20 23:25:23 - zeroque - INFO - 🚀 Starting background jobs...
+2025-11-20 23:25:23 - zeroque - INFO - ✅ Background jobs started
+2025-11-20 23:25:23 - zeroque - INFO - 🚀 Starting all background jobs...
+2025-11-20 23:25:23 - zeroque - INFO - ✅ All background jobs started
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8100 (Press CTRL+C to quit)
-INFO:     127.0.0.1:56698 - "GET /health HTTP/1.1" 200 OK
-2025-11-18 17:33:03 - zeroque - ERROR - ❌ Integrity error creating site: null value in column "tenant_id" of relation "sites" violates not-null constraint
-DETAIL:  Failing row contains (da10536c-3d1e-4a7b-b809-f28b0ddd7361, null, Test Site Final, warehouse, null, 2025-11-18 17:33:03.123588+05:30, 2025-11-18 17:33:03.123588+05:30). | Detail: []
-2025-11-18 17:33:03 - zeroque - ERROR -    Tenant ID: 99dfda51-0b9a-404f-aeb2-89f127e05be5
-INFO:     127.0.0.1:56701 - "POST /v1/sites HTTP/1.1" 400 Bad Request
-INFO:     Shutting down
-INFO:     Waiting for application shutdown.
-INFO:     Application shutdown complete.
-INFO:     Finished server process [71449]
+2025-11-20 23:25:23 - zeroque - INFO - 🚀 Starting instant budget background worker...
+2025-11-20 23:25:23 - zeroque - ERROR - ❌ Reminder check failed: type object 'ApprovalRequestApprover' has no attribute 'reminder_sent'
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:59374 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59418 - "POST /v1/tenants HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59426 - "POST /v1/instant-budget/approver-limits HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59433 - "POST /v1/instant-budget/allocate?user_id=test&cost_centre_id=test&amount_minor=1000 HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59435 - "POST /v1/instant-budget/approver-limits HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59437 - "POST /v1/instant-budget/request HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59439 - "GET /v1/instant-budget/pending HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59441 - "GET /v1/instant-budget/my-limit HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UndefinedColumn: column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/applications.py", line 1134, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 125, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/routing.py", line 381, in app
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 615, in solve_dependencies
+    solved_result = await solve_dependencies(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/fastapi/dependencies/utils.py", line 644, in solve_dependencies
+    solved = await call(**solved_result.values)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 368, in get_user_context
+    ctx = await resolve_user_context_from_api_key(x_api_key)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 354, in resolve_user_context_from_api_key
+    ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/core/user_auth.py", line 297, in build_user_context
+    ).all()
+      ~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ~~~~~~~~~~^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+        params,
+        ^^^^^^^
+        execution_options={"_sa_orm_load_options": self.load_options},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        statement,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        _add_event=_add_event,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<4 lines>...
+        conn,
+        ^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+        statement, params or {}, execution_options=execution_options
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+        self,
+        distilled_parameters,
+        execution_options or NO_OPTIONS,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self, distilled_params, execution_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+        dialect,
+    ...<8 lines>...
+        cache_hit=cache_hit,
+    )
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        dialect, context, statement, parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        e, str_statement, effective_parameters, cursor, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        cursor, str_statement, effective_parameters, context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/sourabhagrawal/Desktop/Consumables/revamped/new_code/venv/lib/python3.13/site-packages/psycopg/cursor.py", line 97, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedColumn) column roles.tenant_id does not exist
+LINE 1: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS ro...
+                                               ^
+[SQL: SELECT roles.role_id AS roles_role_id, roles.tenant_id AS roles_tenant_id, roles.code AS roles_code, roles.description AS roles_description, roles.created_at AS roles_created_at 
+FROM roles JOIN user_roles ON user_roles.role_id = roles.role_id 
+WHERE user_roles.user_id = %(user_id_1)s::UUID]
+[parameters: {'user_id_1': UUID('18067e9f-9556-43b3-926e-7776c21665c2')}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+INFO:     127.0.0.1:59486 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59486 - "GET /openapi.json HTTP/1.1" 200 OK

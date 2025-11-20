@@ -38,14 +38,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/auth/login",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "auth",
-                "login"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "auth", "login"]
             },
             "body": {
               "mode": "raw",
@@ -71,14 +65,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/auth/refresh-api-key",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "auth",
-                "refresh-api-key"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "auth", "refresh-api-key"]
             },
             "body": {
               "mode": "raw",
@@ -114,12 +102,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/health",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "health"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["health"]
             }
           }
         },
@@ -141,12 +125,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/metrics",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "metrics"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["metrics"]
             }
           }
         }
@@ -173,13 +153,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/tenants",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "tenants"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "tenants"]
             },
             "body": {
               "mode": "raw",
@@ -210,13 +185,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/tenants",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "tenants"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "tenants"],
               "query": [
                 {
                   "key": "limit",
@@ -248,14 +218,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/tenants/{{tenant_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "tenants",
-                "{{tenant_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "tenants", "{{tenant_id}}"]
             }
           }
         },
@@ -277,14 +241,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/tenants/{{tenant_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "tenants",
-                "{{tenant_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "tenants", "{{tenant_id}}"]
             },
             "body": {
               "mode": "raw",
@@ -315,13 +273,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/sites",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "sites"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "sites"]
             },
             "body": {
               "mode": "raw",
@@ -352,13 +305,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/sites",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "sites"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "sites"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -386,13 +334,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/stores",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "stores"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "stores"]
             },
             "body": {
               "mode": "raw",
@@ -423,13 +366,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/stores",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "stores"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "stores"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -457,13 +395,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users"]
             },
             "body": {
               "mode": "raw",
@@ -494,13 +427,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -528,14 +456,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/bulk-import",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "bulk-import"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "bulk-import"]
             },
             "body": {
               "mode": "raw",
@@ -566,13 +488,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "roles"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "roles"]
             },
             "body": {
               "mode": "raw",
@@ -603,13 +520,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "roles"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "roles"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -637,15 +549,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "roles"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "roles"]
             },
             "body": {
               "mode": "raw",
@@ -676,15 +581,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "roles"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "roles"]
             }
           }
         },
@@ -706,9 +604,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/managers/{{manager_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "users",
@@ -749,15 +645,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/managers",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "managers"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "managers"]
             }
           }
         },
@@ -779,15 +668,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/team",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "team"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "team"]
             }
           }
         },
@@ -809,13 +691,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/vendors",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "vendors"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "vendors"]
             },
             "body": {
               "mode": "raw",
@@ -846,13 +723,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/vendors",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "vendors"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "vendors"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -880,15 +752,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/vendors/{{vendor_id}}/assign-user?user_id={{user_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "vendors",
-                "{{vendor_id}}",
-                "assign-user"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "vendors", "{{vendor_id}}", "assign-user"],
               "query": [
                 {
                   "key": "user_id",
@@ -916,13 +781,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/cost-centres",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "cost-centres"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "cost-centres"]
             },
             "body": {
               "mode": "raw",
@@ -953,13 +813,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/cost-centres",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "cost-centres"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "cost-centres"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -987,15 +842,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/cost-centres",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "cost-centres"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "cost-centres"],
               "query": [
                 {
                   "key": "cost_centre_id",
@@ -1037,15 +885,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/budget",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "budget"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "budget"]
             }
           }
         },
@@ -1067,15 +908,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/budget?cost_centre_id={{cost_centre_id}}&allocated_budget_minor=100000",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "budget"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "budget"],
               "query": [
                 {
                   "key": "cost_centre_id",
@@ -1107,15 +941,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/users/{{user_id}}/spending-history",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "users",
-                "{{user_id}}",
-                "spending-history"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "spending-history"]
             }
           }
         },
@@ -1137,13 +964,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/permissions?code=test.permission&description=Test Permission",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "permissions"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "permissions"],
               "query": [
                 {
                   "key": "code",
@@ -1175,13 +997,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "permissions"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "permissions"]
             }
           }
         },
@@ -1203,9 +1020,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/roles/{{role_id}}/permissions/{{permission_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "roles",
@@ -1234,15 +1049,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/roles/{{role_id}}/scopes?resource_type=tenant&resource_id={{tenant_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "roles",
-                "{{role_id}}",
-                "scopes"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "roles", "{{role_id}}", "scopes"],
               "query": [
                 {
                   "key": "resource_type",
@@ -1274,15 +1082,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/roles/{{role_id}}/scopes",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "roles",
-                "{{role_id}}",
-                "scopes"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "roles", "{{role_id}}", "scopes"]
             }
           }
         }
@@ -1309,14 +1110,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/plans",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "plans"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "plans"]
             },
             "body": {
               "mode": "raw",
@@ -1347,14 +1142,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/plans",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "plans"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "plans"]
             }
           }
         },
@@ -1376,14 +1165,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/features",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "features"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "features"]
             },
             "body": {
               "mode": "raw",
@@ -1414,14 +1197,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/features",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "features"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "features"]
             }
           }
         },
@@ -1443,9 +1220,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/plans/{{plan_code}}/features/{{feature_code}}",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1484,9 +1259,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/plans/{{plan_code}}/features",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1515,14 +1288,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "subscriptions"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "subscriptions"]
             },
             "body": {
               "mode": "raw",
@@ -1553,15 +1320,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions/{{tenant_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "subscriptions",
-                "subscriptions",
-                "{{tenant_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "subscriptions", "subscriptions", "{{tenant_id}}"]
             }
           }
         },
@@ -1583,9 +1343,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions/{{tenant_id}}/renew",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1614,9 +1372,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions/{{tenant_id}}/cancel",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1645,9 +1401,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions/{{tenant_id}}/plan",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1682,9 +1436,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/subscriptions/subscriptions/{{tenant_id}}/reactivate",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "subscriptions",
@@ -1718,14 +1470,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/check",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "entitlements",
-                "check"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "entitlements", "check"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -1757,14 +1503,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/check-bulk",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "entitlements",
-                "check-bulk"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "entitlements", "check-bulk"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -1805,15 +1545,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/usage/record",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "entitlements",
-                "usage",
-                "record"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "entitlements", "usage", "record"]
             },
             "body": {
               "mode": "raw",
@@ -1844,15 +1577,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/usage/{{tenant_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "entitlements",
-                "usage",
-                "{{tenant_id}}"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "entitlements", "usage", "{{tenant_id}}"],
               "query": [
                 {
                   "key": "feature_code",
@@ -1880,9 +1606,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/usage/{{tenant_id}}/history",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "entitlements",
@@ -1917,15 +1641,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/entitlements/usage/reset",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "entitlements",
-                "usage",
-                "reset"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "entitlements", "usage", "reset"]
             },
             "body": {
               "mode": "raw",
@@ -1961,14 +1678,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/categories",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "categories"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "categories"]
             },
             "body": {
               "mode": "raw",
@@ -1999,14 +1710,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/categories",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "categories"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "categories"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -2034,15 +1739,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/categories/{{category_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "categories",
-                "{{category_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "categories", "{{category_id}}"]
             }
           }
         },
@@ -2064,15 +1762,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/categories/{{category_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "categories",
-                "{{category_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "categories", "{{category_id}}"]
             },
             "body": {
               "mode": "raw",
@@ -2103,14 +1794,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/products",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "products"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "products"]
             },
             "body": {
               "mode": "raw",
@@ -2141,14 +1826,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/products",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "products"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "products"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -2176,15 +1855,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/products/{{product_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "products",
-                "{{product_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "products", "{{product_id}}"]
             }
           }
         },
@@ -2206,14 +1878,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/variants",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "variants"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "variants"]
             },
             "body": {
               "mode": "raw",
@@ -2244,14 +1910,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/catalog/variants",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "catalog",
-                "variants"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "catalog", "variants"],
               "query": [
                 {
                   "key": "product_id",
@@ -2279,13 +1939,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/store-products",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "store-products"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "store-products"]
             },
             "body": {
               "mode": "raw",
@@ -2316,15 +1971,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/stores/{{store_id}}/products",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "stores",
-                "{{store_id}}",
-                "products"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "stores", "{{store_id}}", "products"]
             }
           }
         },
@@ -2346,14 +1994,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/store-products/{{store_product_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "store-products",
-                "{{store_product_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "store-products", "{{store_product_id}}"]
             },
             "body": {
               "mode": "raw",
@@ -2384,14 +2026,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/store-products/{{store_product_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "store-products",
-                "{{store_product_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "store-products", "{{store_product_id}}"]
             }
           }
         }
@@ -2418,14 +2054,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/chains",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "chains"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "chains"]
             },
             "body": {
               "mode": "raw",
@@ -2456,14 +2086,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/chains",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "chains"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "chains"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -2491,15 +2115,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/chains/steps",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "chains",
-                "steps"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "chains", "steps"]
             },
             "body": {
               "mode": "raw",
@@ -2530,16 +2147,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/chains/{{chain_id}}/steps",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "chains",
-                "{{chain_id}}",
-                "steps"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "chains", "{{chain_id}}", "steps"]
             }
           }
         },
@@ -2561,14 +2170,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "requests"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "requests"]
             },
             "body": {
               "mode": "raw",
@@ -2599,14 +2202,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "requests"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "requests"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -2640,15 +2237,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests/{{request_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "approvals",
-                "requests",
-                "{{request_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "approvals", "requests", "{{request_id}}"]
             }
           }
         },
@@ -2670,9 +2260,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests/{{request_id}}/approvers",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "approvals",
@@ -2701,9 +2289,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests/{{request_id}}/respond",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "approvals",
@@ -2741,9 +2327,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests/{{request_id}}/cancel",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "approvals",
@@ -2781,9 +2365,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/approvals/requests/{{request_id}}/close?closure_reason=Request%20completed",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "approvals",
@@ -2823,14 +2405,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/pricing/pricebooks",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "pricing",
-                "pricebooks"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "pricing", "pricebooks"]
             },
             "body": {
               "mode": "raw",
@@ -2861,14 +2437,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/pricing/pricebooks",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "pricing",
-                "pricebooks"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["v1", "pricing", "pricebooks"],
               "query": [
                 {
                   "key": "store_id",
@@ -2896,9 +2466,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/pricing/pricebooks/{{pricebook_id}}/rules",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "pricing",
@@ -2936,9 +2504,7 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/pricing/pricebooks/{{pricebook_id}}/rules",
-              "host": [
-                "{{base_url}}"
-              ],
+              "host": ["{{base_url}}"],
               "path": [
                 "v1",
                 "pricing",
@@ -2967,14 +2533,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/v1/pricing/calculate",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "v1",
-                "pricing",
-                "calculate"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["v1", "pricing", "calculate"]
             },
             "body": {
               "mode": "raw",
@@ -3010,12 +2570,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders"]
             },
             "body": {
               "mode": "raw",
@@ -3046,12 +2602,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["orders"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3079,13 +2631,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/{{order_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "{{order_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{order_id}}"]
             }
           }
         },
@@ -3107,13 +2654,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/{{order_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "{{order_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{order_id}}"]
             },
             "body": {
               "mode": "raw",
@@ -3144,13 +2686,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/{{order_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "{{order_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{order_id}}"]
             }
           }
         },
@@ -3172,14 +2709,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/{{order_id}}/items",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "{{order_id}}",
-                "items"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{order_id}}", "items"]
             }
           }
         },
@@ -3201,14 +2732,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/status/{{status}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "status",
-                "{{status}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "status", "{{status}}"]
             }
           }
         },
@@ -3230,14 +2755,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/orders/customer/{{customer_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "orders",
-                "customer",
-                "{{customer_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["orders", "customer", "{{customer_id}}"]
             }
           }
         }
@@ -3264,14 +2783,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/intent",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "intent"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "intent"]
             },
             "body": {
               "mode": "raw",
@@ -3302,13 +2815,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payment-intents/{{payment_intent_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payment-intents",
-                "{{payment_intent_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["payment-intents", "{{payment_intent_id}}"]
             }
           }
         },
@@ -3330,14 +2838,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/customers",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "customers"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "customers"]
             },
             "body": {
               "mode": "raw",
@@ -3368,14 +2870,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/refund",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "refund"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "refund"]
             },
             "body": {
               "mode": "raw",
@@ -3406,14 +2902,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/adjustment",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "adjustment"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "adjustment"]
             },
             "body": {
               "mode": "raw",
@@ -3444,12 +2934,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/trade-accounts",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "trade-accounts"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["trade-accounts"]
             },
             "body": {
               "mode": "raw",
@@ -3480,12 +2966,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/trade-accounts",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "trade-accounts"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["trade-accounts"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3513,13 +2995,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/currency/convert",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "currency",
-                "convert"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["currency", "convert"]
             },
             "body": {
               "mode": "raw",
@@ -3550,14 +3027,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/transactions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "transactions"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "transactions"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3585,14 +3056,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/payments/v2/reports",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "payments",
-                "v2",
-                "reports"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["payments", "v2", "reports"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3633,14 +3098,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/billing/v2/invoices",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "billing",
-                "v2",
-                "invoices"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["billing", "v2", "invoices"]
             },
             "body": {
               "mode": "raw",
@@ -3671,14 +3130,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/billing/v2/invoices",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "billing",
-                "v2",
-                "invoices"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["billing", "v2", "invoices"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3706,14 +3159,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/billing/v2/settlements",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "billing",
-                "v2",
-                "settlements"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["billing", "v2", "settlements"]
             },
             "body": {
               "mode": "raw",
@@ -3744,14 +3191,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/billing/v2/settlements",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "billing",
-                "v2",
-                "settlements"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["billing", "v2", "settlements"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3779,14 +3220,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/billing/v2/disputes",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "billing",
-                "v2",
-                "disputes"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["billing", "v2", "disputes"]
             },
             "body": {
               "mode": "raw",
@@ -3817,12 +3252,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/cost-centres",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "cost-centres"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["cost-centres"]
             },
             "body": {
               "mode": "raw",
@@ -3853,12 +3284,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/cost-centres",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "cost-centres"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["cost-centres"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -3886,12 +3313,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/budgets",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "budgets"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["budgets"]
             },
             "body": {
               "mode": "raw",
@@ -3922,13 +3345,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/budgets/{{budget_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "budgets",
-                "{{budget_id}}"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["budgets", "{{budget_id}}"]
             }
           }
         },
@@ -3950,12 +3368,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/budget-check",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "budget-check"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["budget-check"]
             },
             "body": {
               "mode": "raw",
@@ -3986,12 +3400,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/spend",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "spend"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["spend"]
             },
             "body": {
               "mode": "raw",
@@ -4027,14 +3437,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/entries",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "entries"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "entries"]
             },
             "body": {
               "mode": "raw",
@@ -4065,14 +3469,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/entries",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "entries"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "entries"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -4100,14 +3498,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/balances",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "balances"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "balances"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -4135,14 +3527,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/adjustments",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "adjustments"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "adjustments"]
             },
             "body": {
               "mode": "raw",
@@ -4173,14 +3559,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/reports",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "reports"
-              ],
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "reports"],
               "query": [
                 {
                   "key": "tenant_id",
@@ -4216,15 +3596,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/events/order-completed",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "events",
-                "order-completed"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "events", "order-completed"]
             },
             "body": {
               "mode": "raw",
@@ -4255,15 +3628,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/events/invoice-posted",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "events",
-                "invoice-posted"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "events", "invoice-posted"]
             },
             "body": {
               "mode": "raw",
@@ -4294,15 +3660,8 @@
             ],
             "url": {
               "raw": "{{base_url}}/ledger/v4/events/approval-resolved",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "ledger",
-                "v4",
-                "events",
-                "approval-resolved"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["ledger", "v4", "events", "approval-resolved"]
             },
             "body": {
               "mode": "raw",

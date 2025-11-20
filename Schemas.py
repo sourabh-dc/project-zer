@@ -816,3 +816,90 @@ class LedgerReportRequest(BaseModel):
     account: Optional[str] = None
     cost_centre_id: Optional[str] = None
     currency: Optional[str] = None
+
+
+# Instant Budget Schemas
+class InstantBudgetRequestCreate(BaseModel):
+    """Create instant budget request"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    amount_minor: int = Field(..., gt=0, description="Requested amount in minor units")
+    reason: Optional[str] = Field(default="Customer waiting", max_length=500, description="Reason for request")
+    store_id: Optional[str] = Field(None, description="Store ID (optional)")
+
+class InstantBudgetApproveRequest(BaseModel):
+    """Approve instant budget request"""
+    approve: bool = Field(default=True, description="Whether to approve")
+    partial_amount_minor: Optional[int] = Field(None, ge=0, description="Partial approval amount (optional)")
+
+class InstantBudgetResponse(BaseModel):
+    """Instant budget request response"""
+    request_id: str
+    status: str
+    expires_at: str
+    approved_amount_minor: Optional[int] = None
+    remaining_amount_minor: Optional[int] = None
+    message: Optional[str] = None
+
+class ApproverLimitRequest(BaseModel):
+    """Create/update approver limit request"""
+    user_id: str = Field(..., description="Manager user ID")
+    cost_centre_id: Optional[str] = Field(None, description="Cost centre ID (null for global limit)")
+    daily_limit_minor: int = Field(default=5000000, ge=0, description="Daily limit in minor units")
+    monthly_limit_minor: int = Field(default=50000000, ge=0, description="Monthly limit in minor units")
+    currency_code: str = Field(default="INR", max_length=3)
+
+class ApproverLimitResponse(BaseModel):
+    """Approver limit response"""
+    id: str
+    user_id: str
+    cost_centre_id: Optional[str]
+    daily_limit_minor: int
+    monthly_limit_minor: int
+    daily_spent_minor: int
+    monthly_spent_minor: int
+    daily_remaining_minor: int
+    monthly_remaining_minor: int
+    currency_code: str
+
+# Instant Budget Schemas
+class InstantBudgetRequestCreate(BaseModel):
+    """Create instant budget request"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    amount_minor: int = Field(..., gt=0, description="Requested amount in minor units")
+    reason: Optional[str] = Field(default="Customer waiting", max_length=500, description="Reason for request")
+    store_id: Optional[str] = Field(None, description="Store ID (optional)")
+
+class InstantBudgetApproveRequest(BaseModel):
+    """Approve instant budget request"""
+    approve: bool = Field(default=True, description="Whether to approve")
+    partial_amount_minor: Optional[int] = Field(None, ge=0, description="Partial approval amount (optional)")
+
+class InstantBudgetResponse(BaseModel):
+    """Instant budget request response"""
+    request_id: str
+    status: str
+    expires_at: str
+    approved_amount_minor: Optional[int] = None
+    remaining_amount_minor: Optional[int] = None
+    message: Optional[str] = None
+
+class ApproverLimitRequest(BaseModel):
+    """Create/update approver limit request"""
+    user_id: str = Field(..., description="Manager user ID")
+    cost_centre_id: Optional[str] = Field(None, description="Cost centre ID (null for global limit)")
+    daily_limit_minor: int = Field(default=5000000, ge=0, description="Daily limit in minor units")
+    monthly_limit_minor: int = Field(default=50000000, ge=0, description="Monthly limit in minor units")
+    currency_code: str = Field(default="INR", max_length=3)
+
+class ApproverLimitResponse(BaseModel):
+    """Approver limit response"""
+    id: str
+    user_id: str
+    cost_centre_id: Optional[str]
+    daily_limit_minor: int
+    monthly_limit_minor: int
+    daily_spent_minor: int
+    monthly_spent_minor: int
+    daily_remaining_minor: int
+    monthly_remaining_minor: int
+    currency_code: str

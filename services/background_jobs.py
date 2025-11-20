@@ -1,114 +1,151 @@
-# ==================================================================================
-# BACKGROUND JOBS FOR ESCALATION AND REMINDERS
-# ==================================================================================
+# services/background_jobs.py
 import asyncio
-from datetime import datetime, timezone, timedelta
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
-from Models import ApprovalRequest, ApprovalRequestApprover, ApprovalChainStep
+from datetime import datetime, timezone, date, timedelta
+from sqlalchemy import update
 from core.db_config import SessionLocal
+from Models import ApprovalRequest, ApprovalRequestApprover, ApprovalChainStep, InstantBudgetRequest, ApproverLimit
 from utils.logger import logger
 
 async def check_escalations():
-    """Check and send escalations for pending approvals"""
+    """Check for approval requests that need escalation"""
     db = SessionLocal()
     try:
-        # Find approvers where escalation is due
         now = datetime.now(timezone.utc)
-        
-        # Get all pending approvers with escalation configured
-        # First get all pending approvers
-        pending_approvers = db.query(ApprovalRequestApprover).join(
-            ApprovalRequest, ApprovalRequestApprover.request_id == ApprovalRequest.request_id
-        ).filter(
-            ApprovalRequestApprover.status == "pending",
-            ApprovalRequestApprover.escalation_sent == False,
-            ApprovalRequest.request_status == "pending"
+        steps = db.query(ApprovalChainStep).filter(
+            ApprovalChainStep.escalation_after_hours.isnot(None)
         ).all()
         
-        for approver in pending_approvers:
-            # Get the approval request
-            approval_request = db.query(ApprovalRequest).filter(
-                ApprovalRequest.request_id == approver.request_id
-            ).first()
+        for step in steps:
+            escalation_time = now - timedelta(hours=step.escalation_after_hours)
+            pending_approvers = db.query(ApprovalRequestApprover).filter(
+                ApprovalRequestApprover.step_number == step.step_number,
+                ApprovalRequestApprover.status == "pending",
+                ApprovalRequestApprover.created_at < escalation_time,
+                ApprovalRequestApprover.escalation_sent == False
+            ).all()
             
-            if not approval_request:
-                continue
-            
-            # Get the step to check escalation time
-            step = db.query(ApprovalChainStep).filter(
-                ApprovalChainStep.approval_chain_id == approval_request.chain_id,
-                ApprovalChainStep.step_number == approver.step_number
-            ).first()
-            
-            if step and step.escalation_after_hours:
-                # Calculate when escalation should be sent
-                escalation_time = approver.created_at + timedelta(hours=step.escalation_after_hours)
-                
-                if now >= escalation_time:
-                    # Send escalation (implement notification logic)
-                    await send_escalation_notification(approver, step)
-                    
-                    # Mark escalation as sent
-                    approver.escalation_sent = True
-                    db.commit()
-                    
-                    logger.info(f"📧 Escalation sent for approval request {approver.request_id}, step {approver.step_number}")
+            for approver in pending_approvers:
+                approver.escalation_sent = True
+                logger.info(f"⚠️ Escalation sent for approval request {approver.request_id}, step {step.step_number}")
         
+        db.commit()
     except Exception as e:
-        logger.error(f"❌ Escalation check failed: {e}", exc_info=True)
         db.rollback()
+        logger.error(f"❌ Escalation check failed: {e}")
     finally:
         db.close()
 
-async def send_reminders():
-    """Send reminders for pending approvals"""
+async def check_reminders():
+    """Check for approval requests that need reminders"""
     db = SessionLocal()
     try:
-        # Find pending approvals older than 24 hours
-        reminder_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+        now = datetime.now(timezone.utc)
+        reminder_time = now - timedelta(hours=24)  # Send reminder after 24 hours
         
-        pending_approvers = db.query(ApprovalRequestApprover).join(
-            ApprovalRequest, ApprovalRequestApprover.request_id == ApprovalRequest.request_id
-        ).filter(
+        pending_approvers = db.query(ApprovalRequestApprover).filter(
             ApprovalRequestApprover.status == "pending",
-            ApprovalRequest.request_status == "pending",
-            ApprovalRequestApprover.created_at < reminder_threshold
+            ApprovalRequestApprover.created_at < reminder_time,
+            ApprovalRequestApprover.reminder_sent == False
         ).all()
         
         for approver in pending_approvers:
-            # Send reminder (implement notification logic)
-            await send_reminder_notification(approver)
-            
-            logger.info(f"📬 Reminder sent for approval request {approver.request_id}")
+            approver.reminder_sent = True
+            logger.info(f"📧 Reminder sent for approval request {approver.request_id}")
         
+        db.commit()
     except Exception as e:
-        logger.error(f"❌ Reminder check failed: {e}", exc_info=True)
         db.rollback()
+        logger.error(f"❌ Reminder check failed: {e}")
     finally:
         db.close()
 
-async def send_escalation_notification(approver, step):
-    """Send escalation notification (implement email/notification logic)"""
-    # TODO: Implement notification sending (email, SMS, etc.)
-    # For now, just log
-    logger.info(f"📧 ESCALATION: Request {approver.request_id} needs attention at step {step.step_number}")
+async def expire_instant_budget_requests():
+    """Mark expired instant budget requests as expired"""
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        result = db.execute(
+            update(InstantBudgetRequest)
+            .where(
+                InstantBudgetRequest.status == "pending",
+                InstantBudgetRequest.expires_at < now
+            )
+            .values(status="expired")
+        )
+        db.commit()
+        if result.rowcount > 0:
+            logger.info(f"✅ Expired {result.rowcount} instant budget requests")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error expiring instant budget requests: {e}")
+    finally:
+        db.close()
 
-async def send_reminder_notification(approver):
-    """Send reminder notification (implement email/notification logic)"""
-    # TODO: Implement notification sending (email, SMS, etc.)
-    # For now, just log
-    logger.info(f"📬 REMINDER: Request {approver.request_id} is pending approval")
+async def reset_approver_limits():
+    """Reset daily and monthly approver limits"""
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        current_month_start = date(now.year, now.month, 1)
+        
+        # Reset daily limits
+        daily_result = db.execute(
+            update(ApproverLimit)
+            .where(ApproverLimit.last_reset_daily < today)
+            .values(daily_spent_minor=0, last_reset_daily=today)
+        )
+        
+        # Reset monthly limits
+        monthly_result = db.execute(
+            update(ApproverLimit)
+            .where(ApproverLimit.last_reset_monthly < current_month_start)
+            .values(monthly_spent_minor=0, last_reset_monthly=current_month_start)
+        )
+        
+        db.commit()
+        
+        if daily_result.rowcount > 0:
+            logger.info(f"✅ Reset daily limits for {daily_result.rowcount} approvers")
+        if monthly_result.rowcount > 0:
+            logger.info(f"✅ Reset monthly limits for {monthly_result.rowcount} approvers")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error resetting approver limits: {e}")
+    finally:
+        db.close()
 
-async def run_background_jobs():
-    """Run all background jobs periodically"""
+async def instant_worker():
+    """Background worker for instant budget jobs"""
+    logger.info("🚀 Starting instant budget background worker...")
     while True:
         try:
-            await check_escalations()
-            await send_reminders()
-            # Run every 15 minutes
-            await asyncio.sleep(900)
+            await expire_instant_budget_requests()
+            await reset_approver_limits()
         except Exception as e:
-            logger.error(f"❌ Background job error: {e}", exc_info=True)
-            await asyncio.sleep(60)  # Wait 1 minute before retry
+            logger.error(f"❌ Instant worker error: {e}")
+        
+        # Run every 10 seconds
+        await asyncio.sleep(10)
 
+async def run_background_jobs():
+    """Run all background jobs"""
+    logger.info("🚀 Starting all background jobs...")
+    
+    # Start approval escalations and reminders (runs every hour)
+    async def approval_jobs_loop():
+        while True:
+            try:
+                await check_escalations()
+                await check_reminders()
+            except Exception as e:
+                logger.error(f"❌ Approval background job error: {e}")
+            await asyncio.sleep(3600)  # Run every hour
+    
+    # Start instant budget worker (runs every 10 seconds)
+    asyncio.create_task(instant_worker())
+    
+    # Start approval jobs loop
+    asyncio.create_task(approval_jobs_loop())
+    
+    logger.info("✅ All background jobs started")

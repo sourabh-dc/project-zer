@@ -22,6 +22,7 @@ from services.orders_router import app as orders_router
 from services.ledger_routes import app as ledger_router
 from services.billing_routes import app as billing_router
 from services.auth_routes import app as auth_router
+from services.instant_budget import router as instant_budget_router
 # FastAPI app
 app = FastAPI(
     title="ZeroQue All in One API",
@@ -49,7 +50,7 @@ app.include_router(orders_router, tags=["orders"])
 app.include_router(ledger_router, tags=["ledger"])
 app.include_router(billing_router, tags=["billing"])
 app.include_router(auth_router, tags=["authentication"])
-
+app.include_router(instant_budget_router, tags=["instant-budget"])  # Include with explicit tags
 @app.on_event("startup")
 async def startup_event():
     """Start background jobs on application startup"""
