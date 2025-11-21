@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
-    Date, Numeric, UniqueConstraint
+    Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
@@ -16,6 +16,7 @@ class Tenant(Base):
     """Tenant organization model"""
     __tablename__ = "tenants"
     tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
     name = Column(String(255), nullable=False, unique=True)
     tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
     active = Column(Boolean, default=True, index=True)
@@ -25,7 +26,7 @@ class Tenant(Base):
 
 
 class Site(Base):
-    """Site model - physical locations under a tenant"""
+    """Site model - physical locations that can be managed by multiple tenants"""
     __tablename__ = "sites"
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -34,8 +35,8 @@ class Site(Base):
     geo = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
+    
+    tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
 class Store(Base):
     """Store model - retail locations under a site"""
     __tablename__ = "stores"
@@ -61,6 +62,9 @@ class User(Base):
     api_key = Column(String(255), unique=True, index=True)
     api_key_created_at = Column(DateTime(timezone=True))
     api_key_expires_at = Column(DateTime(timezone=True))
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    account_locked_until = Column(DateTime(timezone=True), nullable=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -69,9 +73,15 @@ class Role(Base):
     """Role model - permission templates"""
     __tablename__ = "roles"
     role_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code = Column(String(100), unique=True, nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=True, index=True)
+    code = Column(String(100), nullable=False, index=True)  # Removed unique constraint, now tenant-scoped
     description = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Add unique constraint on (tenant_id, code) combination
+    __table_args__ = (
+        Index('ix_roles_tenant_code', 'tenant_id', 'code', unique=True),
+    )
 
 
 class UserRole(Base):
@@ -153,6 +163,7 @@ class Vendor(Base):
     __tablename__ = "vendors"
     vendor_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     contact_email = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
@@ -168,8 +179,8 @@ class CostCentre(Base):
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(200), nullable=False)
     manager_user_id = Column(SQLUUID(as_uuid=True), nullable=True)  # Optional manager
-    budget_minor = Column(Integer, default=0)  # Amount in minor units (pence/cents)
-    spent_minor = Column(Integer, default=0)
+    budget_minor = Column(BigInteger, default=0)  # Amount in minor units (pence/cents)
+    spent_minor = Column(BigInteger, default=0)
     currency_code = Column(String(3), default="GBP")
     status = Column(String(50), default="active", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -178,29 +189,35 @@ class CostCentre(Base):
 class UserCostCentre(Base):
     __tablename__ = "user_cost_centres"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
     allocated_budget_minor = Column(BigInteger, nullable=False, default=0)
     spent_minor = Column(BigInteger, nullable=False, default=0)
     currency_code = Column(String(3), default="GBP")
-
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     user = relationship("User", back_populates="cost_centres")
     cost_centre = relationship("CostCentre", back_populates="members")
 
 class SubscriptionPlan(Base):
-    """Subscription plan model - defines pricing tiers"""
+    """Subscription plan - TODO: migrate to UUID for consistency"""
     __tablename__ = "subscription_plans"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Keep INTEGER for now, needs migration to UUID
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
-    price_yearly_minor = Column(Integer, nullable=False)  # Price in minor units (pence/cents)
+    price_yearly_minor = Column(Integer, nullable=False)
+    price_monthly_minor = Column(Integer, nullable=True)  # NEW: monthly option
     currency = Column(String(3), default="GBP", nullable=False)
+    
+    # NEW: Billing cycle options
+    billing_cycle = Column(String(20), default="monthly")  # monthly, yearly
+    
     active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
 
 class Feature(Base):
     """Feature model - defines available system features"""
@@ -210,19 +227,28 @@ class Feature(Base):
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
     category = Column(String(50), nullable=True)
+    usage_type = Column(String(50), nullable=False, default="count")  # count, boolean, storage, api_calls
+    unit = Column(String(50), nullable=True)  # reports, users, GB, requests
+    reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
+    
     active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class PlanFeature(Base):
-    """Plan-Feature mapping - links features to plans with limits"""
+    """Plan-Feature mapping - with validated limits"""
     __tablename__ = "plan_features"
+    
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), nullable=False, index=True)
     feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
-    limits = Column(JSONB, nullable=True)  # e.g., {"rate_limit": 1000, "tier": "basic"}
+    
+    # ENHANCED LIMITS with JSON schema validation
+    limits = Column(JSONB, nullable=True)  # { "max_value": 50, "warn_at": 40 }
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class TenantSubscription(Base):
@@ -238,6 +264,7 @@ class TenantSubscription(Base):
     current_period_end = Column(DateTime(timezone=True), nullable=True)
     trial_end = Column(DateTime(timezone=True), nullable=True)
     canceled_at = Column(DateTime(timezone=True), nullable=True)
+    cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -270,6 +297,54 @@ class SubscriptionUsage(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+class StoreProduct(Base):
+    """Store-specific product selection and pricing"""
+    __tablename__ = "store_products"
+    
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Store-specific pricing and availability
+    price_minor = Column(Integer, nullable=False)  # Store-specific selling price
+    currency = Column(String(3), default="GBP", nullable=False)
+    is_available = Column(Boolean, default=True, nullable=False, index=True)
+    
+    # Store-level inventory tracking
+    stock_quantity = Column(Integer, default=0, nullable=False)
+    low_stock_threshold = Column(Integer, default=10, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('ix_store_product_unique', 'store_id', 'product_id', unique=True),
+    )
+
+
+class StoreVariant(Base):
+    """Store-specific variant overrides for products"""
+    __tablename__ = "store_variants"
+    
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_product_id = Column(SQLUUID(as_uuid=True), ForeignKey("store_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Optional variant-level overrides
+    price_minor = Column(Integer, nullable=True)  # If null, use StoreProduct price
+    stock_quantity = Column(Integer, nullable=True)  # Track variant stock per store
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('ix_store_variant_unique', 'store_product_id', 'variant_id', unique=True),
+    )
+
+
+
 class Category(Base):
     """Product category model"""
     __tablename__ = "categories"
@@ -289,6 +364,7 @@ class Product(Base):
     __tablename__ = "products"
     product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"), nullable=True, index=True)
     category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
     sku = Column(String(100), nullable=False, index=True)
     name = Column(String(255), nullable=False)
@@ -297,7 +373,7 @@ class Product(Base):
     manufacturer = Column(String(255), nullable=True)
     base_price_minor = Column(Integer, nullable=False)  # Base price in minor units
     currency = Column(String(3), default="GBP", nullable=False)
-    tax_rate = Column(Integer, default=0)  # Tax rate in basis points (e.g., 2000 = 20%)
+    tax_rate = Column(BigInteger, default=0)  # Tax rate in basis points (e.g., 2000 = 20%)
     product_type = Column(String(50), nullable=True, index=True)  # physical, digital, service
     active = Column(Boolean, default=True, nullable=False, index=True)
     product_metadata = Column(JSONB, nullable=True)
@@ -391,9 +467,11 @@ class ApprovalRequest(Base):
     request_type = Column(String(50), nullable=False, index=True)  # budget, order, vendor
     request_data = Column(JSONB, nullable=False)
     requested_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, denied
+    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, denied, closed
     current_step_number = Column(Integer, default=1, nullable=False)
     total_amount_minor = Column(Integer, nullable=True)
+    approved_amount_minor = Column(Integer, nullable=True)  # Final approved amount (may differ from requested)
+    amount_modification_history = Column(JSONB, nullable=True)  # Track amount changes
     currency = Column(String(3), default="GBP", nullable=True)
     due_date = Column(DateTime(timezone=True), nullable=True)
     completed_date = Column(DateTime(timezone=True), nullable=True)
@@ -415,25 +493,30 @@ class ApprovalRequestApprover(Base):
     escalation_sent = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('ix_approval_request_approver_status', 'status'),
+        Index('ix_approval_request_approver_step', 'request_id', 'step_number'),
+    )
 
 #New Code - Sebin
 class PaymentTransaction(Base):
     """Payment transactions table"""
     __tablename__ = "payment_transactions"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), ForeignKey('vendors.vendor_id'), nullable=True)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey('vendors.vendor_id'), nullable=True)
     provider = Column(String(50), nullable=False)
     payment_intent_id = Column(String(255), nullable=True)
     charge_id = Column(String(255), nullable=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency = Column(String(3), nullable=False, default='GBP')  # ForeignKey('currencies.code') removed - table not needed
     status = Column(String(50), nullable=False)
-    order_id = Column(UUID(as_uuid=True), nullable=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
+    order_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
     transaction_metadata = Column(JSONB, nullable=True)
     raw_response = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
@@ -444,8 +527,8 @@ class Customer(Base):
     """Customers table"""
     __tablename__ = "customers"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
     provider = Column(String(50), nullable=False)
     external_customer_id = Column(String(255), nullable=False)
     email = Column(String(255), nullable=True)
@@ -460,9 +543,9 @@ class PaymentRefund(Base):
     """Payment refunds table"""
     __tablename__ = "payment_refunds"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    payment_transaction_id = Column(SQLUUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
     refund_id = Column(String(255), nullable=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency = Column(String(3), nullable=False, default='GBP')
@@ -477,9 +560,9 @@ class PaymentAdjustment(Base):
     """Payment adjustments table"""
     __tablename__ = "payment_adjustments"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    payment_transaction_id = Column(UUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    payment_transaction_id = Column(SQLUUID(as_uuid=True), ForeignKey('payment_transactions.id'), nullable=False)
     adjustment_type = Column(String(50), nullable=False)
     adjustment_amount_minor = Column(BigInteger, nullable=False)
     adjustment_reason = Column(Text, nullable=True)
@@ -493,8 +576,8 @@ class TradeAccount(Base):
     """Trade account for business customers"""
     __tablename__ = "trade_accounts"
 
-    trade_account_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    trade_account_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
     account_number = Column(String(100), nullable=False, unique=True)
     company_name = Column(String(200), nullable=False)
     contact_email = Column(String(255), nullable=False)
@@ -511,10 +594,10 @@ class PaymentIntent(Base):
     """Payment intent for transaction processing"""
     __tablename__ = "payment_intents"
 
-    payment_intent_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    order_id = Column(UUID(as_uuid=True), nullable=True)
-    trade_account_id = Column(UUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
+    payment_intent_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    order_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    trade_account_id = Column(SQLUUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency = Column(String(3), nullable=False, default='GBP')
     status = Column(String(20), nullable=False, default='pending')
@@ -533,7 +616,7 @@ class CurrencyRate(Base):
     """Currency exchange rates"""
     __tablename__ = "currency_rates"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     base_currency = Column(String(3), nullable=False)
     target_currency = Column(String(3), nullable=False)
     rate = Column(String(50), nullable=False)
@@ -548,8 +631,8 @@ class PaymentWebhook(Base):
     """Payment webhook events"""
     __tablename__ = "payment_webhooks"
 
-    webhook_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
+    webhook_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
     provider = Column(String(50), nullable=False)
     event_type = Column(String(100), nullable=False)
     event_data = Column(JSONB, nullable=False)
@@ -561,11 +644,11 @@ class Order(Base):
     """Order entity"""
     __tablename__ = "orders"
 
-    order_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    customer_id = Column(UUID(as_uuid=True), nullable=False)
+    order_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    customer_id = Column(SQLUUID(as_uuid=True), nullable=False)
     order_number = Column(String(50), nullable=False, unique=True)
     order_status = Column(String(20), nullable=False, default='pending')
     order_type = Column(String(20), nullable=False, default='purchase')
@@ -573,7 +656,7 @@ class Order(Base):
     currency = Column(String(3), nullable=False, default='GBP')
     payment_status = Column(String(20), nullable=False, default='pending')
     fulfillment_status = Column(String(20), nullable=False, default='pending')
-    approval_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
+    approval_request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
     shipping_address = Column(JSON, nullable=True)
     billing_address = Column(JSON, nullable=True)
     order_metadata = Column(JSON, nullable=True)
@@ -585,10 +668,10 @@ class OrderItem(Base):
     """Order item entity"""
     __tablename__ = "order_items"
 
-    item_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey('orders.order_id'), nullable=False)
-    product_id = Column(UUID(as_uuid=True), nullable=False)
-    variant_id = Column(UUID(as_uuid=True), nullable=True)
+    item_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(SQLUUID(as_uuid=True), ForeignKey('orders.order_id'), nullable=False)
+    product_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    variant_id = Column(SQLUUID(as_uuid=True), nullable=True)
     quantity = Column(Integer, nullable=False)
     unit_price_minor = Column(Integer, nullable=False)
     total_price_minor = Column(Integer, nullable=False)
@@ -599,9 +682,9 @@ class VendorSettlement(Base):
     """Vendor Settlement: Main settlement record for vendor payouts"""
     __tablename__ = "vendor_settlements"
 
-    settlement_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    vendor_id = Column(UUID(as_uuid=True), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    settlement_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     settlement_period_start = Column(Date, nullable=False)
     settlement_period_end = Column(Date, nullable=False)
     total_sales_minor = Column(BigInteger, nullable=False, default=0)
@@ -624,11 +707,11 @@ class VendorSettlementItem(Base):
     """Vendor Settlement Item: Individual items within a settlement"""
     __tablename__ = "vendor_settlement_items"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    batch_id = Column(UUID(as_uuid=True), nullable=False)
-    settlement_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    settlement_id = Column(SQLUUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
+    vendor_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     payout_amount_minor = Column(BigInteger, nullable=False)
     commission_amount_minor = Column(BigInteger, nullable=False)
     fee_amount_minor = Column(BigInteger, nullable=False, default=0)
@@ -646,10 +729,10 @@ class VendorSettlementAdjustment(Base):
     """Vendor Settlement Adjustment: Adjustments to settlement amounts"""
     __tablename__ = "vendor_settlement_adjustments"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    settlement_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
-    settlement_item_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    settlement_id = Column(SQLUUID(as_uuid=True), ForeignKey('vendor_settlements.settlement_id'), nullable=False)
+    settlement_item_id = Column(SQLUUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     adjustment_amount_minor = Column(BigInteger, nullable=False)
     adjustment_reason = Column(String(255), nullable=False)
     adjustment_type = Column(String(20), nullable=False)
@@ -667,9 +750,9 @@ class VendorDispute(Base):
     """Vendor Dispute: Disputes related to settlements or items"""
     __tablename__ = "vendor_disputes"
 
-    dispute_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    settlement_item_id = Column(UUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    dispute_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    settlement_item_id = Column(SQLUUID(as_uuid=True), ForeignKey('vendor_settlement_items.id'), nullable=False)
+    vendor_id = Column(SQLUUID(as_uuid=True), nullable=False)
     dispute_type = Column(String(50), nullable=False)
     dispute_reason = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, default='open')
@@ -680,7 +763,7 @@ class VendorDispute(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
 
     settlement_item = relationship("VendorSettlementItem", back_populates="disputes")
 
@@ -689,8 +772,8 @@ class VendorSettlementBatch(Base):
     """Vendor Settlement Batch: Batch processing for settlements"""
     __tablename__ = "vendor_settlement_batches"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     batch_number = Column(String(50), nullable=False)
     period_start = Column(Date, nullable=False)
     period_end = Column(Date, nullable=False)
@@ -705,9 +788,9 @@ class Budget(Base):
     """Budget for cost centres - Phase 4"""
     __tablename__ = "budgets"
 
-    budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey('cost_centres.cost_centre_id'), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    budget_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey('cost_centres.cost_centre_id'), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     budget_year = Column(Integer, nullable=False)
     budget_month = Column(Integer, nullable=False)
     budget_type = Column(String(50), nullable=False)
@@ -716,7 +799,7 @@ class Budget(Base):
     available_amount_minor = Column(BigInteger, nullable=False, default=0)
     currency = Column(String(3), nullable=False, default='GBP')
     status = Column(String(20), nullable=False, default='active')
-    approval_workflow_id = Column(UUID(as_uuid=True), nullable=True)
+    approval_workflow_id = Column(SQLUUID(as_uuid=True), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -726,17 +809,17 @@ class BudgetTransaction(Base):
     """Budget transactions for spend tracking - Phase 4"""
     __tablename__ = "budget_transactions"
 
-    transaction_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    budget_id = Column(UUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    transaction_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    budget_id = Column(SQLUUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     amount_minor = Column(BigInteger, nullable=False)
     transaction_type = Column(String(50), nullable=False)
     description = Column(Text, nullable=False)
     reference_id = Column(String(100), nullable=True)
     reference_type = Column(String(50), nullable=True)
-    approval_id = Column(UUID(as_uuid=True), nullable=True)
+    approval_id = Column(SQLUUID(as_uuid=True), nullable=True)
     is_approved = Column(Boolean, nullable=False, default=False)
-    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_by = Column(SQLUUID(as_uuid=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -744,14 +827,14 @@ class BudgetAlert(Base):
     """Budget alerts for overspend notifications - Phase 4"""
     __tablename__ = "budget_alerts"
 
-    alert_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    budget_id = Column(UUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    alert_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    budget_id = Column(SQLUUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     alert_type = Column(String(50), nullable=False)
     threshold_percentage = Column(Numeric(5, 2), nullable=False)
     message = Column(Text, nullable=False)
     is_acknowledged = Column(Boolean, nullable=False, default=False)
-    acknowledged_by = Column(UUID(as_uuid=True), nullable=True)
+    acknowledged_by = Column(SQLUUID(as_uuid=True), nullable=True)
     acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -801,8 +884,8 @@ class BillingOutboxEvent(Base):
     """Billing Outbox Event: For reliable event publishing"""
     __tablename__ = "billing_outbox_events"
 
-    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    aggregate_id = Column(UUID(as_uuid=True), nullable=False)
+    event_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    aggregate_id = Column(SQLUUID(as_uuid=True), nullable=False)
     event_type = Column(String(100), nullable=False)
     event_data = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, default='pending')
@@ -814,16 +897,16 @@ class LedgerEntryNew(Base):
     """Enhanced ledger entry with v4.1 features"""
     __tablename__ = "ledger_entries_new"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    vendor_id = Column(UUID(as_uuid=True), nullable=True)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    vendor_id = Column(SQLUUID(as_uuid=True), nullable=True)
     account = Column(String(100), nullable=False)
     entry_type = Column(String(20), nullable=False)
     amount_minor = Column(BigInteger, nullable=False)
     currency = Column(String(3), nullable=False)
-    cost_centre_id = Column(UUID(as_uuid=True), nullable=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
     reference_type = Column(String(50), nullable=True)
     reference_id = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
@@ -836,8 +919,8 @@ class AccountBalanceNew(Base):
     """Precomputed account balances for performance"""
     __tablename__ = "account_balances_new"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
     account = Column(String(100), nullable=False)
     currency = Column(String(3), nullable=False)
     balance_minor = Column(BigInteger, nullable=False, server_default='0')
@@ -845,14 +928,50 @@ class AccountBalanceNew(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class OutboxEvent(Base):
+    """Outbox pattern for reliable event publishing"""
+    __tablename__ = "outbox_events"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    event_type = Column(String(100), nullable=False)
+    event_data = Column(JSONB, nullable=False)
+    status = Column(String(20), nullable=False, default='pending')
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=3)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AuditLog(Base):
+    """Audit trail for all operations"""
+    __tablename__ = "audit_logs"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=False)
+    resource_id = Column(String(255), nullable=True)
+    details = Column(JSONB, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    session_id = Column(String(100), nullable=True)
+    correlation_id = Column(String(100), nullable=True)
+    severity = Column(String(20), nullable=False, default="info")
+    category = Column(String(50), nullable=False, default="system")
+    retention_until = Column(DateTime(timezone=True), nullable=True)
+
+
 class IdempotencyRecord(Base):
     """Idempotency records to prevent duplicate operations"""
     __tablename__ = "idempotency_records"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(UUID(as_uuid=True), nullable=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
     request_hash = Column(String(255), nullable=False)
     response_data = Column(JSONB, nullable=False)
     status_code = Column(Integer, nullable=False)
@@ -864,128 +983,82 @@ class SpendingEvent(Base):
     """Spending events for budget tracking and audit"""
     __tablename__ = "spending_events"
     
-    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_type = Column(String(50), nullable=False)  # budget_allocated, budget_spent, order_created
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=True, index=True)
-    approval_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
+    order_id = Column(SQLUUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=True, index=True)
+    approval_request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
     amount_minor = Column(BigInteger, nullable=False)
     currency_code = Column(String(3), default="GBP")
+    event_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class ZeroqueRail(Base):
-    """CV provider configuration"""
-    __tablename__ = "zeroque_rails"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    type = Column(String(50), nullable=False)
-    name = Column(String(100), nullable=False)
-    config = Column(JSONB, nullable=False)
-    active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    __table_args__ = (
-        UniqueConstraint('tenant_id', 'type', 'name', name='uq_zeroque_rails_tenant_type_name'),
-    )
-
-
-class ProviderMapping(Base):
-    """External provider ID mappings"""
-    __tablename__ = "provider_mappings"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    provider = Column(String(50), nullable=False)
-    entity_type = Column(String(50), nullable=False)
-    local_id = Column(String(255), nullable=False)
-    external_id = Column(String(255), nullable=False)
-    mapping_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    __table_args__ = (
-        UniqueConstraint('provider', 'entity_type', 'local_id', name='uq_provider_mappings_provider_entity_local'),
-        UniqueConstraint('provider', 'entity_type', 'external_id',
-                         name='uq_provider_mappings_provider_entity_external'),
-    )
-
-
-class CvUnknownItemReview(Base):
-    """Unknown item reviews for reconciliation"""
-    __tablename__ = "cv_unknown_item_reviews"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False)
-    site_id = Column(UUID(as_uuid=True), nullable=True)
-    store_id = Column(UUID(as_uuid=True), nullable=True)
-    provider = Column(String(50), nullable=False)
-    external_sku = Column(String(255), nullable=False)
-    name = Column(String(255), nullable=False)
-    qty = Column(Integer, nullable=False)
-    price_minor = Column(Integer, nullable=False)
-    payload_json = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    mapped_sku = Column(String(255), nullable=True)
-    notes = Column(Text, nullable=True)
-    resolved_by = Column(String(255), nullable=True)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-class Device(Base):
-    """Device registry for hardware monitoring"""
-    __tablename__ = "devices"
-
-    device_id = Column(String(100), primary_key=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    site_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    device_type = Column(String(50), nullable=False)
-    device_name = Column(String(255), nullable=False)
-    zone = Column(String(100), nullable=True)
-    status = Column(String(20), nullable=False, default='online')
-    health_score = Column(Integer, nullable=True)
-    last_heartbeat = Column(DateTime(timezone=True), nullable=True)
-    device_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class DeviceStatusLog(Base):
-    """Device status change logs"""
-    __tablename__ = "device_status_logs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    device_id = Column(String(100), nullable=False, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    status = Column(String(20), nullable=False)
-    health_score = Column(Integer, nullable=True)
-    details = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class DeviceAlert(Base):
-    """Device alerts for offline/error states"""
-    __tablename__ = "device_alerts"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    device_id = Column(String(100), nullable=False, index=True)
-    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    alert_type = Column(String(50), nullable=False)
-    severity = Column(String(20), nullable=False, default='warning')
-    message = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='open')
-    acknowledged_by = Column(String(255), nullable=True)
-    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # Add relationships
 User.cost_centres = relationship("UserCostCentre", back_populates="user")
 CostCentre.members = relationship("UserCostCentre", back_populates="cost_centre")
+
+class SiteTenant(Base):
+    """Junction table for many-to-many relationship between sites and tenants"""
+    __tablename__ = "site_tenants"
+    
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Add unique constraint to prevent duplicates
+    __table_args__ = (
+        Index('ix_site_tenant_unique', 'site_id', 'tenant_id', unique=True),
+    )
+
+class ApproverLimit(Base):
+    __tablename__ = "approver_limits"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=True, index=True)
+    currency_code = Column(String(3), default="INR")
+    daily_limit_minor = Column(BigInteger, default=5000000)      # ₹50,000
+    monthly_limit_minor = Column(BigInteger, default=50000000)  # ₹5,00,000
+    daily_spent_minor = Column(BigInteger, default=0)
+    monthly_spent_minor = Column(BigInteger, default=0)
+    last_reset_daily = Column(Date, server_default=func.current_date())
+    last_reset_monthly = Column(Date, server_default=func.date_trunc('month', func.current_date()))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    
+    # Index for efficient queries
+    __table_args__ = (
+        Index('ix_approver_limit_user_cc', 'user_id', 'cost_centre_id'),
+        Index('ix_approver_limit_tenant', 'tenant_id'),
+    )
+
+class InstantBudgetRequest(Base):
+    __tablename__ = "instant_budget_requests"
+    request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True, index=True)
+    requested_amount_minor = Column(BigInteger, nullable=False)
+    approved_amount_minor = Column(BigInteger, default=0)
+    remaining_amount_minor = Column(BigInteger, nullable=False)  # for split
+    status = Column(String(20), default="pending", index=True)  # pending, approved, rejected, expired, partial
+    reason = Column(Text, nullable=True)
+    requested_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    
+    # Indexes for efficient queries
+    __table_args__ = (
+        Index('ix_instant_budget_status_expires', 'status', 'expires_at'),
+    )
 
 # Create tables
 try:
@@ -993,3 +1066,4 @@ try:
     logger.info("✅ Database tables initialized")
 except Exception as e:
     logger.error(f"❌ Table initialization failed: {e}")
+

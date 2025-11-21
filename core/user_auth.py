@@ -7,10 +7,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, List, Tuple, Any
 
 import bcrypt
-import httpx
 import jwt
 from fastapi import HTTPException, Depends, Header
-from jose import JWTError
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from starlette import status
@@ -32,6 +30,7 @@ DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("cost_centres.manage", "Manage cost centres for a tenant"),
     ("catalog.categories.manage", "Manage catalog categories"),
     ("catalog.products.manage", "Create and update catalog products"),
+    ("catalog.products.vendor.create", "Vendors can create their own products"),
     ("catalog.products.view", "View catalog products"),
     ("catalog.variants.manage", "Manage catalog variants"),
     ("subscriptions.plans.manage", "Manage subscription plans"),
@@ -45,6 +44,9 @@ DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("approvals.requests.respond", "Respond to approval requests"),
     ("budget.approve", "Approve budget requests"),
     ("costcentre.manage", "Manage cost centre budgets"),
+    ("budgets.manage", "Manage user budgets"),
+    ("budgets.instant.request", "Request instant budget top-ups"),
+    ("budgets.instant.approve", "Approve instant budget requests"),
     ("admin.permissions.manage", "Manage permission catalog"),
     ("admin.roles.manage", "Manage roles and assignments"),
     ("admin.scopes.manage", "Manage role scopes"),

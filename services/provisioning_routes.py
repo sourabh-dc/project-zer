@@ -2,26 +2,26 @@ import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
-from sqlalchemy import  func
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from sqlalchemy import text, func, Index
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
-    UserCostCentre, SpendingEvent
+    UserCostCentre, SpendingEvent, SiteTenant, UserOrgAssignment, OrgUnit
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest
-from core.aifi_services import cv_create_customer
-from core.config import SETTINGS
-from core.db_config import get_db
-from core.permission_check_helpers import require_permission
+from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
+from core.db_config import SessionLocal, get_db
+from core.permission_check_helpers import require_permission, check_tenant_access
 from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
-from utils.event_grid import publish_tenant_created_event
 
 
 app = APIRouter()
@@ -67,12 +67,6 @@ async def create_tenant(
         )
 
         logger.info(f"✅ Created tenant: {tenant.tenant_id} ({tenant.name})")
-
-        # Publish tenant.created event via Event Grid (best-effort)
-        try:
-            publish_tenant_created_event(str(tenant.tenant_id))
-        except Exception as eg_err:
-            logger.warning(f"Event Grid publish failed (tenant.created): {eg_err}")
 
         return {
             "tenant_id": str(tenant.tenant_id),
@@ -227,25 +221,38 @@ async def create_site(
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("sites.manage"))
 ):
-    """Create a new site under a tenant"""
+    """Create a new site and associate it with a tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_site", status="start").inc()
 
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
+
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {req.tenant_id}")
 
-        # Create site
+        # Create site-tenant relationship
+        tenant_uuid = uuid.UUID(req.tenant_id)
+        
+        # Create site - database requires tenant_id (NOT NULL)
         site = Site(
             site_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(req.tenant_id),
+            tenant_id=tenant_uuid,
             name=req.name,
             site_type=req.type,
             geo=req.geo
         )
         db.add(site)
+        db.flush()  # Get site_id
+        site_tenant = SiteTenant(
+            id=uuid.uuid4(),
+            site_id=site.site_id,
+            tenant_id=tenant_uuid
+        )
+        db.add(site_tenant)
         db.commit()
         db.refresh(site)
 
@@ -254,32 +261,180 @@ async def create_site(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created site: {site.site_id} ({site.name})")
+        logger.info(f"✅ Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
         return {
             "site_id": str(site.site_id),
-            "tenant_id": str(site.tenant_id),
             "name": site.name,
             "site_type": site.site_type,
             "created_at": site.created_at.isoformat()
         }
-    except ValueError:
-        req_total.labels(operation="create_site", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
-    except HTTPException:
-        req_total.labels(operation="create_site", status="error").inc()
-        raise
-    except IntegrityError:
+    except ValueError as ve:
         db.rollback()
         req_total.labels(operation="create_site", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant reference")
+        logger.error(f"❌ Invalid UUID format: {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid tenant ID format: {req.tenant_id}")
+    except HTTPException:
+        db.rollback()
+        req_total.labels(operation="create_site", status="error").inc()
+        raise
+    except IntegrityError as ie:
+        db.rollback()
+        req_total.labels(operation="create_site", status="error").inc()
+        error_msg = str(ie.orig) if hasattr(ie, 'orig') else str(ie)
+        error_detail = str(ie.detail) if hasattr(ie, 'detail') else ""
+        logger.error(f"❌ Integrity error creating site: {error_msg} | Detail: {error_detail}")
+        logger.error(f"   Tenant ID: {req.tenant_id}")
+        # Check if it's a foreign key violation
+        if "foreign key constraint" in error_msg.lower() or ("foreign key" in error_msg.lower() and "tenant" in error_msg.lower()):
+            raise HTTPException(status_code=404, detail=f"Tenant not found or invalid: {req.tenant_id}. Error: {error_detail}")
+        elif "unique constraint" in error_msg.lower() or "duplicate key" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=f"Site-tenant relationship already exists")
+        else:
+            raise HTTPException(status_code=400, detail=f"Database constraint violation: {error_msg}. Detail: {error_detail}")
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_site", status="error").inc()
-        logger.error(f"❌ Site creation failed: {e}")
+        logger.error(f"❌ Site creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=201)
+async def add_tenant_to_site(
+    site_id: str,
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("sites.manage"))
+):
+    """Allow a site to be managed by an additional tenant"""
+    try:
+        # Verify site exists
+        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+        
+        # Verify tenant exists
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        
+        # Check if association already exists
+        existing = db.query(SiteTenant).filter(
+            SiteTenant.site_id == uuid.UUID(site_id),
+            SiteTenant.tenant_id == uuid.UUID(tenant_id)
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=409, detail="Site is already associated with this tenant")
+        
+        # Create association
+        site_tenant = SiteTenant(
+            id=uuid.uuid4(),
+            site_id=uuid.UUID(site_id),
+            tenant_id=uuid.UUID(tenant_id)
+        )
+        db.add(site_tenant)
+        db.commit()
+        
+        logger.info(f"✅ Added tenant {tenant_id} to site {site_id}")
+        
+        return {
+            "site_id": site_id,
+            "tenant_id": tenant_id,
+            "associated": True
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Add tenant to site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.get("/v1/sites/{site_id}/tenants")
+async def list_site_tenants(
+    site_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("sites.manage"))
+):
+    """List all tenants associated with a site"""
+    try:
+        # Verify site exists and is accessible by user's tenant
+        site_access = db.query(SiteTenant).filter(
+            SiteTenant.site_id == uuid.UUID(site_id),
+            SiteTenant.tenant_id == ctx.tenant_id
+        ).first()
+        
+        if not site_access:
+            raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
+        
+        # Get all tenants for the site
+        tenants = db.query(Tenant).join(
+            SiteTenant, Tenant.tenant_id == SiteTenant.tenant_id
+        ).filter(
+            SiteTenant.site_id == uuid.UUID(site_id)
+        ).all()
+        
+        return {
+            "site_id": site_id,
+            "tenants": [
+                {
+                    "tenant_id": str(t.tenant_id),
+                    "name": t.name,
+                    "type": t.tenant_type,
+                    "created_at": t.created_at.isoformat()
+                }
+                for t in tenants
+            ],
+            "total": len(tenants)
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ List site tenants failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.delete("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=204)
+async def remove_tenant_from_site(
+    site_id: str,
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("sites.manage"))
+):
+    """Remove a tenant from a site"""
+    try:
+        # Find the association
+        site_tenant = db.query(SiteTenant).filter(
+            SiteTenant.site_id == uuid.UUID(site_id),
+            SiteTenant.tenant_id == uuid.UUID(tenant_id)
+        ).first()
+
+        if not site_tenant:
+            raise HTTPException(status_code=404, detail="Site-tenant association not found")
+
+        # Prevent removing the last tenant
+        tenant_count = db.query(SiteTenant).filter(
+            SiteTenant.site_id == uuid.UUID(site_id)
+        ).count()
+        
+        if tenant_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the only tenant from a site")
+
+        db.delete(site_tenant)
+        db.commit()
+
+        logger.info(f"✅ Removed tenant {tenant_id} from site {site_id}")
+
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID or tenant ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Remove tenant from site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+        
 @app.get("/v1/sites")
 async def list_sites(
         tenant_id: Optional[str] = Query(None),
@@ -290,9 +445,14 @@ async def list_sites(
 ):
     """List sites with optional tenant filtering"""
     try:
-        q = db.query(Site)
+        # Start with SiteTenant join to support many-to-many
+        q = db.query(Site).join(SiteTenant, Site.site_id == SiteTenant.site_id)
+        
+        # If tenant_id provided, filter by it; otherwise filter by user's tenant
         if tenant_id:
-            q = q.filter(Site.tenant_id == uuid.UUID(tenant_id))
+            q = q.filter(SiteTenant.tenant_id == uuid.UUID(tenant_id))
+        else:
+            q = q.filter(SiteTenant.tenant_id == ctx.tenant_id)
 
         total = q.count()
         sites = q.order_by(Site.created_at.desc()).limit(limit).offset(offset).all()
@@ -301,7 +461,6 @@ async def list_sites(
             "sites": [
                 {
                     "site_id": str(s.site_id),
-                    "tenant_id": str(s.tenant_id),
                     "name": s.name,
                     "site_type": s.site_type,
                     "created_at": s.created_at.isoformat()
@@ -318,29 +477,34 @@ async def list_sites(
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
 @app.post("/v1/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
-        site_id: str = Query(..., description="Site ID"),
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("stores.manage"))
 ):
-    """Create a new store under a site"""
+    """Create a new store under a site for the user's tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_store", status="start").inc()
 
-        # Verify site exists and get tenant_id
-        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
-        if not site:
-            raise HTTPException(status_code=404, detail="Site not found")
+        # Verify site exists and is accessible by user's tenant
+        site_tenant = db.query(SiteTenant).filter(
+            SiteTenant.site_id == uuid.UUID(req.site_id),
+            SiteTenant.tenant_id == ctx.tenant_id  # Use user's tenant from context
+        ).first()
+        
+        if not site_tenant:
+            raise HTTPException(
+                status_code=404, 
+                detail="Site not found or not accessible by your tenant"
+            )
 
-        # Create store (tenant_id auto-mapped from site)
+        # Create store
         store = Store(
             store_id=uuid.uuid4(),
-            site_id=uuid.UUID(site_id),
-            tenant_id=site.tenant_id,
+            site_id=uuid.UUID(req.site_id),
+            tenant_id=ctx.tenant_id,  # Use user's tenant
             name=req.name,
             store_type=req.type,
             geo=req.geo
@@ -354,7 +518,7 @@ async def create_store(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created store: {store.store_id} ({store.name})")
+        logger.info(f"✅ Created store: {store.store_id} ({store.name}) for tenant: {ctx.tenant_id}")
 
         return {
             "store_id": str(store.store_id),
@@ -364,6 +528,7 @@ async def create_store(
             "store_type": store.store_type,
             "created_at": store.created_at.isoformat()
         }
+    
     except ValueError:
         req_total.labels(operation="create_store", status="error").inc()
         raise HTTPException(status_code=400, detail="Invalid site ID format")
@@ -391,8 +556,18 @@ async def list_stores(
 ):
     """List stores with optional site filtering"""
     try:
-        q = db.query(Store)
+        q = db.query(Store).filter(Store.tenant_id == ctx.tenant_id)  # Always filter by user's tenant
+        
         if site_id:
+            # Verify site access before filtering stores
+            site_access = db.query(SiteTenant).filter(
+                SiteTenant.site_id == uuid.UUID(site_id),
+                SiteTenant.tenant_id == ctx.tenant_id
+            ).first()
+            
+            if not site_access:
+                raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
+            
             q = q.filter(Store.site_id == uuid.UUID(site_id))
 
         total = q.count()
@@ -436,6 +611,9 @@ async def create_user(
     try:
         req_total.labels(operation="create_user", status="start").inc()
 
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
+
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -457,7 +635,7 @@ async def create_user(
         user = User(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
-            email=str(req.email).lower(),
+            email=req.email.lower(),
             display_name=req.display_name,
             password_hash=password_hash,
             active=True,
@@ -475,8 +653,7 @@ async def create_user(
         )
 
         logger.info(f"✅ Created user: {user.user_id} ({user.email})")
-        await cv_create_customer({"externalId": user.user_id, "email": user.email, "firstName": user.display_name.split(" ")[0],
-                               "lastName": user.display_name.split(" ")[1]})
+
         return {
             "user_id": str(user.user_id),
             "tenant_id": str(user.tenant_id),
@@ -516,6 +693,8 @@ async def list_users(
         q = db.query(User).filter(User.active == True)
         if tenant_id:
             q = q.filter(User.tenant_id == uuid.UUID(tenant_id))
+        else:
+            q = q.filter(User.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
         total = q.count()
         users = q.order_by(User.created_at.desc()).limit(limit).offset(offset).all()
@@ -557,6 +736,9 @@ async def bulk_import_users(
     start = datetime.now()
     try:
         req_total.labels(operation="bulk_import_users", status="start").inc()
+
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -649,15 +831,19 @@ async def create_role(
     try:
         req_total.labels(operation="create_role", status="start").inc()
 
-        # Check if code exists (if provided)
+        # Check if code exists for this tenant (tenant-scoped)
         if req.code:
-            existing = db.query(Role).filter(Role.code == req.code).first()
+            existing = db.query(Role).filter(
+                Role.code == req.code,
+                Role.tenant_id == ctx.tenant_id
+            ).first()
             if existing:
-                raise HTTPException(status_code=409, detail="Role code already exists")
+                raise HTTPException(status_code=409, detail="Role code already exists for this tenant")
 
-        # Create role
+        # Create role (tenant-scoped)
         role = Role(
             role_id=uuid.uuid4(),
+            tenant_id=ctx.tenant_id,
             code=req.code,
             description=req.description or ""
         )
@@ -695,14 +881,23 @@ async def create_role(
 
 @app.get("/v1/roles")
 async def list_roles(
+        tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
         ctx: UserContext = Depends(require_permission("admin.roles.manage"))
 ):
-    """List all roles"""
-    total = db.query(Role).count()
-    roles = db.query(Role).order_by(Role.created_at.desc()).limit(limit).offset(offset).all()
+    """List roles (tenant-scoped)"""
+    q = db.query(Role)
+    if tenant_id:
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(tenant_id))
+        q = q.filter(Role.tenant_id == uuid.UUID(tenant_id))
+    else:
+        q = q.filter(Role.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
+    
+    total = q.count()
+    roles = q.order_by(Role.created_at.desc()).limit(limit).offset(offset).all()
 
     return {
         "roles": [
@@ -917,21 +1112,56 @@ async def create_vendor(
     try:
         req_total.labels(operation="create_vendor", status="start").inc()
 
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
+
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
+        # NEW: If user_id provided, verify it exists and belongs to tenant
+        vendor_user_id = None
+        if req.user_id:
+            vendor_user = db.query(User).filter(
+                User.user_id == uuid.UUID(req.user_id),
+                User.tenant_id == ctx.tenant_id
+            ).first()
+            if not vendor_user:
+                raise HTTPException(status_code=404, detail="Vendor user not found")
+            vendor_user_id = uuid.UUID(req.user_id)
+
         # Create vendor
         vendor = Vendor(
             vendor_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
+            user_id=vendor_user_id,
             name=req.name,
             contact_email=req.contact_email,
             description=req.description,
             status="active"
         )
         db.add(vendor)
+        db.flush()  # Get vendor_id before committing
+        
+        # NEW: If vendor user exists, assign vendor role
+        if vendor_user_id:
+            vendor_role = db.query(Role).filter(Role.code == "vendor").first()
+            if vendor_role:
+                # Check if already assigned
+                existing_role = db.query(UserRole).filter(
+                    UserRole.user_id == vendor_user_id,
+                    UserRole.role_id == vendor_role.role_id
+                ).first()
+                if not existing_role:
+                    user_role = UserRole(
+                        id=uuid.uuid4(),
+                        user_id=vendor_user_id,
+                        role_id=vendor_role.role_id
+                    )
+                    db.add(user_role)
+                    invalidate_user_context(str(vendor_user_id), str(ctx.tenant_id))
+        
         db.commit()
         db.refresh(vendor)
 
@@ -945,6 +1175,7 @@ async def create_vendor(
         return {
             "vendor_id": str(vendor.vendor_id),
             "tenant_id": str(vendor.tenant_id),
+            "user_id": str(vendor.user_id) if vendor.user_id else None,
             "name": vendor.name,
             "contact_email": vendor.contact_email,
             "status": vendor.status,
@@ -964,6 +1195,72 @@ async def create_vendor(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/v1/vendors/{vendor_id}/assign-user", status_code=200)
+async def assign_user_to_vendor(
+    vendor_id: str,
+    user_id: str = Query(..., description="User ID to assign"),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("vendors.manage"))
+):
+    """Assign a user account to a vendor"""
+    try:
+        # Verify vendor exists (check without tenant filter first for better error message)
+        vendor = db.query(Vendor).filter(
+            Vendor.vendor_id == uuid.UUID(vendor_id)
+        ).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, vendor.tenant_id)
+        
+        # Verify vendor belongs to user's tenant
+        if vendor.tenant_id != ctx.tenant_id:
+            raise HTTPException(status_code=403, detail="Vendor belongs to a different tenant")
+        
+        # Verify user exists
+        user = db.query(User).filter(
+            User.user_id == uuid.UUID(user_id),
+            User.tenant_id == ctx.tenant_id
+        ).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Assign user to vendor
+        vendor.user_id = uuid.UUID(user_id)
+        
+        # Assign vendor role (tenant-scoped)
+        vendor_role = db.query(Role).filter(
+            Role.code == "vendor",
+            Role.tenant_id == ctx.tenant_id
+        ).first()
+        if vendor_role:
+            existing_role = db.query(UserRole).filter(
+                UserRole.user_id == uuid.UUID(user_id),
+                UserRole.role_id == vendor_role.role_id
+            ).first()
+            if not existing_role:
+                user_role = UserRole(
+                    id=uuid.uuid4(),
+                    user_id=uuid.UUID(user_id),
+                    role_id=vendor_role.role_id
+                )
+                db.add(user_role)
+                invalidate_user_context(user_id, str(ctx.tenant_id))
+        
+        db.commit()
+        
+        logger.info(f"✅ Assigned user {user_id} to vendor {vendor_id}")
+        
+        return {"message": "User assigned to vendor successfully", "vendor_id": vendor_id, "user_id": user_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Assign user to vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/v1/vendors")
 async def list_vendors(
         tenant_id: Optional[str] = Query(None),
@@ -979,8 +1276,11 @@ async def list_vendors(
 ):
     """List vendors with optional tenant filtering"""
     q = db.query(Vendor)
+    
     if tenant_id:
         q = q.filter(Vendor.tenant_id == uuid.UUID(tenant_id))
+    else:
+        q = q.filter(Vendor.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     vendors = q.order_by(Vendor.created_at.desc()).limit(limit).offset(offset).all()
@@ -1005,7 +1305,7 @@ async def list_vendors(
 @app.post("/v1/cost-centres", status_code=201)
 async def create_cost_centre(
         req: CostCentreRequest,
-        tenant_id: str = Query(..., description="Tenant ID"),
+        
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("cost_centres.manage"))
 ):
@@ -1013,6 +1313,9 @@ async def create_cost_centre(
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
+
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -1088,8 +1391,11 @@ async def list_cost_centres(
 ):
     """List cost centres with optional tenant filtering"""
     q = db.query(CostCentre).filter(CostCentre.status == "active")
+    
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
+    else:
+        q = q.filter(CostCentre.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     ccs = q.order_by(CostCentre.created_at.desc()).limit(limit).offset(offset).all()
@@ -1487,7 +1793,7 @@ async def get_user_spending_history(
                     "cost_centre_id": str(e.cost_centre_id),
                     "order_id": str(e.order_id) if e.order_id else None,
                     "approval_request_id": str(e.approval_request_id) if e.approval_request_id else None,
-                    "metadata": e.metadata,
+                    "metadata": e.event_metadata,
                     "created_at": e.created_at.isoformat()
                 }
                 for e in events
@@ -1500,4 +1806,359 @@ async def get_user_spending_history(
         raise
     except Exception as e:
         logger.error(f"Failed to get spending history: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/v1/users/{user_id}/managers/{manager_id}", status_code=201)
+async def assign_manager(
+    user_id: str,
+    manager_id: str,
+    org_unit_id: Optional[str] = Query(None, description="Organizational unit ID"),
+    role_id: Optional[str] = Query(None, description="Role ID for this assignment"),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Assign a manager to a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify manager exists
+        manager = db.query(User).filter(User.user_id == uuid.UUID(manager_id)).first()
+        if not manager:
+            raise HTTPException(status_code=404, detail="Manager not found")
+        
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, user.tenant_id)
+        check_tenant_access(ctx, manager.tenant_id)
+        
+        # Prevent self-assignment
+        if user_id == manager_id:
+            raise HTTPException(status_code=400, detail="User cannot be their own manager")
+        
+        # Get or create org unit
+        if org_unit_id:
+            org_unit_uuid = uuid.UUID(org_unit_id)
+            org_unit = db.query(OrgUnit).filter(OrgUnit.org_unit_id == org_unit_uuid).first()
+            if not org_unit:
+                raise HTTPException(status_code=404, detail="Organizational unit not found")
+        else:
+            # Create default org unit for this manager's team
+            org_unit = OrgUnit(
+                org_unit_id=uuid.uuid4(),
+                tenant_id=user.tenant_id,
+                name=f"Team of {manager.display_name}",
+                type="team"
+            )
+            db.add(org_unit)
+            db.flush()
+            org_unit_uuid = org_unit.org_unit_id
+        
+        # Get role (default to manager role if not specified)
+        if role_id:
+            role_uuid = uuid.UUID(role_id)
+        else:
+            # Find manager role for this tenant
+            manager_role = db.query(Role).filter(
+                Role.code == "manager",
+                Role.tenant_id == user.tenant_id
+            ).first()
+            if not manager_role:
+                raise HTTPException(status_code=404, detail="Manager role not found. Please create a 'manager' role first.")
+            role_uuid = manager_role.role_id
+        
+        # Create or update assignment for the user (subordinate)
+        existing = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == uuid.UUID(user_id),
+            UserOrgAssignment.org_unit_id == org_unit_uuid
+        ).first()
+        
+        if existing:
+            existing.role_id = role_uuid
+            existing.assigned_by = uuid.UUID(ctx.user_id)
+        else:
+            assignment = UserOrgAssignment(
+                assignment_id=uuid.uuid4(),
+                user_id=uuid.UUID(user_id),
+                org_unit_id=org_unit_uuid,
+                role_id=role_uuid,
+                assigned_by=uuid.UUID(ctx.user_id)
+            )
+            db.add(assignment)
+        
+        # CRITICAL: Also assign manager to the same org unit (so they can manage the team)
+        manager_assignment = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == uuid.UUID(manager_id),
+            UserOrgAssignment.org_unit_id == org_unit_uuid
+        ).first()
+        
+        if not manager_assignment:
+            mgr_assignment = UserOrgAssignment(
+                assignment_id=uuid.uuid4(),
+                user_id=uuid.UUID(manager_id),
+                org_unit_id=org_unit_uuid,
+                role_id=role_uuid,  # Manager role
+                assigned_by=uuid.UUID(ctx.user_id)
+            )
+            db.add(mgr_assignment)
+            logger.info(f"✅ Assigned manager {manager_id} to org unit {org_unit_uuid}")
+        else:
+            logger.info(f"ℹ️ Manager {manager_id} already assigned to org unit {org_unit_uuid}")
+        
+        db.commit()
+        db.refresh(assignment if not existing else existing)
+        if not manager_assignment:
+            db.refresh(mgr_assignment)
+        
+        # Invalidate user context cache
+        invalidate_user_context(user_id, str(user.tenant_id))
+        
+        logger.info(f"✅ Assigned manager {manager_id} to user {user_id}")
+        
+        return {
+            "user_id": user_id,
+            "manager_id": manager_id,
+            "org_unit_id": str(org_unit_uuid),
+            "role_id": str(role_uuid),
+            "assigned": True
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Assign manager failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/managers")
+async def get_user_managers(
+    user_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get all managers for a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, user.tenant_id)
+        
+        # Get org unit assignments for this user
+        user_assignments = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == uuid.UUID(user_id)
+        ).all()
+        
+        managers = []
+        manager_ids_seen = set()
+        
+        for assignment in user_assignments:
+            # Get org unit
+            org_unit = db.query(OrgUnit).filter(
+                OrgUnit.org_unit_id == assignment.org_unit_id
+            ).first()
+            
+            if org_unit:
+                # Find all users in the same org unit who have manager role
+                # These are the managers for this org unit
+                manager_role = db.query(Role).filter(
+                    Role.code == "manager",
+                    Role.tenant_id == user.tenant_id
+                ).first()
+                if manager_role:
+                    manager_assignments = db.query(UserOrgAssignment).join(
+                        User, UserOrgAssignment.user_id == User.user_id
+                    ).filter(
+                        UserOrgAssignment.org_unit_id == assignment.org_unit_id,
+                        UserOrgAssignment.user_id != uuid.UUID(user_id),
+                        UserOrgAssignment.role_id == manager_role.role_id,
+                        User.tenant_id == user.tenant_id
+                    ).all()
+                    
+                    for mgr_assignment in manager_assignments:
+                        manager_user = db.query(User).filter(
+                            User.user_id == mgr_assignment.user_id
+                        ).first()
+                        if manager_user and str(manager_user.user_id) not in manager_ids_seen:
+                            managers.append({
+                                "manager_id": str(manager_user.user_id),
+                                "manager_email": manager_user.email,
+                                "manager_name": manager_user.display_name,
+                                "org_unit_id": str(org_unit.org_unit_id),
+                                "org_unit_name": org_unit.name
+                            })
+                            manager_ids_seen.add(str(manager_user.user_id))
+        
+        return {"user_id": user_id, "managers": managers}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get user managers failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/users/{user_id}/team")
+async def get_user_team(
+    user_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("users.manage"))
+):
+    """Get all team members reporting to a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, user.tenant_id)
+        
+        # Get org units where user is assigned (as manager)
+        user_assignments = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == uuid.UUID(user_id)
+        ).all()
+        
+        logger.info(f"🔍 Finding team for manager {user_id}: Found {len(user_assignments)} org unit assignments")
+        
+        team_members = []
+        team_user_ids_seen = set()
+        
+        for assignment in user_assignments:
+            logger.info(f"🔍 Checking org unit {assignment.org_unit_id} for team members")
+            
+            # Get all users in same org unit (team members reporting to this manager)
+            # Exclude the manager themselves
+            # FIXED: Query directly without complex join to avoid issues
+            team_assignments = db.query(UserOrgAssignment).filter(
+                UserOrgAssignment.org_unit_id == assignment.org_unit_id,
+                UserOrgAssignment.user_id != uuid.UUID(user_id)
+            ).all()
+            
+            logger.info(f"🔍 Found {len(team_assignments)} potential team members in org unit {assignment.org_unit_id}")
+            
+            for team_assignment in team_assignments:
+                # Verify user exists and is in same tenant
+                team_user = db.query(User).filter(
+                    User.user_id == team_assignment.user_id,
+                    User.tenant_id == user.tenant_id,
+                    User.active == True
+                ).first()
+                if team_user and str(team_user.user_id) not in team_user_ids_seen:
+                    team_members.append({
+                        "user_id": str(team_user.user_id),
+                        "email": team_user.email,
+                        "display_name": team_user.display_name,
+                        "org_unit_id": str(assignment.org_unit_id)
+                    })
+                    team_user_ids_seen.add(str(team_user.user_id))
+                    logger.info(f"✅ Added team member: {team_user.email} ({team_user.user_id})")
+        
+        logger.info(f"✅ Returning {len(team_members)} team members for manager {user_id}")
+        return {"manager_id": user_id, "team_members": team_members}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get user team failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/v1/users/{user_id}/budget", status_code=201)
+async def create_user_budget(
+    user_id: str,
+    cost_centre_id: str = Query(..., description="Cost centre ID"),
+    allocated_budget_minor: int = Query(..., ge=0, description="Budget amount in minor units"),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("budgets.manage"))
+):
+    """Create or update budget for a user (manager can create budget for their team members)"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # SECURITY: Verify tenant access
+        check_tenant_access(ctx, user.tenant_id)
+        
+        # SECURITY: Verify manager relationship (manager can only create budget for their team)
+        # Check if requester is a manager of this user
+        user_assignments = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == uuid.UUID(user_id)
+        ).all()
+        
+        is_manager = False
+        for assignment in user_assignments:
+            # Check if ctx.user_id is a manager in the same org unit
+            manager_role = db.query(Role).filter(
+                Role.code == "manager",
+                Role.tenant_id == user.tenant_id
+            ).first()
+            if manager_role:
+                manager_assignment = db.query(UserOrgAssignment).filter(
+                    UserOrgAssignment.org_unit_id == assignment.org_unit_id,
+                    UserOrgAssignment.user_id == uuid.UUID(ctx.user_id),
+                    UserOrgAssignment.role_id == manager_role.role_id
+                ).first()
+                if manager_assignment:
+                    is_manager = True
+                    break
+        
+        # Allow if user is manager OR has budgets.manage permission
+        if not is_manager and "budgets.manage" not in ctx.permissions:
+            raise HTTPException(
+                status_code=403,
+                detail="Only managers or users with budgets.manage permission can create budgets"
+            )
+        
+        # Verify cost centre exists
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+        
+        # Check if user is already assigned to cost centre
+        user_cc = db.query(UserCostCentre).filter(
+            UserCostCentre.user_id == uuid.UUID(user_id),
+            UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
+        ).first()
+        
+        if user_cc:
+            # Update existing budget
+            user_cc.allocated_budget_minor = allocated_budget_minor
+            db.commit()
+            db.refresh(user_cc)
+        else:
+            # Create new assignment
+            user_cc = UserCostCentre(
+                id=uuid.uuid4(),
+                user_id=uuid.UUID(user_id),
+                cost_centre_id=uuid.UUID(cost_centre_id),
+                allocated_budget_minor=allocated_budget_minor,
+                spent_minor=0,
+                currency_code=cc.currency_code
+            )
+            db.add(user_cc)
+            db.commit()
+            db.refresh(user_cc)
+        
+        logger.info(f"✅ Created/updated budget for user {user_id}: {allocated_budget_minor} {cc.currency_code}")
+        
+        return {
+            "id": str(user_cc.id),
+            "user_id": user_id,
+            "cost_centre_id": cost_centre_id,
+            "allocated_budget_minor": user_cc.allocated_budget_minor,
+            "spent_minor": user_cc.spent_minor,
+            "available_minor": user_cc.allocated_budget_minor - user_cc.spent_minor,
+            "currency_code": user_cc.currency_code,
+            "created_by": ctx.user_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Create user budget failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
