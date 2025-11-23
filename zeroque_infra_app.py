@@ -14,6 +14,8 @@ from services.catalog_routes import app as catalog_router
 from services.subscriptions_routes import app as subscriptions_router
 from services.approval_routes import app as approval_router
 from services.entitlements_routes import app as entitlements_router
+from services.auth_routes import app as auth_router
+from services.instant_budget import router as instant_budget_router
 
 # FastAPI app
 app = FastAPI(
@@ -36,6 +38,8 @@ app.include_router(catalog_router, tags=["catalog"])
 app.include_router(approval_router, tags=["approval"])
 app.include_router(subscriptions_router, tags=["subscriptions"])
 app.include_router(entitlements_router, tags=["entitlements"])
+app.include_router(auth_router, tags=["authentication"])
+app.include_router(instant_budget_router, tags=["instant-budget"])
 
 
 @app.get("/health")
@@ -56,15 +60,5 @@ async def health():
 async def metrics():
     """Prometheus metrics endpoint"""
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-#
-#
-# if __name__ == "__main__":
-#     import uvicorn
-#
-#     logger.info(f"🚀 Starting {SERVICE_NAME} v{SERVICE_VERSION}")
-#     logger.info(f"📊 Database: {SETTINGS.DATABASE_URL.split('@')[1] if '@' in SETTINGS.DATABASE_URL else 'configured'}")
-#     logger.info(f"💾 Redis: {'enabled' if redis_client else 'disabled'}")
-#     logger.info(f"🔒 RLS: enabled for tenant isolation")
-#
-#     uvicorn.run(app, host="0.0.0.0", port=SETTINGS.PORT)
+
 

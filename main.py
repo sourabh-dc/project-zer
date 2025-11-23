@@ -51,6 +51,7 @@ app.include_router(ledger_router, tags=["ledger"])
 app.include_router(billing_router, tags=["billing"])
 app.include_router(auth_router, tags=["authentication"])
 app.include_router(instant_budget_router, tags=["instant-budget"])  # Include with explicit tags
+
 @app.on_event("startup")
 async def startup_event():
     """Start background jobs on application startup"""

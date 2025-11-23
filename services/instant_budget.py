@@ -11,7 +11,7 @@ from core.permission_check_helpers import require_permission, UserContext, check
 from Models import UserCostCentre, SpendingEvent, User, ApproverLimit, InstantBudgetRequest, CostCentre, Tenant
 from Schemas import InstantBudgetRequestCreate, InstantBudgetApproveRequest, InstantBudgetResponse, ApproverLimitRequest
 
-router = APIRouter(prefix="/v1/instant-budget", tags=["Instant Budget"])
+router = APIRouter(prefix="/v1/instant-budget")
 
 # Helper functions
 async def auto_approve(db: Session, request: InstantBudgetRequest, reason: str):
