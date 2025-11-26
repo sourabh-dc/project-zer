@@ -7,7 +7,9 @@ import uuid
 from typing import Optional
 
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission, UserContext, check_tenant_access
+from core.permission_check_helpers import require_permission, check_tenant_access
+from core.user_auth import get_user_context
+from Schemas import UserContext
 from Models import UserCostCentre, SpendingEvent, User, ApproverLimit, InstantBudgetRequest, CostCentre, Tenant
 from Schemas import InstantBudgetRequestCreate, InstantBudgetApproveRequest, InstantBudgetResponse, ApproverLimitRequest
 
@@ -78,11 +80,22 @@ async def allocate_budget(
     user_id: str = Query(..., description="User ID to allocate budget to"),
     cost_centre_id: str = Query(..., description="Cost centre ID"),
     amount_minor: int = Query(..., ge=0, description="Amount in minor units"),
+    recurring_period: str = Query("none", description="Recurring period: none, daily, weekly, monthly, yearly"),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("budgets.manage"))
+    ctx: UserContext = Depends(get_user_context)
 ):
-    """Allocate budget to a user (Owner/Admin can allocate budget)"""
+    """Allocate budget to a user with optional recurring allocation"""
     try:
+        # SECURITY: Check permissions (accept either full or subordinate permission)
+        has_full_permission = "budgets.manage" in ctx.permissions or "*" in ctx.permissions
+        has_subordinate_permission = "budgets.manage.subordinates" in ctx.permissions
+        
+        if not has_full_permission and not has_subordinate_permission:
+            raise HTTPException(
+                status_code=403,
+                detail="Missing permission: requires budgets.manage or budgets.manage.subordinates"
+            )
+        
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
@@ -90,6 +103,15 @@ async def allocate_budget(
         
         # SECURITY: Verify tenant access
         check_tenant_access(ctx, user.tenant_id)
+        
+        # SECURITY: If user has subordinates-only permission, enforce scope
+        if has_subordinate_permission and not has_full_permission:
+            # Manager can only allocate to their reports
+            if user_id not in ctx.manager_of:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="You can only allocate budget to your direct reports"
+                )
         
         # Verify cost centre exists
         cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
@@ -105,17 +127,50 @@ async def allocate_budget(
         ).with_for_update().first()
         
         if not uc:
+            # Calculate next reset date if recurring
+            next_reset = None
+            if recurring_period != "none":
+                from datetime import date
+                today = date.today()
+                if recurring_period == "daily":
+                    next_reset = today + timedelta(days=1)
+                elif recurring_period == "weekly":
+                    next_reset = today + timedelta(days=7)
+                elif recurring_period == "monthly":
+                    next_reset = date(today.year, today.month + 1 if today.month < 12 else 1, 1)
+                elif recurring_period == "yearly":
+                    next_reset = date(today.year + 1, 1, 1)
+            
             uc = UserCostCentre(
                 id=uuid.uuid4(),
                 user_id=uuid.UUID(user_id),
                 cost_centre_id=uuid.UUID(cost_centre_id),
                 allocated_budget_minor=amount_minor,
                 spent_minor=0,
-                currency_code=cc.currency_code
+                currency_code=cc.currency_code,
+                recurring_budget_minor=amount_minor if recurring_period != "none" else 0,
+                recurring_period=recurring_period,
+                last_reset_date=date.today() if recurring_period != "none" else None,
+                next_reset_date=next_reset
             )
             db.add(uc)
         else:
             uc.allocated_budget_minor += amount_minor
+            # Update recurring settings if provided
+            if recurring_period != "none":
+                uc.recurring_budget_minor = amount_minor
+                uc.recurring_period = recurring_period
+                from datetime import date
+                today = date.today()
+                uc.last_reset_date = today
+                if recurring_period == "daily":
+                    uc.next_reset_date = today + timedelta(days=1)
+                elif recurring_period == "weekly":
+                    uc.next_reset_date = today + timedelta(days=7)
+                elif recurring_period == "monthly":
+                    uc.next_reset_date = date(today.year, today.month + 1 if today.month < 12 else 1, 1)
+                elif recurring_period == "yearly":
+                    uc.next_reset_date = date(today.year + 1, 1, 1)
         
         db.commit()
         db.refresh(uc)

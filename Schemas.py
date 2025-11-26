@@ -24,6 +24,7 @@ class TenantRequest(BaseModel):
 
 
 class SiteRequest(BaseModel):
+    tenant_id: str = Field(description="Tenant ID")
     """Site creation request"""
     name: str = Field(min_length=1, max_length=255, description="Site name")
     type: str = Field(description="Site type")
@@ -34,8 +35,11 @@ class StoreRequest(BaseModel):
     """Store creation request"""
     name: str = Field(min_length=1, max_length=255, description="Store name")
     type: str = Field(description="Store type")
+    site_id: str = Field(description="Site ID")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
 
+
+# Add to Schemas.py
 
 class UserRequest(BaseModel):
     """User creation request"""
@@ -48,6 +52,27 @@ class UserRequest(BaseModel):
     @classmethod
     def validate_password_strength(cls, v):
         """Validate password strength"""
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
+class SuperUserRequest(BaseModel):
+    """Super user creation request for a tenant"""
+    email: EmailStr = Field(description="Valid email address for super user")
+    display_name: str = Field(min_length=1, max_length=255, description="Display name")
+    password: Optional[str] = Field(None, min_length=8, max_length=128, description="Password (optional, auto-generated if not provided)")
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        """Validate password strength if provided"""
+        if v is None:
+            return v
         if not re.search(r'[A-Z]', v):
             raise ValueError('Password must contain at least one uppercase letter')
         if not re.search(r'[a-z]', v):
@@ -70,6 +95,7 @@ class RoleRequest(BaseModel):
 
 
 class VendorRequest(BaseModel):
+    tenant_id: str = Field(description="Tenant ID")
     """Vendor creation request"""
     name: str = Field(min_length=1, max_length=255, description="Vendor name")
     contact_email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
@@ -81,7 +107,68 @@ class CostCentreRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200, description="Cost centre name")
     budget_minor: int = Field(ge=0, description="Budget in minor units (required)")
     manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
+    tenant_id: str = Field(description="Tenant ID")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
+
+
+class OrgUnitRequest(BaseModel):
+    """Organizational unit creation request"""
+    name: str = Field(min_length=1, max_length=255, description="Org unit name")
+    type: str = Field(min_length=1, max_length=50, description="Type: directorate, business_unit, department, team, etc.")
+    tenant_id: str = Field(description="Tenant ID")
+    parent_org_unit_id: Optional[str] = Field(None, description="Parent org unit ID (optional)")
+
+
+class OrgUnitAssignmentRequest(BaseModel):
+    """User to org unit assignment request"""
+    role_id: str = Field(description="Role ID for this assignment")
+
+
+class PasswordResetRequest(BaseModel):
+    """Password reset request"""
+    new_password: str = Field(min_length=8, max_length=128, description="New password (min 8 chars)")
+    
+    @field_validator('new_password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        """Validate password strength"""
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
+class LoginRequest(BaseModel):
+    """Login request"""
+    email: EmailStr = Field(description="User email")
+    password: str = Field(description="User password")
+
+
+class LoginResponse(BaseModel):
+    """Login response"""
+    user_id: str
+    tenant_id: str
+    email: str
+    display_name: str
+    api_key: str
+    api_key_expires_at: str
+    last_login_at: Optional[str] = None
+
+
+class RefreshApiKeyRequest(BaseModel):
+    """Refresh API key request"""
+    email: EmailStr = Field(description="User email")
+    password: str = Field(description="User password")
+
+
+class RefreshApiKeyResponse(BaseModel):
+    """Refresh API key response"""
+    api_key: str
+    api_key_expires_at: str
+    message: str
 
 
 class SubscriptionPlanRequest(BaseModel):
@@ -90,7 +177,9 @@ class SubscriptionPlanRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100, description="Plan name")
     description: Optional[str] = Field(None, max_length=500, description="Plan description (optional)")
     price_yearly_minor: int = Field(ge=0, description="Yearly price in minor units")
+    price_monthly_minor: Optional[int] = Field(None, ge=0, description="Monthly price in minor units (optional)")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    billing_cycle: str = Field(default="yearly", description="Default billing cycle: yearly or monthly")
 
 
 class FeatureRequest(BaseModel):
@@ -99,6 +188,9 @@ class FeatureRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100, description="Feature name")
     description: Optional[str] = Field(None, max_length=500, description="Feature description (optional)")
     category: Optional[str] = Field(None, max_length=50, description="Feature category (optional)")
+    usage_type: str = Field(default="count", description="Usage type: count, gauge, etc.")
+    unit: Optional[str] = Field(None, description="Unit label (optional)")
+    reset_period: str = Field(default="monthly", description="Reset period: daily, weekly, monthly, yearly")
 
 
 class PlanFeatureRequest(BaseModel):
@@ -110,15 +202,44 @@ class TenantSubscriptionRequest(BaseModel):
     """Tenant subscription creation request"""
     tenant_id: str = Field(description="Tenant ID")
     plan_code: str = Field(description="Plan code")
-    payment_method: str = Field(default="stripe", description="Payment method")
+    payment_method: str = Field(default="card", description="Payment method")
     billing_cycle: str = Field(default="yearly", description="Billing cycle: yearly or monthly")
     auto_renew: bool = Field(default=True, description="Auto-renew subscription")
+
+
+class CurrentSubscriptionResponse(BaseModel):
+    """Current subscription response"""
+    tenant_id: str
+    plan_code: Optional[str] = None
+    plan_name: Optional[str] = None
+    status: str  # trialing, active, canceled, unpaid, past_due, no_subscription
+    trial_ends_at: Optional[str] = None
+    current_period_start: Optional[str] = None
+    current_period_end: Optional[str] = None
+    pending_plan_code: Optional[str] = None
+    on_trial: bool = False
+    days_remaining: Optional[int] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CancelSubscriptionRequest(BaseModel):
+    """Cancel subscription request"""
+    reason: Optional[str] = Field(None, description="Cancellation reason")
+    cancel_immediately: bool = Field(default=False, description="Cancel immediately or at period end")
+
+
+class UpgradeDowngradeRequest(BaseModel):
+    """Upgrade or downgrade subscription request"""
+    new_plan_code: str = Field(description="New plan code")
+    apply_immediately: bool = Field(default=False, description="Apply immediately or at period end")
 
 
 class CheckEntitlementRequest(BaseModel):
     """Check entitlement request"""
     tenant_id: str = Field(description="Tenant ID")
     feature_code: str = Field(description="Feature code to check")
+    requested_count: Optional[int] = Field(default=1, ge=1, description="Requested usage count for pre-check")
 
 
 class RecordUsageRequest(BaseModel):
@@ -127,6 +248,30 @@ class RecordUsageRequest(BaseModel):
     feature_code: str = Field(description="Feature code")
     usage_type: str = Field(description="Usage type identifier")
     count: int = Field(default=1, ge=1, description="Usage count")
+
+
+class ShoppingRequest(BaseModel):
+    """Shopping purchase request"""
+    user_id: str = Field(description="User ID making purchase")
+    cost_centre_id: str = Field(description="Cost centre ID")
+    amount_minor: int = Field(ge=1, description="Purchase amount in minor units")
+    currency: str = Field(default="GBP", description="Currency code")
+    description: str = Field(description="Purchase description")
+    order_id: Optional[str] = Field(None, description="Order ID (optional)")
+    force_allow: bool = Field(default=False, description="Force allow even if blocked")
+
+
+class ShoppingResponse(BaseModel):
+    """Shopping purchase response"""
+    event_id: str
+    user_id: str
+    amount_minor: int
+    allocated_budget_minor: int
+    spent_minor: int
+    remaining_minor: int
+    is_overspend: bool
+    blocked_from_shopping: bool
+    message: str
 
 
 class AssignRoleRequest(BaseModel):
@@ -146,6 +291,7 @@ class CategoryRequest(BaseModel):
 class ProductRequest(BaseModel):
     """Product creation request"""
     tenant_id: str = Field(description="Tenant ID")
+    vendor_id: Optional[str] = Field(None, description="Vendor ID (optional)")
     category_id: Optional[str] = Field(None, description="Category ID (optional)")
     sku: str = Field(min_length=1, max_length=100, description="Product SKU")
     name: str = Field(min_length=1, max_length=255, description="Product name")
@@ -231,10 +377,16 @@ class ApprovalRequestRequest(BaseModel):
     chain_id: str = Field(description="Approval chain ID to use")
     request_type: str = Field(description="Request type (budget, order, vendor)")
     request_data: Dict[str, Any] = Field(description="Request details")
-    requested_by: str = Field(description="Requester user ID")
-    total_amount_minor: Optional[int] = Field(None, ge=0, description="Amount in minor units (optional)")
+    total_amount_minor: Optional[int] = Field(None, description="Amount in minor units (optional)")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
     due_date: Optional[datetime] = Field(None, description="Due date (optional)")
+    
+    @field_validator('total_amount_minor')
+    @classmethod
+    def validate_amount(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("Amount must be positive")
+        return v
 
 
 class ApprovalResponseRequest(BaseModel):
@@ -456,7 +608,27 @@ class InvoiceResponse(BaseModel):
     updated_at: datetime
     lines: List[Dict[str, Any]] = []
 
+# Add to Schemas.py
 
+class StoreProductRequest(BaseModel):
+    store_id: str
+    product_id: str
+    price_minor: int
+    currency: str = "GBP"
+    is_available: Optional[bool] = True
+    stock_quantity: Optional[int] = 0
+    low_stock_threshold: Optional[int] = 10
+
+class StoreProductResponse(BaseModel):
+    id: str
+    store_id: str
+    product_id: str
+    price_minor: int
+    currency: str
+    is_available: bool
+    stock_quantity: int
+    created_at: str
+    
 class SettlementItemRequest(BaseModel):
     """Request model for settlement items"""
     order_id: Optional[str] = Field(None, description="Order ID")
@@ -568,15 +740,6 @@ class AdjustmentResponse(BaseModel):
     settlement_id: str
     settlement_item_id: Optional[str]
     tenant_id: str
-
-
-class CostCentreRequest(BaseModel):
-    """Cost centre creation request - Phase 4"""
-    name: str = Field(..., description="Cost centre name", max_length=200)
-    code: str = Field(..., description="Cost centre code (e.g., IT-001)", max_length=50)
-    description: Optional[str] = Field(None, description="Cost centre description")
-    parent_cost_centre_id: Optional[str] = Field(None, description="Parent cost centre ID for hierarchy")
-    budget_owner_id: str = Field(..., description="User ID who owns the budget")
 
 
 class CostCentreResponse(BaseModel):
@@ -717,3 +880,37 @@ class LedgerReportRequest(BaseModel):
     account: Optional[str] = None
     cost_centre_id: Optional[str] = None
     currency: Optional[str] = None
+
+
+# Instant Budget Schemas
+class InstantBudgetRequestCreate(BaseModel):
+    """Request model for creating instant budget requests"""
+    cost_centre_id: str = Field(..., description="Cost centre ID")
+    amount_minor: int = Field(..., description="Amount requested in minor units", gt=0)
+    reason: Optional[str] = Field(None, description="Reason for the request")
+    store_id: Optional[str] = Field(None, description="Store ID (optional)")
+
+
+class InstantBudgetApproveRequest(BaseModel):
+    """Request model for approving instant budget requests"""
+    approve: bool = Field(..., description="Whether to approve (true) or reject (false)")
+    partial_amount_minor: Optional[int] = Field(None, description="Partial approval amount in minor units (optional)")
+
+
+class InstantBudgetResponse(BaseModel):
+    """Response model for instant budget requests"""
+    request_id: str
+    status: str
+    expires_at: str
+    approved_amount_minor: int
+    remaining_amount_minor: int
+    message: str
+
+
+class ApproverLimitRequest(BaseModel):
+    """Request model for creating/updating approver limits"""
+    user_id: str = Field(..., description="User ID of the approver")
+    cost_centre_id: Optional[str] = Field(None, description="Cost centre ID (optional, null for global limit)")
+    daily_limit_minor: int = Field(..., description="Daily approval limit in minor units", ge=0)
+    monthly_limit_minor: int = Field(..., description="Monthly approval limit in minor units", ge=0)
+    currency_code: str = Field(default="INR", description="Currency code")

@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timezone, date, timedelta
 from sqlalchemy import update
 from core.db_config import SessionLocal
-from Models import ApprovalRequest, ApprovalRequestApprover, ApprovalChainStep, InstantBudgetRequest, ApproverLimit
+from Models import ApprovalRequest, ApprovalRequestApprover, ApprovalChainStep, InstantBudgetRequest, ApproverLimit, UserCostCentre, SpendingEvent
 from utils.logger import logger
 
 async def check_escalations():
@@ -128,6 +128,70 @@ async def instant_worker():
         # Run every 10 seconds
         await asyncio.sleep(10)
 
+async def reset_recurring_budgets():
+    """Reset recurring budgets (daily/weekly/monthly/yearly)"""
+    db = SessionLocal()
+    try:
+        from datetime import date
+        today = date.today()
+        
+        # Find all user cost centres with recurring budgets that need reset
+        budgets_to_reset = db.query(UserCostCentre).filter(
+            UserCostCentre.recurring_period != "none",
+            UserCostCentre.next_reset_date <= today
+        ).all()
+        
+        for uc in budgets_to_reset:
+            # Reset spent amount to 0
+            old_spent = uc.spent_minor
+            uc.spent_minor = 0
+            
+            # Allocate new recurring budget
+            uc.allocated_budget_minor = uc.recurring_budget_minor
+            
+            # Update reset dates
+            uc.last_reset_date = today
+            if uc.recurring_period == "daily":
+                uc.next_reset_date = today + timedelta(days=1)
+            elif uc.recurring_period == "weekly":
+                uc.next_reset_date = today + timedelta(days=7)
+            elif uc.recurring_period == "monthly":
+                uc.next_reset_date = date(today.year, today.month + 1 if today.month < 12 else 1, 1)
+            elif uc.recurring_period == "yearly":
+                uc.next_reset_date = date(today.year + 1, 1, 1)
+            
+            # Record spending event for audit
+            spending_event = SpendingEvent(
+                event_id=uuid.uuid4(),
+                event_type="budget_reset",
+                user_id=uc.user_id,
+                cost_centre_id=uc.cost_centre_id,
+                order_id=None,
+                approval_request_id=None,
+                amount_minor=uc.recurring_budget_minor,
+                currency_code=uc.currency_code,
+                event_metadata={
+                    "recurring_period": uc.recurring_period,
+                    "previous_spent": old_spent,
+                    "new_allocated": uc.recurring_budget_minor
+                }
+            )
+            db.add(spending_event)
+            
+            logger.info(f"✅ Reset recurring budget for user {uc.user_id}: £{uc.recurring_budget_minor / 100:.2f} ({uc.recurring_period})")
+        
+        db.commit()
+        
+        if len(budgets_to_reset) > 0:
+            logger.info(f"✅ Reset {len(budgets_to_reset)} recurring budgets")
+            
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error resetting recurring budgets: {e}")
+    finally:
+        db.close()
+
+
 async def run_background_jobs():
     """Run all background jobs"""
     logger.info("🚀 Starting all background jobs...")
@@ -142,10 +206,22 @@ async def run_background_jobs():
                 logger.error(f"❌ Approval background job error: {e}")
             await asyncio.sleep(3600)  # Run every hour
     
+    # Start recurring budget reset (runs every hour)
+    async def recurring_budget_loop():
+        while True:
+            try:
+                await reset_recurring_budgets()
+            except Exception as e:
+                logger.error(f"❌ Recurring budget reset error: {e}")
+            await asyncio.sleep(3600)  # Run every hour
+    
     # Start instant budget worker (runs every 10 seconds)
     asyncio.create_task(instant_worker())
     
     # Start approval jobs loop
     asyncio.create_task(approval_jobs_loop())
+    
+    # Start recurring budget loop
+    asyncio.create_task(recurring_budget_loop())
     
     logger.info("✅ All background jobs started")

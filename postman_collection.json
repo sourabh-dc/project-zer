@@ -3675,6 +3675,193 @@
           }
         }
       ]
+    },
+    {
+      "name": "Instant Budget",
+      "item": [
+        {
+          "name": "Allocate Budget",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/allocate?user_id={{user_id}}&cost_centre_id={{cost_centre_id}}&amount_minor=100000",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "allocate"],
+              "query": [
+                {
+                  "key": "user_id",
+                  "value": "{{user_id}}",
+                  "description": "User ID to allocate budget to"
+                },
+                {
+                  "key": "cost_centre_id",
+                  "value": "{{cost_centre_id}}",
+                  "description": "Cost centre ID"
+                },
+                {
+                  "key": "amount_minor",
+                  "value": "100000",
+                  "description": "Amount in minor units (e.g., 100000 = ₹1000)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Approver Limit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/approver-limits",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "approver-limits"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"cost_centre_id\": \"{{cost_centre_id}}\",\n  \"daily_limit_minor\": 5000000,\n  \"monthly_limit_minor\": 50000000,\n  \"currency_code\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Request Instant Budget",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/request",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "request"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cost_centre_id\": \"{{cost_centre_id}}\",\n  \"amount_minor\": 4000000,\n  \"reason\": \"Customer waiting - urgent purchase needed\",\n  \"store_id\": \"{{store_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Approve Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/approve/{{request_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "approve", "{{request_id}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approve\": true,\n  \"partial_amount_minor\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get Pending Requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/pending",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "pending"]
+            }
+          }
+        },
+        {
+          "name": "Get My Limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/instant-budget/my-limit",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "instant-budget", "my-limit"]
+            }
+          }
+        }
+      ]
     }
   ]
 }

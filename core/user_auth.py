@@ -25,24 +25,36 @@ DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("sites.manage", "Manage sites for a tenant"),
     ("stores.manage", "Manage stores for a site"),
     ("users.manage", "Manage tenant users"),
+    ("users.password.reset", "Reset user passwords"),
     ("roles.assign", "Assign and remove roles for users"),
     ("vendors.manage", "Manage vendors for a tenant"),
     ("cost_centres.manage", "Manage cost centres for a tenant"),
+    ("org_units.manage", "Manage organizational units"),
+    ("org_units.assign", "Assign users to organizational units"),
     ("catalog.categories.manage", "Manage catalog categories"),
     ("catalog.products.manage", "Create and update catalog products"),
     ("catalog.products.view", "View catalog products"),
     ("catalog.variants.manage", "Manage catalog variants"),
     ("subscriptions.plans.manage", "Manage subscription plans"),
+    ("subscriptions.plans.view", "View subscription plans"),
     ("subscriptions.features.manage", "Manage subscription features"),
+    ("subscriptions.features.view", "View subscription features"),
     ("subscriptions.tenant.manage", "Manage tenant subscriptions"),
+    ("subscriptions.tenant.view", "View tenant subscription status"),
     ("entitlements.check", "Check entitlements for tenants"),
     ("entitlements.usage.record", "Record entitlement usage"),
+    ("entitlements.usage.view", "View entitlement usage summary"),
+    ("entitlements.usage.manage", "Reset entitlement usage records"),
     ("approvals.chains.manage", "Manage approval chains and steps"),
     ("approvals.requests.create", "Create approval requests"),
     ("approvals.requests.view", "View approval requests"),
     ("approvals.requests.respond", "Respond to approval requests"),
     ("budget.approve", "Approve budget requests"),
     ("costcentre.manage", "Manage cost centre budgets"),
+    ("budgets.manage", "Manage budgets - allocate and configure approver limits"),
+    ("budgets.manage.subordinates", "Allocate budget to direct reports only"),
+    ("budgets.instant.request", "Request instant budget top-ups"),
+    ("budgets.instant.approve", "Approve instant budget requests"),
     ("admin.permissions.manage", "Manage permission catalog"),
     ("admin.roles.manage", "Manage roles and assignments"),
     ("admin.scopes.manage", "Manage role scopes"),
@@ -242,7 +254,7 @@ def ensure_bootstrap_admin():
                 tenant = Tenant(
                     tenant_id=uuid.uuid4(),
                     name=SETTINGS.BOOTSTRAP_TENANT_NAME,
-                    type="customer",
+                    tenant_type="customer",
                     active=True
                 )
                 db.add(tenant)
@@ -347,7 +359,13 @@ async def resolve_user_context_from_api_key(api_key: str) -> UserContext:
         user = verify_api_key(api_key, db)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired API key")
-        ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+        
+        # Bootstrap admin gets wildcard permissions, regular users get their role-based permissions
+        if user.api_key == SETTINGS.BOOTSTRAP_ADMIN_API_KEY:
+            ctx = build_user_context(db, user, claims={"permissions": ["*"]})
+        else:
+            ctx = build_user_context(db, user, claims=None)
+        
         cache_user_context(ctx)
         return ctx
 

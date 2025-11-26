@@ -1,654 +1,434 @@
+# routes/catalog.py
 import uuid
-from datetime import datetime
-from typing import Optional
-from fastapi import Depends, APIRouter, HTTPException, Query
-from sqlalchemy.exc import IntegrityError
+from datetime import datetime, timezone
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, or_
+from uuid import UUID
 
-from Models import Tenant, Category, Product, Variant
-from Schemas import UserContext, CategoryRequest, ProductRequest, VariantRequest
+from Models import (
+    Tenant, Category, Product, Variant, StoreProduct, Store, Vendor
+)
+from Schemas import (
+    CategoryRequest, ProductRequest, VariantRequest, StoreProductRequest,
+    UserContext
+)
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission
 from utils.logger import logger
-from utils.metrics import req_total, req_duration
 
-app = APIRouter()
+# The main FastAPI app expects to import `app` from this module.
+# Keep `router` for readability and expose it as `app`.
+router = APIRouter()
+app = router
 
-# ==================================================================================
-# CATALOG MANAGEMENT ENDPOINTS
-# ==================================================================================
+# =============================================================================
+# CATEGORY ENDPOINTS
+# =============================================================================
 
-@app.post("/v1/catalog/categories", status_code=201)
+@router.post("/v1/catalog/categories", status_code=201)
 async def create_category(
-        req: CategoryRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.categories.manage",
-                None
-            )
-        )
+    req: CategoryRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("catalog.categories.manage"))
 ):
-    """Create a new product category"""
-    start = datetime.now()
+    if str(ctx.tenant_id) != req.tenant_id:
+        raise HTTPException(403, "Tenant mismatch")
+
+    # Enforce tenant-scoped unique code
+    exists = db.query(Category).filter(
+        Category.tenant_id == ctx.tenant_id,
+        Category.code == req.code,
+        Category.deleted_at.is_(None)
+    ).first()
+    if exists:
+        raise HTTPException(409, "Category code already exists")
+
+    parent_id = None
+    if req.parent_category_id:
+        try:
+            parent_id = UUID(req.parent_category_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid parent_category_id format")
+
+        parent = db.query(Category).filter(
+            Category.category_id == parent_id,
+            Category.tenant_id == ctx.tenant_id,
+            Category.deleted_at.is_(None)
+        ).first()
+        if not parent:
+            raise HTTPException(404, "Parent category not found")
+
+    category = Category(
+        category_id=uuid.uuid4(),
+        tenant_id=ctx.tenant_id,
+        name=req.name.strip(),
+        code=req.code.strip(),
+        description=req.description,
+        parent_category_id=parent_id,
+        active=True
+    )
+    db.add(category)
     try:
-        req_total.labels(operation="create_category", status="start").inc()
-
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        # Verify parent category if provided
-        parent_category_uuid = None
-        if req.parent_category_id:
-            parent = db.query(Category).filter(Category.category_id == uuid.UUID(req.parent_category_id)).first()
-            if not parent:
-                raise HTTPException(status_code=404, detail="Parent category not found")
-            parent_category_uuid = uuid.UUID(req.parent_category_id)
-
-        # Create category
-        category = Category(
-            category_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(req.tenant_id),
-            name=req.name,
-            code=req.code,
-            description=req.description,
-            parent_category_id=parent_category_uuid,
-            active=True
-        )
-        db.add(category)
         db.commit()
         db.refresh(category)
-
-        req_total.labels(operation="create_category", status="success").inc()
-        req_duration.labels(operation="create_category").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Created category: {category.category_id} ({category.name})")
-
-        return {
-            "category_id": str(category.category_id),
-            "tenant_id": str(category.tenant_id),
-            "name": category.name,
-            "code": category.code,
-            "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
-            "created_at": category.created_at.isoformat()
-        }
-    except ValueError:
-        req_total.labels(operation="create_category", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant ID or parent category ID format")
-    except HTTPException:
-        req_total.labels(operation="create_category", status="error").inc()
-        raise
     except IntegrityError:
         db.rollback()
-        req_total.labels(operation="create_category", status="error").inc()
-        raise HTTPException(status_code=400, detail="Category code already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_category", status="error").inc()
-        logger.error(f"❌ Category creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(409, "Category code conflict")
+
+    return {
+        "category_id": str(category.category_id),
+        "name": category.name,
+        "code": category.code,
+        "parent_category_id": str(parent_id) if parent_id else None,
+        "active": True
+    }
 
 
-@app.get("/v1/catalog/categories")
+@router.get("/v1/catalog/categories")
 async def list_categories(
-        tenant_id: Optional[str] = Query(None),
-        active: Optional[bool] = Query(None),
-        db: Session = Depends(get_db),
-        limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.categories.manage",
-                None
-            )
-        )
+    active: Optional[bool] = Query(None),
+    parent_id: Optional[str] = Query(None),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("catalog.categories.view"))
 ):
-    """List categories"""
-    try:
-        q = db.query(Category)
-        if tenant_id:
-            q = q.filter(Category.tenant_id == uuid.UUID(tenant_id))
-        if active is not None:
-            q = q.filter(Category.active == active)
+    q = db.query(Category).filter(
+        Category.tenant_id == ctx.tenant_id,
+        Category.deleted_at.is_(None)
+    )
 
-        total = q.count()
-        categories = q.order_by(Category.created_at.desc()).limit(limit).offset(offset).all()
+    if active is not None:
+        q = q.filter(Category.active == active)
+    if parent_id:
+        q = q.filter(Category.parent_category_id == UUID(parent_id))
 
-        return {
-            "categories": [
-                {
-                    "category_id": str(c.category_id),
-                    "tenant_id": str(c.tenant_id),
-                    "name": c.name,
-                    "code": c.code,
-                    "description": c.description,
-                    "parent_category_id": str(c.parent_category_id) if c.parent_category_id else None,
-                    "active": c.active,
-                    "created_at": c.created_at.isoformat()
-                }
-                for c in categories
-            ],
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
-    except Exception as e:
-        logger.error(f"❌ List categories failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    total = q.count()
+    items = q.order_by(Category.name).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "categories": [
+            {
+                "category_id": str(c.category_id),
+                "name": c.name,
+                "code": c.code,
+                "parent_category_id": str(c.parent_category_id) if c.parent_category_id else None,
+                "active": c.active,
+                "has_children": db.query(Category).filter(
+                    Category.parent_category_id == c.category_id,
+                    Category.deleted_at.is_(None)
+                ).count() > 0
+            }
+            for c in items
+        ]
+    }
 
 
-@app.post("/v1/catalog/products", status_code=201)
+# =============================================================================
+# PRODUCT ENDPOINTS
+# =============================================================================
+
+@router.post("/v1/catalog/products", status_code=201)
 async def create_product(
-        req: ProductRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.manage",
-                None
-            )
-        )
+    req: ProductRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("catalog.products.manage"))
 ):
-    """Create a new product"""
-    start = datetime.now()
+    if str(ctx.tenant_id) != req.tenant_id:
+        raise HTTPException(403, "Tenant mismatch")
+
+    # SKU must be unique per tenant
+    if db.query(Product).filter(
+        Product.tenant_id == ctx.tenant_id,
+        Product.sku == req.sku,
+        Product.deleted_at.is_(None)
+    ).first():
+        raise HTTPException(409, "SKU already exists in your catalog")
+
+    category_id = None
+    if req.category_id:
+        try:
+            category_id = UUID(req.category_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid category_id")
+        if not db.query(Category).filter(
+            Category.category_id == category_id,
+            Category.tenant_id == ctx.tenant_id,
+            Category.deleted_at.is_(None)
+        ).first():
+            raise HTTPException(404, "Category not found")
+
+    vendor_id = None
+    if req.vendor_id:
+        try:
+            vendor_id = UUID(req.vendor_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid vendor_id")
+        if not db.query(Vendor).filter(
+            Vendor.vendor_id == vendor_id,
+            Vendor.tenant_id == ctx.tenant_id
+        ).first():
+            raise HTTPException(404, "Vendor not found")
+
+    product = Product(
+        product_id=uuid.uuid4(),
+        tenant_id=ctx.tenant_id,
+        vendor_id=vendor_id,
+        category_id=category_id,
+        sku=req.sku.strip(),
+        name=req.name.strip(),
+        description=req.description,
+        brand=req.brand,
+        base_price_minor=req.base_price_minor,
+        currency=req.currency or "GBP",
+        tax_rate=req.tax_rate or 0.0,
+        product_type=req.product_type or "physical",
+        product_metadata=req.product_metadata or {},
+        active=True
+    )
+    db.add(product)
     try:
-        req_total.labels(operation="create_product", status="start").inc()
-
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        # Verify category if provided
-        category_uuid = None
-        if req.category_id:
-            category = db.query(Category).filter(Category.category_id == uuid.UUID(req.category_id)).first()
-            if not category:
-                raise HTTPException(status_code=404, detail="Category not found")
-            category_uuid = uuid.UUID(req.category_id)
-
-        # Create product
-        product = Product(
-            product_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(req.tenant_id),
-            category_id=category_uuid,
-            sku=req.sku,
-            name=req.name,
-            description=req.description,
-            brand=req.brand,
-            manufacturer=req.manufacturer,
-            base_price_minor=req.base_price_minor,
-            currency=req.currency,
-            tax_rate=req.tax_rate,
-            product_type=req.product_type,
-            active=True,
-            product_metadata=req.product_metadata
-        )
-        db.add(product)
         db.commit()
         db.refresh(product)
-
-        req_total.labels(operation="create_product", status="success").inc()
-        req_duration.labels(operation="create_product").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Created product: {product.product_id} ({product.name})")
-
-        return {
-            "product_id": str(product.product_id),
-            "tenant_id": str(product.tenant_id),
-            "category_id": str(product.category_id) if product.category_id else None,
-            "sku": product.sku,
-            "name": product.name,
-            "base_price_minor": product.base_price_minor,
-            "currency": product.currency,
-            "created_at": product.created_at.isoformat()
-        }
-    except ValueError:
-        req_total.labels(operation="create_product", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant ID or category ID format")
-    except HTTPException:
-        req_total.labels(operation="create_product", status="error").inc()
-        raise
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
-        req_total.labels(operation="create_product", status="error").inc()
-        raise HTTPException(status_code=400, detail="Product SKU already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_product", status="error").inc()
-        logger.error(f"❌ Product creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(409, "SKU or data conflict")
+
+    return {
+        "product_id": str(product.product_id),
+        "sku": product.sku,
+        "name": product.name,
+        "base_price_minor": product.base_price_minor,
+        "active": True
+    }
 
 
-@app.get("/v1/catalog/products")
+@router.get("/v1/catalog/products")
 async def list_products(
-        tenant_id: Optional[str] = Query(None),
-        category_id: Optional[str] = Query(None),
-        active: Optional[bool] = Query(None),
-        db: Session = Depends(get_db),
-        limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
+    category_id: Optional[str] = None,
+    vendor_id: Optional[str] = None,
+    active: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("catalog.products.view"))
+):
+    q = db.query(Product).filter(
+        Product.tenant_id == ctx.tenant_id,
+        Product.deleted_at.is_(None)
+    )
+
+    if category_id:
+        q = q.filter(Product.category_id == UUID(category_id))
+    if vendor_id:
+        q = q.filter(Product.vendor_id == UUID(vendor_id))
+    if active is not None:
+        q = q.filter(Product.active == active)
+    if search:
+        q = q.filter(
+            or_(
+                Product.name.ilike(f"%{search}%"),
+                Product.sku.ilike(f"%{search}%"),
+                Product.brand.ilike(f"%{search}%")
             )
         )
-):
-    """List products"""
-    try:
-        q = db.query(Product)
-        if tenant_id:
-            q = q.filter(Product.tenant_id == uuid.UUID(tenant_id))
-        if category_id:
-            q = q.filter(Product.category_id == uuid.UUID(category_id))
-        if active is not None:
-            q = q.filter(Product.active == active)
 
-        total = q.count()
-        products = q.order_by(Product.created_at.desc()).limit(limit).offset(offset).all()
+    total = q.count()
+    items = q.order_by(Product.name).offset(offset).limit(limit).all()
 
-        return {
-            "products": [
-                {
-                    "product_id": str(p.product_id),
-                    "tenant_id": str(p.tenant_id),
-                    "category_id": str(p.category_id) if p.category_id else None,
-                    "sku": p.sku,
-                    "name": p.name,
-                    "description": p.description,
-                    "brand": p.brand,
-                    "base_price_minor": p.base_price_minor,
-                    "currency": p.currency,
-                    "active": p.active,
-                    "created_at": p.created_at.isoformat()
-                }
-                for p in products
-            ],
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
-    except Exception as e:
-        logger.error(f"❌ List products failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "products": [
+            {
+                "product_id": str(p.product_id),
+                "sku": p.sku,
+                "name": p.name,
+                "brand": p.brand,
+                "base_price_minor": p.base_price_minor,
+                "currency": p.currency,
+                "category_id": str(p.category_id) if p.category_id else None,
+                "active": p.active
+            }
+            for p in items
+        ]
+    }
 
 
-@app.post("/v1/catalog/variants", status_code=201)
+# =============================================================================
+# VARIANT ENDPOINTS
+# =============================================================================
+
+@router.post("/v1/catalog/variants", status_code=201)
 async def create_variant(
-        req: VariantRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.variants.manage",
-                None
-            )
-        )
+    req: VariantRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("catalog.variants.manage"))
 ):
-    """Create a new product variant"""
-    start = datetime.now()
     try:
-        req_total.labels(operation="create_variant", status="start").inc()
-
-        # Verify product exists and get tenant_id
-        product = db.query(Product).filter(Product.product_id == uuid.UUID(req.product_id)).first()
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        # Create variant
-        variant = Variant(
-            variant_id=uuid.uuid4(),
-            product_id=uuid.UUID(req.product_id),
-            tenant_id=product.tenant_id,
-            sku=req.sku,
-            name=req.name,
-            attributes=req.attributes,
-            price_minor=req.price_minor,
-            currency=req.currency,
-            stock_quantity=req.stock_quantity,
-            low_stock_threshold=req.low_stock_threshold,
-            active=True
-        )
-        db.add(variant)
-        db.commit()
-        db.refresh(variant)
-
-        req_total.labels(operation="create_variant", status="success").inc()
-        req_duration.labels(operation="create_variant").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Created variant: {variant.variant_id} ({variant.name})")
-
-        return {
-            "variant_id": str(variant.variant_id),
-            "product_id": str(variant.product_id),
-            "tenant_id": str(variant.tenant_id),
-            "sku": variant.sku,
-            "name": variant.name,
-            "attributes": variant.attributes,
-            "price_minor": variant.price_minor,
-            "currency": variant.currency,
-            "stock_quantity": variant.stock_quantity,
-            "created_at": variant.created_at.isoformat()
-        }
+        product_id = UUID(req.product_id)
     except ValueError:
-        req_total.labels(operation="create_variant", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid product ID format")
-    except HTTPException:
-        req_total.labels(operation="create_variant", status="error").inc()
-        raise
+        raise HTTPException(400, "Invalid product_id")
+
+    product = db.query(Product).filter(
+        Product.product_id == product_id,
+        Product.tenant_id == ctx.tenant_id,
+        Product.deleted_at.is_(None)
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+
+    if db.query(Variant).filter(
+        Variant.tenant_id == ctx.tenant_id,
+        Variant.sku == req.sku,
+        Variant.deleted_at.is_(None)
+    ).first():
+        raise HTTPException(409, "Variant SKU already exists")
+
+    variant = Variant(
+        variant_id=uuid.uuid4(),
+        product_id=product.product_id,
+        tenant_id=ctx.tenant_id,
+        sku=req.sku.strip(),
+        name=req.name.strip(),
+        attributes=req.attributes or {},
+        price_minor=req.price_minor or product.base_price_minor,
+        currency=req.currency or "GBP",
+        stock_quantity=req.stock_quantity or 0,
+        active=True
+    )
+    db.add(variant)
+    try:
+        db.commit()
+        return {"variant_id": str(variant.variant_id), "sku": variant.sku}
     except IntegrityError:
         db.rollback()
-        req_total.labels(operation="create_variant", status="error").inc()
-        raise HTTPException(status_code=400, detail="Variant SKU already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_variant", status="error").inc()
-        logger.error(f"❌ Variant creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(409, "Variant SKU conflict")
 
 
-@app.get("/v1/catalog/products/{product_id}")
-async def get_product(
-        product_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
-            )
-        )
+# =============================================================================
+# STORE PRODUCT ENDPOINTS
+# =============================================================================
+
+@router.post("/v1/store-products", status_code=201)
+async def add_product_to_store(
+    req: StoreProductRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("stores.products.manage"))
 ):
-    """Get a specific product by ID"""
     try:
-        product = db.query(Product).filter(Product.product_id == uuid.UUID(product_id)).first()
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        # Get category details if exists
-        category = None
-        if product.category_id:
-            category = db.query(Category).filter(Category.category_id == product.category_id).first()
-
-        return {
-            "product_id": str(product.product_id),
-            "tenant_id": str(product.tenant_id),
-            "category_id": str(product.category_id) if product.category_id else None,
-            "category_name": category.name if category else None,
-            "sku": product.sku,
-            "name": product.name,
-            "description": product.description,
-            "brand": product.brand,
-            "manufacturer": product.manufacturer,
-            "base_price_minor": product.base_price_minor,
-            "currency": product.currency,
-            "tax_rate": product.tax_rate,
-            "product_type": product.product_type,
-            "active": product.active,
-            "product_metadata": product.product_metadata,
-            "created_at": product.created_at.isoformat(),
-            "updated_at": product.updated_at.isoformat() if product.updated_at else None
-        }
+        store_id = UUID(req.store_id)
+        product_id = UUID(req.product_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid product ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get product failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(400, "Invalid store_id or product_id")
+
+    store = db.query(Store).filter(
+        Store.store_id == store_id,
+        Store.tenant_id == ctx.tenant_id
+    ).first()
+    if not store:
+        raise HTTPException(404, "Store not found")
+
+    product = db.query(Product).filter(
+        Product.product_id == product_id,
+        Product.tenant_id == ctx.tenant_id,
+        Product.deleted_at.is_(None)
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+
+    existing = db.query(StoreProduct).filter(
+        StoreProduct.store_id == store_id,
+        StoreProduct.product_id == product_id
+    ).first()
+    if existing:
+        raise HTTPException(409, "Product already in store")
+
+    sp = StoreProduct(
+        id=uuid.uuid4(),
+        store_id=store_id,
+        tenant_id=ctx.tenant_id,
+        product_id=product_id,
+        price_minor=req.price_minor or product.base_price_minor,
+        currency=req.currency or "GBP",
+        is_available=True,
+        stock_quantity=req.stock_quantity or 0
+    )
+    db.add(sp)
+    db.commit()
+
+    return {
+        "store_product_id": str(sp.id),
+        "product_id": str(product_id),
+        "store_id": str(store_id),
+        "price_minor": sp.price_minor,
+        "is_available": True
+    }
 
 
-@app.get("/v1/catalog/products/{product_id}/variants")
-async def get_product_variants(
-        product_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
-            )
-        )
+@router.get("/v1/stores/{store_id}/products")
+async def list_store_products(
+    store_id: str,
+    limit: int = Query(100, le=500),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("stores.products.view"))
 ):
-    """Get all variants for a specific product"""
     try:
-        # Verify product exists
-        product = db.query(Product).filter(Product.product_id == uuid.UUID(product_id)).first()
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        # Get variants
-        variants = db.query(Variant).filter(
-            Variant.product_id == uuid.UUID(product_id)
-        ).order_by(Variant.created_at.desc()).all()
-
-        return {
-            "product_id": product_id,
-            "product_name": product.name,
-            "product_sku": product.sku,
-            "variants": [
-                {
-                    "variant_id": str(v.variant_id),
-                    "sku": v.sku,
-                    "name": v.name,
-                    "attributes": v.attributes,
-                    "price_minor": v.price_minor,
-                    "currency": v.currency,
-                    "stock_quantity": v.stock_quantity,
-                    "low_stock_threshold": v.low_stock_threshold,
-                    "active": v.active,
-                    "created_at": v.created_at.isoformat()
-                }
-                for v in variants
-            ],
-            "total": len(variants)
-        }
+        store_uuid = UUID(store_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid product ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get product variants failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(400, "Invalid store_id")
 
+    store = db.query(Store).filter(
+        Store.store_id == store_uuid,
+        Store.tenant_id == ctx.tenant_id
+    ).first()
+    if not store:
+        raise HTTPException(404, "Store not found")
 
-@app.get("/v1/catalog/products/{product_id}/category")
-async def get_product_category(
-        product_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
-            )
-        )
-):
-    """Get category for a specific product"""
-    try:
-        # Get product
-        product = db.query(Product).filter(Product.product_id == uuid.UUID(product_id)).first()
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
+    q = db.query(StoreProduct, Product, Variant).outerjoin(
+        Product, StoreProduct.product_id == Product.product_id
+    ).outerjoin(
+        Variant, and_(Variant.product_id == Product.product_id, Variant.active == True)
+    ).filter(
+        StoreProduct.store_id == store_uuid,
+        StoreProduct.tenant_id == ctx.tenant_id
+    )
 
-        # Get category
-        if not product.category_id:
-            return {
-                "product_id": product_id,
-                "product_name": product.name,
-                "category": None,
-                "message": "No category assigned to this product"
-            }
+    total = q.count()
+    results = q.offset(offset).limit(limit).all()
 
-        category = db.query(Category).filter(Category.category_id == product.category_id).first()
+    products = []
+    seen = set()
+    for sp, p, v in results:
+        key = str(p.product_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        products.append({
+            "product_id": str(p.product_id),
+            "sku": p.sku,
+            "name": p.name,
+            "brand": p.brand,
+            "store_price_minor": sp.price_minor,
+            "currency": sp.currency,
+            "is_available": sp.is_available,
+            "stock_quantity": sp.stock_quantity,
+            "variants": []  # You can expand this later
+        })
 
-        return {
-            "product_id": product_id,
-            "product_name": product.name,
-            "category": {
-                "category_id": str(category.category_id),
-                "name": category.name,
-                "code": category.code,
-                "description": category.description,
-                "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
-                "active": category.active
-            } if category else None
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid product ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get product category failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/v1/catalog/variants")
-async def list_variants(
-        product_id: Optional[str] = Query(None),
-        db: Session = Depends(get_db),
-        limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
-            )
-        )
-):
-    """List product variants"""
-    try:
-        q = db.query(Variant)
-        if product_id:
-            q = q.filter(Variant.product_id == uuid.UUID(product_id))
-
-        total = q.count()
-        variants = q.order_by(Variant.created_at.desc()).limit(limit).offset(offset).all()
-
-        return {
-            "variants": [
-                {
-                    "variant_id": str(v.variant_id),
-                    "product_id": str(v.product_id),
-                    "sku": v.sku,
-                    "name": v.name,
-                    "attributes": v.attributes,
-                    "price_minor": v.price_minor,
-                    "currency": v.currency,
-                    "stock_quantity": v.stock_quantity,
-                    "low_stock_threshold": v.low_stock_threshold,
-                    "active": v.active,
-                    "created_at": v.created_at.isoformat()
-                }
-                for v in variants
-            ],
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid product ID format")
-    except Exception as e:
-        logger.error(f"❌ List variants failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/v1/catalog/variants/{variant_id}")
-async def get_variant(
-        variant_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.products.view",
-                None
-            )
-        )
-):
-    """Get a specific variant by ID"""
-    try:
-        variant = db.query(Variant).filter(Variant.variant_id == uuid.UUID(variant_id)).first()
-        if not variant:
-            raise HTTPException(status_code=404, detail="Variant not found")
-
-        # Get product details
-        product = db.query(Product).filter(Product.product_id == variant.product_id).first()
-
-        return {
-            "variant_id": str(variant.variant_id),
-            "product_id": str(variant.product_id),
-            "product_name": product.name if product else None,
-            "product_sku": product.sku if product else None,
-            "tenant_id": str(variant.tenant_id),
-            "sku": variant.sku,
-            "name": variant.name,
-            "attributes": variant.attributes,
-            "price_minor": variant.price_minor,
-            "currency": variant.currency,
-            "stock_quantity": variant.stock_quantity,
-            "low_stock_threshold": variant.low_stock_threshold,
-            "active": variant.active,
-            "created_at": variant.created_at.isoformat(),
-            "updated_at": variant.updated_at.isoformat() if variant.updated_at else None
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid variant ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get variant failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/v1/catalog/categories/{category_id}")
-async def get_category(
-        category_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "catalog.categories.manage",
-                None
-            )
-        )
-):
-    """Get a specific category by ID"""
-    try:
-        category = db.query(Category).filter(Category.category_id == uuid.UUID(category_id)).first()
-        if not category:
-            raise HTTPException(status_code=404, detail="Category not found")
-
-        # Get parent category if exists
-        parent = None
-        if category.parent_category_id:
-            parent = db.query(Category).filter(Category.category_id == category.parent_category_id).first()
-
-        # Get product count in this category
-        product_count = db.query(Product).filter(Product.category_id == uuid.UUID(category_id)).count()
-
-        return {
-            "category_id": str(category.category_id),
-            "tenant_id": str(category.tenant_id),
-            "name": category.name,
-            "code": category.code,
-            "description": category.description,
-            "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
-            "parent_category_name": parent.name if parent else None,
-            "active": category.active,
-            "product_count": product_count,
-            "created_at": category.created_at.isoformat(),
-            "updated_at": category.updated_at.isoformat() if category.updated_at else None
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid category ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get category failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return {
+        "store_id": store_id,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "products": products
+    }
