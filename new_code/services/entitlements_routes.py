@@ -1,491 +1,433 @@
+# services/core/routes/entitlements.py
+"""
+Entitlement Service
+- Check if tenant can use a feature
+- Record feature usage with concurrency safety
+- Proper billing cycle anchoring (not calendar-based)
+- Support for daily, weekly, monthly, yearly reset periods
+"""
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
-from fastapi import Depends, APIRouter, HTTPException, Query
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update
+from dateutil.relativedelta import relativedelta
 
-from Models import Tenant, Feature, PlanFeature, TenantSubscription, SubscriptionUsage
-from Schemas import UserContext, CheckEntitlementRequest, RecordUsageRequest
+from Models import (
+    TenantSubscription, PlanFeature, Feature, SubscriptionUsage
+)
+from Schemas import CheckEntitlementRequest, RecordUsageRequest, UserContext
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission, check_tenant_access
+from core.permission_check_helpers import require_permission
 from utils.logger import logger
-from utils.metrics import req_total, req_duration
 
-# ==================================================================================
-# ENTITLEMENTS & USAGE TRACKING ENDPOINTS
-# ==================================================================================
-
-app = APIRouter()
+router = APIRouter(prefix="/v1/entitlements", tags=["entitlements"])
 
 
-# ==================================================================================
-# UTILITY FUNCTIONS
-# ==================================================================================
+# ============================================================================
+# Helper Functions - Proper Calendar Logic
+# ============================================================================
+
+def get_reset_delta(reset_period: str) -> relativedelta:
+    """Get the delta for a reset period using proper calendar math"""
+    if reset_period == "daily":
+        return relativedelta(days=1)
+    elif reset_period == "weekly":
+        return relativedelta(weeks=1)
+    elif reset_period == "monthly":
+        return relativedelta(months=1)  # Proper month handling (28/29/30/31 days)
+    elif reset_period == "yearly":
+        return relativedelta(years=1)  # Proper year handling (leap years)
+    else:
+        return relativedelta(months=1)  # Default to monthly
 
 
-def calculate_period_start_end(reset_period: str) -> tuple:
-    """Calculate period start/end based on reset_period"""
+def get_current_period_start(sub: TenantSubscription, reset_period: str) -> datetime:
+    """
+    Calculate current period start anchored to billing cycle, NOT calendar.
+    
+    This ensures:
+    - Monthly resets happen on the same day each month (e.g., 15th)
+    - Yearly resets happen on the anniversary date
+    - No drift due to Feb having 28 days
+    """
+    if not sub.current_period_start:
+        # Fallback to now if no billing anchor
+        return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    anchor = sub.current_period_start
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    
     now = datetime.now(timezone.utc)
     
     if reset_period == "daily":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1) - timedelta(microseconds=1)
-    elif reset_period == "weekly":
-        start = now - timedelta(days=now.weekday())  # Monday
-        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=7) - timedelta(microseconds=1)
-    elif reset_period == "monthly":
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        # Calculate next month
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1, day=1)
-        else:
-            end = start.replace(month=start.month + 1, day=1)
-        end = end - timedelta(microseconds=1)
-    elif reset_period == "yearly":
-        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        end = start.replace(year=start.year + 1) - timedelta(microseconds=1)
-    else:
-        raise ValueError(f"Invalid reset_period: {reset_period}")
+        # Daily: start of current day
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    return start, end
+    elif reset_period == "weekly":
+        # Weekly: align to billing anchor's weekday
+        anchor_weekday = anchor.weekday()
+        current_weekday = now.weekday()
+        days_since_anchor_weekday = (current_weekday - anchor_weekday) % 7
+        period_start = now - timedelta(days=days_since_anchor_weekday)
+        return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    elif reset_period == "monthly":
+        # Monthly: same day of month as billing start
+        anchor_day = min(anchor.day, 28)  # Handle months with fewer days
+        
+        # Calculate months since anchor
+        months_diff = (now.year - anchor.year) * 12 + (now.month - anchor.month)
+        
+        # If we haven't reached the anchor day this month, we're in the previous period
+        if now.day < anchor_day:
+            months_diff -= 1
+        
+        period_start = anchor + relativedelta(months=months_diff)
+        return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    elif reset_period == "yearly":
+        # Yearly: anniversary of billing start
+        years_diff = now.year - anchor.year
+        
+        # If we haven't reached the anniversary this year, we're in the previous period
+        anchor_this_year = anchor.replace(year=now.year)
+        if now < anchor_this_year:
+            years_diff -= 1
+        
+        period_start = anchor + relativedelta(years=years_diff)
+        return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    else:
+        # Default to monthly
+        return get_current_period_start(sub, "monthly")
 
 
-async def check_entitlement_internal(db: Session, tenant_id: uuid.UUID, feature_code: str) -> Dict[str, Any]:
-    """Internal function to check entitlement (used by record_usage)"""
-    # Get tenant subscription
-    subscription = db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == tenant_id,
-        TenantSubscription.status == "active"
-    ).first()
+def is_subscription_active(sub: TenantSubscription) -> bool:
+    """Check if subscription is currently active (including trial)"""
+    if not sub:
+        return False
+    
+    now = datetime.now(timezone.utc)
+    
+    # Check status
+    if sub.status not in ["active", "trialing"]:
+        return False
+    
+    # Check if trial expired
+    if sub.status == "trialing" and sub.trial_ends_at:
+        if sub.trial_ends_at.tzinfo is None:
+            trial_end = sub.trial_ends_at.replace(tzinfo=timezone.utc)
+        else:
+            trial_end = sub.trial_ends_at
+        if trial_end < now:
+            return False
+    
+    # Check if subscription ended (after cancellation)
+    if sub.ends_at:
+        if sub.ends_at.tzinfo is None:
+            ends = sub.ends_at.replace(tzinfo=timezone.utc)
+        else:
+            ends = sub.ends_at
+        if ends < now:
+            return False
+    
+    return True
 
-    if not subscription:
-        return {"allowed": False, "reason": "No active subscription found"}
+
+# ============================================================================
+# Entitlement Endpoints
+# ============================================================================
+
+@router.post("/check")
+async def check_entitlement(
+    req: CheckEntitlementRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("entitlements.check"))
+):
+    """
+    Check if tenant is entitled to use a feature.
+    
+    Returns:
+    - allowed: bool - whether the operation is permitted
+    - reason: str - why it's not allowed (if applicable)
+    - usage/limit/remaining: current usage stats (if metered)
+    """
+    if str(ctx.tenant_id) != req.tenant_id:
+        raise HTTPException(403, "Access denied to other tenant's entitlements")
+
+    # Get subscription with status check
+    sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    
+    if not is_subscription_active(sub):
+        return {
+            "allowed": False,
+            "reason": "no_active_subscription",
+            "message": "No active subscription found. Please subscribe to a plan."
+        }
 
     # Check if feature is in plan
-    plan_feature = db.query(PlanFeature).filter(
-        PlanFeature.plan_code == subscription.plan_code,
-        PlanFeature.feature_code == feature_code,
-        PlanFeature.enabled == True
+    pf = db.query(PlanFeature).filter_by(
+        plan_code=sub.plan_code,
+        feature_code=req.feature_code,
+        enabled=True
     ).first()
-
-    if not plan_feature:
-        return {"allowed": False, "reason": "Feature not available in subscription plan"}
-
-    # Check usage limits (if any)
-    limits = plan_feature.limits or {}
-    max_value = limits.get("max_value")
     
-    if max_value:
-        # Get feature metadata
-        feature = db.query(Feature).filter(Feature.code == feature_code).first()
-        if not feature:
-            return {"allowed": False, "reason": "Feature not found"}
-        
-        # Calculate period
-        period_start, period_end = calculate_period_start_end(feature.reset_period)
-        
-        # Get current usage
-        usage = db.query(SubscriptionUsage).filter(
-            SubscriptionUsage.tenant_id == tenant_id,
-            SubscriptionUsage.feature_code == feature_code,
-            SubscriptionUsage.period_start == period_start
-        ).first()
-        
-        usage_count = usage.usage_count if usage else 0
-        
-        if usage_count >= max_value:
-            return {
-                "allowed": False,
-                "reason": "Usage limit exceeded",
-                "usage": usage_count,
-                "limit": max_value
-            }
+    if not pf:
+        return {
+            "allowed": False,
+            "reason": "feature_not_in_plan",
+            "message": f"Feature '{req.feature_code}' is not included in your current plan."
+        }
 
-    return {"allowed": True, "limits": limits}
-
-
-# ==================================================================================
-# ENDPOINTS
-# ==================================================================================
-
-@app.post("/v1/entitlements/check")
-async def check_entitlement(
-        req: CheckEntitlementRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("entitlements.check"))
-):
-    """Check if tenant has access to a feature"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-        
-        # Get tenant subscription
-        subscription = db.query(TenantSubscription).filter(
-            TenantSubscription.tenant_id == uuid.UUID(req.tenant_id),
-            TenantSubscription.status == "active"
-        ).first()
-
-        if not subscription:
-            return {
-                "allowed": False,
-                "reason": "No active subscription found",
-                "tenant_id": req.tenant_id,
-                "feature_code": req.feature_code
-            }
-
-        # Check if feature is in plan
-        plan_feature = db.query(PlanFeature).filter(
-            PlanFeature.plan_code == subscription.plan_code,
-            PlanFeature.feature_code == req.feature_code,
-            PlanFeature.enabled == True
-        ).first()
-
-        if not plan_feature:
-            return {
-                "allowed": False,
-                "reason": "Feature not available in subscription plan",
-                "tenant_id": req.tenant_id,
-                "feature_code": req.feature_code,
-                "plan_code": subscription.plan_code
-            }
-
-        # Check usage limits (if any)
-        limits = plan_feature.limits or {}
-        max_value = limits.get("max_value")
-        
-        if max_value:
-            # Get feature metadata
-            feature = db.query(Feature).filter(Feature.code == req.feature_code).first()
-            if not feature:
-                return {
-                    "allowed": False,
-                    "reason": "Feature not found",
-                    "tenant_id": req.tenant_id,
-                    "feature_code": req.feature_code
-                }
-            
-            # Calculate period based on feature's reset_period
-            period_start, period_end = calculate_period_start_end(feature.reset_period)
-            
-            # Get current period usage
-            usage = db.query(SubscriptionUsage).filter(
-                SubscriptionUsage.tenant_id == uuid.UUID(req.tenant_id),
-                SubscriptionUsage.feature_code == req.feature_code,
-                SubscriptionUsage.period_start == period_start
-            ).first()
-
-            usage_count = usage.usage_count if usage else 0
-
-            if usage_count >= max_value:
-                return {
-                    "allowed": False,
-                    "reason": "Usage limit exceeded",
-                    "tenant_id": req.tenant_id,
-                    "feature_code": req.feature_code,
-                    "usage": usage_count,
-                    "limit": max_value,
-                    "remaining": 0
-                }
-
-            return {
-                "allowed": True,
-                "tenant_id": req.tenant_id,
-                "feature_code": req.feature_code,
-                "usage": usage_count,
-                "limit": max_value,
-                "remaining": max_value - usage_count
-            }
-
-        # No limits, access allowed
+    # Check limits
+    limit = (pf.limits or {}).get("max_value")
+    warn_at = (pf.limits or {}).get("warn_at")
+    
+    if not limit:
+        # Unlimited feature
         return {
             "allowed": True,
-            "tenant_id": req.tenant_id,
-            "feature_code": req.feature_code,
-            "limits": limits
+            "unlimited": True,
+            "message": "Feature has no usage limits."
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Check entitlement failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
-
-@app.post("/v1/entitlements/check-bulk")
-async def check_entitlements_bulk(
-        tenant_id: str,
-        feature_codes: List[str] = Query(...),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("entitlements.check"))
-):
-    """Bulk check entitlements for multiple features"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-        
-        results = []
-        for feature_code in feature_codes:
-            entitlement = await check_entitlement_internal(db, uuid.UUID(tenant_id), feature_code)
-            results.append({
-                "feature_code": feature_code,
-                "allowed": entitlement["allowed"],
-                "reason": entitlement.get("reason"),
-                "usage": entitlement.get("usage"),
-                "limit": entitlement.get("limit"),
-                "remaining": entitlement.get("limit", 0) - entitlement.get("usage", 0) if entitlement.get("limit") else None
-            })
-        
+    # Get feature details for reset period
+    feature = db.query(Feature).filter_by(code=req.feature_code).first()
+    if not feature:
         return {
-            "tenant_id": tenant_id,
-            "results": results
+            "allowed": False,
+            "reason": "feature_not_found",
+            "message": "Feature configuration not found."
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Bulk check entitlements failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+
+    # Calculate period (anchored to billing cycle)
+    period_start = get_current_period_start(sub, feature.reset_period)
+    period_end = period_start + get_reset_delta(feature.reset_period)
+    
+    # Get current usage
+    usage = db.query(SubscriptionUsage).filter_by(
+        tenant_id=ctx.tenant_id,
+        feature_code=req.feature_code,
+        period_start=period_start
+    ).first()
+
+    used = usage.usage_count if usage else 0
+    requested = req.requested_count or 1
+    
+    # Check if request would exceed limit
+    would_exceed = (used + requested) > limit
+    
+    response = {
+        "allowed": not would_exceed,
+        "used": used,
+        "limit": limit,
+        "remaining": max(0, limit - used),
+        "requested": requested,
+        "resets_at": period_end.isoformat(),
+        "period_start": period_start.isoformat()
+    }
+    
+    if would_exceed:
+        response["reason"] = "limit_exceeded"
+        response["message"] = f"Would exceed limit. Used {used}/{limit}, requested {requested}."
+    
+    if warn_at and used >= warn_at and not would_exceed:
+        response["warning"] = f"Approaching limit: {used}/{limit} used ({(used/limit)*100:.0f}%)"
+    
+    return response
 
 
-@app.post("/v1/entitlements/usage/record", status_code=201)
+@router.post("/usage/record", status_code=201)
 async def record_usage(
-        req: RecordUsageRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("entitlements.usage.record"))
+    req: RecordUsageRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("entitlements.usage.record"))
 ):
-    """Record feature usage with limit checking and race condition protection"""
-    start = datetime.now()
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-        
-        req_total.labels(operation="record_usage", status="start").inc()
-        
-        # Check entitlement first
-        entitlement = await check_entitlement_internal(db, uuid.UUID(req.tenant_id), req.feature_code)
-        if not entitlement["allowed"]:
+    """
+    Record feature usage with concurrency safety.
+    
+    Uses SELECT FOR UPDATE to prevent race conditions when multiple
+    requests try to update usage simultaneously.
+    """
+    if str(ctx.tenant_id) != req.tenant_id:
+        raise HTTPException(403, "Access denied to other tenant's usage")
+
+    # Get subscription with status check
+    sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    
+    if not is_subscription_active(sub):
+        raise HTTPException(403, "No active subscription")
+
+    # Check if feature is in plan
+    pf = db.query(PlanFeature).filter_by(
+        plan_code=sub.plan_code,
+        feature_code=req.feature_code,
+        enabled=True
+    ).first()
+    
+    if not pf:
+        raise HTTPException(403, f"Feature '{req.feature_code}' not in your plan")
+
+    # Get feature details
+    feature = db.query(Feature).filter_by(code=req.feature_code).first()
+    if not feature:
+        raise HTTPException(404, "Feature configuration not found")
+
+    # Calculate period (anchored to billing cycle)
+    period_start = get_current_period_start(sub, feature.reset_period)
+    period_end = period_start + get_reset_delta(feature.reset_period)
+    
+    # Get limit
+    limit = (pf.limits or {}).get("max_value")
+    
+    # CRITICAL: Use with_for_update() for concurrency safety
+    # This locks the row until the transaction completes
+    usage = db.query(SubscriptionUsage).filter_by(
+        tenant_id=ctx.tenant_id,
+        feature_code=req.feature_code,
+        period_start=period_start
+    ).with_for_update().first()
+
+    if usage:
+        # Check limit before incrementing
+        if limit and (usage.usage_count + req.count) > limit:
             raise HTTPException(
-                status_code=429,
-                detail=f"Feature limit exceeded: {entitlement.get('reason')}"
+                429,
+                f"Usage limit exceeded. Current: {usage.usage_count}/{limit}, requested: {req.count}"
             )
         
-        # Get feature metadata
-        feature = db.query(Feature).filter(Feature.code == req.feature_code).first()
-        if not feature:
-            raise HTTPException(status_code=404, detail="Feature not found")
-        
-        # Calculate period based on feature's reset_period
-        period_start, period_end = calculate_period_start_end(feature.reset_period)
-        
-        # Use transaction with row-level locking
-        usage = None
-        
-        # Lock the usage row for update (prevents race conditions)
-        usage = db.query(SubscriptionUsage).filter(
-            SubscriptionUsage.tenant_id == uuid.UUID(req.tenant_id),
-            SubscriptionUsage.feature_code == req.feature_code,
-            SubscriptionUsage.usage_type == req.usage_type,
-            SubscriptionUsage.period_start == period_start
-        ).with_for_update().first()
-        
-        if usage:
-            # Check limit before incrementing
-            plan_feature = db.query(PlanFeature).join(
-                TenantSubscription, PlanFeature.plan_code == TenantSubscription.plan_code
-            ).filter(
-                TenantSubscription.tenant_id == uuid.UUID(req.tenant_id),
-                PlanFeature.feature_code == req.feature_code,
-                PlanFeature.enabled == True
-            ).first()
-            
-            if plan_feature and plan_feature.limits:
-                max_value = plan_feature.limits.get("max_value")
-                if max_value and usage.usage_count + req.count > max_value:
-                    db.rollback()
-                    raise HTTPException(
-                        status_code=429,
-                        detail=f"Feature limit exceeded. Used: {usage.usage_count}, Requested: {req.count}, Limit: {max_value}"
-                    )
-            
-            usage.usage_count += req.count
-            usage.updated_at = datetime.now(timezone.utc)
-        else:
-            usage = SubscriptionUsage(
-                id=uuid.uuid4(),
-                tenant_id=uuid.UUID(req.tenant_id),
-                feature_code=req.feature_code,
-                usage_type=req.usage_type,
-                usage_count=req.count,
-                period_start=period_start,
-                period_end=period_end
+        usage.usage_count += req.count
+        usage.updated_at = datetime.now(timezone.utc)
+    else:
+        # New usage record
+        if limit and req.count > limit:
+            raise HTTPException(
+                429,
+                f"Usage limit exceeded. Limit: {limit}, requested: {req.count}"
             )
-            db.add(usage)
         
-        db.commit()
-        
-        req_total.labels(operation="record_usage", status="success").inc()
-        req_duration.labels(operation="record_usage").observe(
-            (datetime.now() - start).total_seconds()
+        usage = SubscriptionUsage(
+            id=uuid.uuid4(),
+            tenant_id=ctx.tenant_id,
+            feature_code=req.feature_code,
+            usage_type=req.usage_type or feature.usage_type or "count",
+            usage_count=req.count,
+            period_start=period_start,
+            period_end=period_end
         )
+        db.add(usage)
 
-        logger.info(f"✅ Recorded usage: {req.count} for feature {req.feature_code}, tenant {req.tenant_id}")
-
-        return {
-            "tenant_id": req.tenant_id,
-            "feature_code": req.feature_code,
-            "usage_type": req.usage_type,
-            "count": req.count,
-            "total_usage": usage.usage_count,
-            "period": {
-                "start": usage.period_start.isoformat(),
-                "end": usage.period_end.isoformat(),
-                "reset_period": feature.reset_period
-            }
-        }
-    except HTTPException:
-        req_total.labels(operation="record_usage", status="error").inc()
-        raise
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="record_usage", status="error").inc()
-        logger.error(f"❌ Record usage failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    db.commit()
+    
+    logger.info(f"✅ Recorded usage for tenant {ctx.tenant_id}: {req.feature_code} +{req.count} (total: {usage.usage_count})")
+    
+    return {
+        "recorded": req.count,
+        "total": usage.usage_count,
+        "limit": limit,
+        "remaining": (limit - usage.usage_count) if limit else None,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat()
+    }
 
 
-@app.get("/v1/entitlements/usage/{tenant_id}")
+@router.get("/usage")
 async def get_usage_summary(
-        tenant_id: str,
-        feature_code: Optional[str] = Query(None),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("entitlements.usage.record"))
+    feature_code: Optional[str] = None,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("entitlements.usage.view"))
 ):
-    """Get usage summary for a tenant"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
+    """Get usage summary for current tenant"""
+    sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    
+    if not sub:
+        return {"usage": [], "message": "No subscription found"}
+    
+    # Get all features in plan
+    plan_features = db.query(PlanFeature, Feature).join(
+        Feature, PlanFeature.feature_code == Feature.code
+    ).filter(
+        PlanFeature.plan_code == sub.plan_code,
+        PlanFeature.enabled == True
+    )
+    
+    if feature_code:
+        plan_features = plan_features.filter(Feature.code == feature_code)
+    
+    plan_features = plan_features.all()
+    
+    usage_data = []
+    now = datetime.now(timezone.utc)
+    
+    for pf, feature in plan_features:
+        period_start = get_current_period_start(sub, feature.reset_period)
+        period_end = period_start + get_reset_delta(feature.reset_period)
         
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        # Build query
-        q = db.query(SubscriptionUsage).filter(SubscriptionUsage.tenant_id == uuid.UUID(tenant_id))
-        if feature_code:
-            q = q.filter(SubscriptionUsage.feature_code == feature_code)
-
-        # Get current period usage
-        now = datetime.now(timezone.utc)
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        current_usage = q.filter(SubscriptionUsage.period_start >= month_start).all()
-
-        return {
-            "tenant_id": tenant_id,
-            "current_period": {
-                "start": month_start.isoformat(),
-                "usage": [
-                    {
-                        "feature_code": u.feature_code,
-                        "usage_type": u.usage_type,
-                        "count": u.usage_count,
-                        "period_start": u.period_start.isoformat(),
-                        "period_end": u.period_end.isoformat()
-                    }
-                    for u in current_usage
-                ]
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get usage summary failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/v1/entitlements/usage/{tenant_id}/history")
-async def get_usage_history(
-        tenant_id: str,
-        feature_code: Optional[str] = Query(None),
-        limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("entitlements.usage.record"))
-):
-    """Get usage history for a tenant"""
-    try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
+        usage = db.query(SubscriptionUsage).filter_by(
+            tenant_id=ctx.tenant_id,
+            feature_code=feature.code,
+            period_start=period_start
+        ).first()
         
-        q = db.query(SubscriptionUsage).filter(SubscriptionUsage.tenant_id == uuid.UUID(tenant_id))
-        if feature_code:
-            q = q.filter(SubscriptionUsage.feature_code == feature_code)
-
-        total = q.count()
-        usage_records = q.order_by(SubscriptionUsage.created_at.desc()).limit(limit).offset(offset).all()
-
-        return {
-            "tenant_id": tenant_id,
-            "usage_history": [
-                {
-                    "id": str(u.id),
-                    "feature_code": u.feature_code,
-                    "usage_type": u.usage_type,
-                    "usage_count": u.usage_count,
-                    "period_start": u.period_start.isoformat(),
-                    "period_end": u.period_end.isoformat(),
-                    "created_at": u.created_at.isoformat(),
-                    "updated_at": u.updated_at.isoformat() if u.updated_at else None
-                }
-                for u in usage_records
-            ],
-            "total": total,
+        limit = (pf.limits or {}).get("max_value")
+        used = usage.usage_count if usage else 0
+        
+        usage_data.append({
+            "feature_code": feature.code,
+            "feature_name": feature.name,
+            "category": feature.category,
+            "used": used,
             "limit": limit,
-            "offset": offset
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get usage history failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+            "remaining": (limit - used) if limit else None,
+            "unlimited": limit is None,
+            "reset_period": feature.reset_period,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "percentage_used": round((used / limit) * 100, 1) if limit and limit > 0 else 0
+        })
+    
+    return {
+        "tenant_id": str(ctx.tenant_id),
+        "plan_code": sub.plan_code,
+        "usage": usage_data,
+        "total_features": len(usage_data)
+    }
 
 
-@app.post("/v1/entitlements/usage/reset", status_code=200)
+@router.delete("/usage/{feature_code}/reset", status_code=200)
 async def reset_usage(
-        tenant_id: str,
-        feature_code: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("admin.permissions.manage"))  # Admin only
+    feature_code: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(require_permission("entitlements.usage.manage"))
 ):
-    """Reset usage for a tenant feature (admin only)"""
-    try:
-        # SECURITY: Admin can access any tenant
-        # Regular users cannot use this endpoint due to permission check
-        
-        usage = db.query(SubscriptionUsage).filter(
-            SubscriptionUsage.tenant_id == uuid.UUID(tenant_id),
-            SubscriptionUsage.feature_code == feature_code
-        ).all()
-        
-        if not usage:
-            raise HTTPException(status_code=404, detail="Usage records not found")
-        
-        for u in usage:
-            u.usage_count = 0
-            u.updated_at = datetime.now(timezone.utc)
-        
+    """
+    Reset usage for a feature (admin only).
+    Useful for support cases or billing adjustments.
+    """
+    sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    if not sub:
+        raise HTTPException(404, "No subscription found")
+    
+    feature = db.query(Feature).filter_by(code=feature_code).first()
+    if not feature:
+        raise HTTPException(404, "Feature not found")
+    
+    period_start = get_current_period_start(sub, feature.reset_period)
+    
+    usage = db.query(SubscriptionUsage).filter_by(
+        tenant_id=ctx.tenant_id,
+        feature_code=feature_code,
+        period_start=period_start
+    ).with_for_update().first()
+    
+    if usage:
+        old_count = usage.usage_count
+        usage.usage_count = 0
+        usage.updated_at = datetime.now(timezone.utc)
         db.commit()
-        
-        logger.info(f"✅ Reset usage for tenant {tenant_id}, feature {feature_code}")
-        
-        return {
-            "tenant_id": tenant_id,
-            "feature_code": feature_code,
-            "reset": True,
-            "records_reset": len(usage)
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Reset usage failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.info(f"✅ Reset usage for tenant {ctx.tenant_id}, feature {feature_code}: {old_count} → 0")
+        return {"reset": True, "previous_count": old_count, "feature_code": feature_code}
+    
+    return {"reset": False, "message": "No usage to reset", "feature_code": feature_code}

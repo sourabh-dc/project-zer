@@ -61,6 +61,9 @@ class User(Base):
     api_key = Column(String(255), unique=True, index=True)
     api_key_created_at = Column(DateTime(timezone=True))
     api_key_expires_at = Column(DateTime(timezone=True))
+    failed_login_attempts = Column(Integer, default=0)
+    account_locked_until = Column(DateTime(timezone=True), nullable=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -184,6 +187,10 @@ class UserCostCentre(Base):
     allocated_budget_minor = Column(BigInteger, nullable=False, default=0)
     spent_minor = Column(BigInteger, nullable=False, default=0)
     currency_code = Column(String(3), default="GBP")
+    recurring_budget_minor = Column(BigInteger, default=0)  # Auto-allocated amount
+    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
+    last_reset_date = Column(Date, nullable=True)
+    next_reset_date = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     user = relationship("User", back_populates="cost_centres")
@@ -246,13 +253,15 @@ class TenantSubscription(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
-    payment_method = Column(String(20), nullable=False)  # stripe, trade, etc.
-    status = Column(String(50), nullable=False, index=True)  # active, canceled, etc.
+    pending_plan_code = Column(String(50), nullable=True)  # For upgrade/downgrade at period end
+    payment_method = Column(String(20), nullable=False, default="card")  # stripe, card, trade, etc.
+    status = Column(String(20), nullable=False, index=True, default="trialing")  # trialing, active, canceled, unpaid, past_due
     external_id = Column(String(100), index=True, nullable=True)  # External payment provider ID
-    current_period_start = Column(DateTime(timezone=True), nullable=True)
-    current_period_end = Column(DateTime(timezone=True), nullable=True)
-    trial_end = Column(DateTime(timezone=True), nullable=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=False)
+    current_period_end = Column(DateTime(timezone=True), nullable=False)
+    trial_ends_at = Column(DateTime(timezone=True), nullable=True)  # Renamed for consistency
     canceled_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)  # When subscription actually ends (after cancellation)
     cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -284,6 +293,11 @@ class SubscriptionUsage(Base):
     period_end = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Composite index for efficient usage lookups
+    __table_args__ = (
+        Index('ix_subscription_usage_composite', 'tenant_id', 'feature_code', 'period_start'),
+    )
 
 
 class StoreProduct(Base):
@@ -999,6 +1013,48 @@ class SiteTenant(Base):
     __table_args__ = (
         Index('ix_site_tenant_unique', 'site_id', 'tenant_id', unique=True),
     )
+
+
+class ApproverLimit(Base):
+    """Approver limit model for instant budget approvals"""
+    __tablename__ = "approver_limits"
+    
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=True, index=True)
+    daily_limit_minor = Column(BigInteger, nullable=False, default=0)
+    daily_spent_minor = Column(BigInteger, nullable=False, default=0)
+    monthly_limit_minor = Column(BigInteger, nullable=False, default=0)
+    monthly_spent_minor = Column(BigInteger, nullable=False, default=0)
+    currency_code = Column(String(3), default="INR", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('ix_approver_limit_unique', 'tenant_id', 'user_id', 'cost_centre_id', unique=True),
+    )
+
+
+class InstantBudgetRequest(Base):
+    """Instant budget request model"""
+    __tablename__ = "instant_budget_requests"
+    
+    request_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True, index=True)
+    requested_amount_minor = Column(BigInteger, nullable=False)
+    approved_amount_minor = Column(BigInteger, nullable=False, default=0)
+    remaining_amount_minor = Column(BigInteger, nullable=False)
+    reason = Column(Text, nullable=True)
+    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected, expired, partial
+    requested_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # Create tables

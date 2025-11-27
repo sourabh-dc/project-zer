@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette import status
 
-from Models import Store, Site, CostCentre, Product, RoleScope, ApprovalDelegation, Tenant, UserRole, Role, ApprovalChainStep
+from Models import Store, Site, CostCentre, Product, RoleScope, ApprovalDelegation, Tenant, UserRole, Role, ApprovalChainStep, SiteTenant
 from Schemas import ResourceContext, UserContext
 from core.config import SETTINGS
 from core.db_config import SessionLocal
@@ -31,13 +31,28 @@ def fetch_store_hierarchy(db: Session, store_id: uuid.UUID) -> List[Tuple[str, s
     return chain
 
 
-def fetch_site_hierarchy(db: Session, site_id: uuid.UUID) -> List[Tuple[str, str]]:
+def fetch_site_hierarchy(db: Session, site_id: uuid.UUID, tenant_id: Optional[uuid.UUID] = None) -> List[Tuple[str, str]]:
+    """Fetch site hierarchy - now supports multi-tenant sites"""
     site = db.query(Site).filter(Site.site_id == site_id).first()
     if not site:
         return []
     chain = [("site", str(site.site_id))]
-    if site.tenant_id:
-        chain.append(("tenant", str(site.tenant_id)))
+    
+    # Get tenants for this site from SiteTenant junction table
+    if tenant_id:
+        # Verify tenant has access to this site
+        site_tenant = db.query(SiteTenant).filter(
+            SiteTenant.site_id == site_id,
+            SiteTenant.tenant_id == tenant_id
+        ).first()
+        if site_tenant:
+            chain.append(("tenant", str(tenant_id)))
+    else:
+        # If no tenant_id provided, get all tenants for this site
+        site_tenants = db.query(SiteTenant).filter(SiteTenant.site_id == site_id).all()
+        for st in site_tenants:
+            chain.append(("tenant", str(st.tenant_id)))
+    
     return chain
 
 
@@ -65,14 +80,15 @@ def fetch_product_hierarchy(db: Session, product_id: uuid.UUID) -> List[Tuple[st
     return chain
 
 
-def build_resource_chain(db: Session, resource: ResourceContext) -> List[Tuple[str, str]]:
+def build_resource_chain(db: Session, resource: ResourceContext, tenant_id: Optional[str] = None) -> List[Tuple[str, str]]:
     if resource.parent_chain:
         return resource.parent_chain
 
     if resource.resource_type == "store" and resource.resource_id:
         return fetch_store_hierarchy(db, uuid.UUID(resource.resource_id))
     if resource.resource_type == "site" and resource.resource_id:
-        return fetch_site_hierarchy(db, uuid.UUID(resource.resource_id))
+        tenant_uuid = uuid.UUID(tenant_id) if tenant_id else None
+        return fetch_site_hierarchy(db, uuid.UUID(resource.resource_id), tenant_uuid)
     if resource.resource_type == "cost_centre" and resource.resource_id:
         return fetch_cost_centre_hierarchy(db, uuid.UUID(resource.resource_id))
     if resource.resource_type == "product" and resource.resource_id:
@@ -106,7 +122,7 @@ def check_scope(
     if any(g.get("resource_type") == "*" for g in grants):
         return True
 
-    resource_chain = build_resource_chain(db, resource)
+    resource_chain = build_resource_chain(db, resource, ctx.tenant_id)
     requested_pairs = {(resource.resource_type, resource.resource_id)} | set(resource_chain)
 
     for grant in grants:
@@ -127,7 +143,8 @@ def check_scope(
 
 def check_tenant_access(ctx: UserContext, tenant_id: uuid.UUID):
     """Check if user has access to tenant data"""
-    if str(ctx.tenant_id) != str(tenant_id) and "admin" not in ctx.permissions:
+    # Allow access if same tenant, or if user has admin permissions ("*" means all permissions)
+    if str(ctx.tenant_id) != str(tenant_id) and "*" not in ctx.permissions and "admin" not in ctx.permissions:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to tenant data")
 
 

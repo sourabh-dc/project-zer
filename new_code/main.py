@@ -7,18 +7,22 @@ from starlette.responses import JSONResponse, Response
 
 from core.config import SETTINGS, SERVICE_NAME, SERVICE_VERSION
 from core.db_config import SessionLocal
+from core.user_auth import seed_default_permissions, ensure_bootstrap_admin
 from utils.logger import logger
 from utils.redis_client import redis_client
 from services.provisioning_routes import app as provisioning_router
 from services.catalog_routes import app as catalog_router
-from services.subscriptions_routes import app as subscriptions_router
+from services.subscriptions_routes import router as subscriptions_router
 from services.approval_routes import app as approval_router
 from services.pricing_routes import app as pricing_router
-from services.entitlements_routes import app as entitlements_router
+from services.entitlements_routes import router as entitlements_router
 from services.payments_routes import app as payments_router
 from services.orders_router import app as orders_router
 from services.ledger_routes import app as ledger_router
 from services.billing_routes import app as billing_router
+from services.instant_budget import router as instant_budget_router
+from services.auth_routes import app as auth_router
+from services.shopping_routes import router as shopping_router
 # FastAPI app
 app = FastAPI(
     title="ZeroQue All in One API",
@@ -35,6 +39,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+app.include_router(auth_router, tags=["authentication"])
 app.include_router(provisioning_router, tags=["provisioning"])
 app.include_router(catalog_router, tags=["catalog"])
 app.include_router(approval_router, tags=["approval"])
@@ -45,6 +50,12 @@ app.include_router(payments_router, tags=["payments"])
 app.include_router(orders_router, tags=["orders"])
 app.include_router(ledger_router, tags=["ledger"])
 app.include_router(billing_router, tags=["billing"])
+app.include_router(instant_budget_router)
+app.include_router(shopping_router, tags=["shopping"])
+
+# Ensure core data exists at startup
+seed_default_permissions()
+ensure_bootstrap_admin()
 
 @app.get("/health")
 async def health():
