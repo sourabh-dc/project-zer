@@ -617,7 +617,7 @@ async def create_store(
     start = datetime.now()
     try:
         req_total.labels(operation="create_store", status="start").inc()
-
+        print(ctx)
         # Verify site exists and is accessible by user's tenant
         site_tenant = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(req.site_id),

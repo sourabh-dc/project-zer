@@ -102,6 +102,7 @@ def build_resource_chain(db: Session, resource: ResourceContext, tenant_id: Opti
 
 def permissions_for_code(ctx: UserContext, permission_code: str) -> List[Dict[str, Optional[str]]]:
     grants = ctx.permissions.get(permission_code)
+    print(ctx)
     if not grants and "*" in ctx.permissions:
         grants = ctx.permissions["*"]
     return grants or []

@@ -11,9 +11,9 @@ from utils.logger import logger
 from utils.redis_client import redis_client
 from services.provisioning_routes import app as provisioning_router
 from services.catalog_routes import app as catalog_router
-from services.subscriptions_routes import app as subscriptions_router
+from services.subscriptions_routes import router as subscriptions_router
 from services.approval_routes import app as approval_router
-from services.entitlements_routes import app as entitlements_router
+from services.entitlements_routes import router as entitlements_router
 from services.auth_routes import app as auth_router
 from services.instant_budget import router as instant_budget_router
 
@@ -36,8 +36,8 @@ app.add_middleware(
 app.include_router(provisioning_router, tags=["provisioning"])
 app.include_router(catalog_router, tags=["catalog"])
 app.include_router(approval_router, tags=["approval"])
-app.include_router(subscriptions_router, tags=["subscriptions"])
-app.include_router(entitlements_router, tags=["entitlements"])
+app.include_router(subscriptions_router)
+app.include_router(entitlements_router)
 app.include_router(auth_router, tags=["authentication"])
 app.include_router(instant_budget_router, tags=["instant-budget"])
 

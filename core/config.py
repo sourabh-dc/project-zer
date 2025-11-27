@@ -17,11 +17,18 @@ vault_url = f"https://{keyvault_name}.vault.azure.net"
 credential = DefaultAzureCredential()
 client = SecretClient(vault_url=vault_url, credential=credential)
 
+environment = os.getenv("ENVIRONMENT", "Development")
 # Retrieve the secret
-db_name = client.get_secret("dbName").value
-db_password = client.get_secret("dbPassword").value
-db_host = client.get_secret("dbHost").value
-db_username = client.get_secret("dbUsername").value
+if environment == "Development":
+    db_name = client.get_secret("dbName").value
+    db_password = client.get_secret("dbPassword").value
+    db_host = client.get_secret("dbHost").value
+    db_username = client.get_secret("dbUsername").value
+else:
+    db_name = os.getenv("POSTGRES_DB")
+    db_password = os.getenv("POSTGRES_PASSWORD")
+    db_host = os.getenv("POSTGRES_HOST")
+    db_username = os.getenv("POSTGRES_USER")
 
 
 class Settings(BaseSettings):
@@ -61,6 +68,6 @@ class Settings(BaseSettings):
 
 
 SETTINGS = Settings()
-
+print(SETTINGS.DATABASE_URL)
 SERVICE_NAME = "zeroque"
 SERVICE_VERSION = "2.0.0"
