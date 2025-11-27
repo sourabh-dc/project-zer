@@ -53,9 +53,9 @@ class Settings(BaseSettings):
     API_KEY_EXPIRY_DAYS: int = 90
     CACHE_TTL_SECONDS: int = 300  # 5 minutes
 
-    # Security configuration
-    MAX_FAILED_LOGIN_ATTEMPTS: int = Field(default=5, description="Max failed login attempts before lockout")
-    ACCOUNT_LOCKOUT_MINUTES: int = Field(default=30, description="Account lockout duration in minutes")
+    # Authentication settings
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCKOUT_MINUTES: int = 30
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 

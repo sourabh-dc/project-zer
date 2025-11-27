@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from Models import TradeInvoice, TradeInvoiceLine, BillingOutboxEvent, VendorSettlementBatch, VendorSettlement, \
     VendorSettlementItem, VendorDispute, CostCentre, Budget, BudgetTransaction, BudgetAlert
 from Schemas import CreateInvoiceRequest, InvoiceResponse, CreateSettlementRequest, SettlementResponse, \
-    CreateDisputeRequest, DisputeResponse, BillingCostCentreRequest as CostCentreRequest, CostCentreResponse, BudgetResponse, BudgetRequest, \
+    CreateDisputeRequest, DisputeResponse, CostCentreRequest, CostCentreResponse, BudgetResponse, BudgetRequest, \
     BudgetCheckResponse, BudgetCheckRequest, SpendRequest
 from core.db_config import get_db
 from core.user_auth import get_user_context, set_rls_context
