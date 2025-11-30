@@ -3,11 +3,14 @@
 # ==================================================================================
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import List
+
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from Models import User
+from Models import User, UserRole
 from Schemas import LoginRequest, LoginResponse, RefreshApiKeyRequest, RefreshApiKeyResponse
 from core.db_config import get_db
 from core.config import SETTINGS
@@ -24,9 +27,7 @@ async def login(
 ):
     """
     Login with email and password to get API key
-    
-    This endpoint allows users to authenticate and retrieve their API key.
-    The API key is stored in the database and returned to the user.
+    This endpoint allows users to authenticate receive a jwt key.
     """
     start = datetime.now()
     try:
@@ -42,24 +43,9 @@ async def login(
                 detail="Invalid email or password"
             )
         
-        # Check if account is locked
-        if user.account_locked_until and user.account_locked_until > datetime.now(timezone.utc):
-            remaining_minutes = int((user.account_locked_until - datetime.now(timezone.utc)).total_seconds() / 60)
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"Account is locked. Try again in {remaining_minutes} minutes."
-            )
-        
-        # Verify password
-        if not user.password_hash:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
-        
         password_valid = bcrypt.checkpw(
             req.password.encode('utf-8'),
-            user.password_hash.encode('utf-8')
+            user.password.encode('utf-8')
         )
         
         if not password_valid:
@@ -68,12 +54,8 @@ async def login(
             
             # Lock account if max attempts reached
             if user.failed_login_attempts >= SETTINGS.MAX_FAILED_LOGIN_ATTEMPTS:
-                user.account_locked_until = datetime.now(timezone.utc) + timedelta(
-                    minutes=SETTINGS.ACCOUNT_LOCKOUT_MINUTES
-                )
                 logger.warning(f"🔒 Account locked for user {user.email} due to failed login attempts")
-            
-            db.commit()
+                return "Account locked due to too many failed login attempts. Please try Forget Password."
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password"
@@ -88,21 +70,35 @@ async def login(
         
         # Reset failed login attempts on successful login
         user.failed_login_attempts = 0
-        user.account_locked_until = None
         user.last_login_at = datetime.now(timezone.utc)
-        
-        # Check if API key exists and is valid
-        if not user.api_key or (user.api_key_expires_at and user.api_key_expires_at < datetime.now(timezone.utc)):
-            # Regenerate API key if expired or missing
-            user.api_key = generate_api_key()
-            user.api_key_created_at = datetime.now(timezone.utc)
-            user.api_key_expires_at = datetime.now(timezone.utc) + timedelta(
-                days=SETTINGS.API_KEY_EXPIRY_DAYS
-            )
-            logger.info(f"🔄 Regenerated API key for user {user.email}")
-        
         db.commit()
         db.refresh(user)
+        # load roles from user_roles table
+        roles_query = db.query(UserRole).filter(UserRole.user_id == user.user_id).all()
+        roles: List[str] = [getattr(r, "role", None) or getattr(r, "role_name", None) for r in roles_query]
+        roles = [r for r in roles if r]  # filter out None
+
+        # prepare JWT
+        jwt_exp_minutes = getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60)
+        jwt_algorithm = getattr(SETTINGS, "JWT_ALGORITHM", "HS256")
+        jwt_secret = getattr(SETTINGS, "JWT_SECRET", "jwt_secret")
+        if not jwt_secret:
+            logger.error("JWT_SECRET not configured in SETTINGS")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error")
+
+        jwt_expires_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_exp_minutes)
+        payload = {
+            "sub": str(user.user_id),
+            "email": user.email,
+            "tenant_id": str(user.tenant_id),
+            "roles": roles,
+            "exp": int(jwt_expires_at.timestamp())
+        }
+        token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
+
+        logger.info(f"✅ User {user.email} logged in successfully")
+
+        # Return existing response plus jwt fields - ensure
         
         logger.info(f"✅ User {user.email} logged in successfully")
         
@@ -111,9 +107,9 @@ async def login(
             tenant_id=str(user.tenant_id),
             email=user.email,
             display_name=user.display_name,
-            api_key=user.api_key,
-            api_key_expires_at=user.api_key_expires_at.isoformat(),
-            last_login_at=user.last_login_at.isoformat() if user.last_login_at else None
+            last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+            token=token,
+            expiring_at=jwt_expires_at
         )
         
     except HTTPException:

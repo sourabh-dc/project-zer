@@ -187,9 +187,9 @@ class LoginResponse(BaseModel):
     tenant_id: str
     email: str
     display_name: str
-    api_key: str
-    api_key_expires_at: str
     last_login_at: Optional[str] = None
+    token: str
+    expiring_at: datetime
 
 
 class RefreshApiKeyRequest(BaseModel):
