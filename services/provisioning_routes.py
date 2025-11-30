@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
 from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
-    UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment
+    UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment, TenantSubscription
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest, SuperUserRequest, OrgUnitRequest, \
     OrgUnitAssignmentRequest, PasswordResetRequest
@@ -55,7 +55,6 @@ async def create_tenant(
             tenant_type=req.type,
             registration_number=req.registration_number,
             email=req.email,
-            plan_code=req.plan_code,
             billing_cycle=req.billing_cycle,
             phone=req.phone,
             active=True
@@ -63,6 +62,7 @@ async def create_tenant(
         db.add(tenant)
         db.commit()
         db.refresh(tenant)
+
         # create user
         user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, display_name=tenant.tenant_name, email=tenant.email,
                     username=req.admin_username, password=password_hash, active=True)
@@ -70,10 +70,16 @@ async def create_tenant(
         db.commit()
         db.refresh(user)
 
-        tenant_admin_role_id = db.query(Role.role_id).filter(Role.code == "tenant_admin").first()[0]
         # create user role
+        tenant_admin_role_id = db.query(Role.role_id).filter(Role.code == "tenant_admin").first()[0]
         role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=tenant_admin_role_id)
         db.add(role)
+        db.commit()
+
+        # create a default subscription for the tenant
+        subscription = TenantSubscription(tenant_id=req.id, plan_code="core_01", current_period_start=datetime.now(),
+                                          current_period_end=datetime.now()+timedelta(days=7), is_trial=True)
+        db.add(subscription)
         db.commit()
 
         req_total.labels(operation="create_tenant", status="success").inc()
@@ -81,7 +87,7 @@ async def create_tenant(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created tenant: {tenant.tenant_id} ({tenant.name})")
+        logger.info(f"✅ Created tenant: {tenant.tenant_id} ({tenant.tenant_name})")
 
         return {
             "tenant_id": str(tenant.tenant_id),
@@ -101,150 +107,6 @@ async def create_tenant(
         req_total.labels(operation="create_tenant", status="error").inc()
         logger.error(f"❌ Tenant creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/v1/tenants/{tenant_id}/super-user", status_code=201)
-async def create_tenant_super_user(
-        tenant_id: str,
-        req: SuperUserRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("tenants.create"))
-):
-    """Create a super user for a tenant with all permissions"""
-    start = datetime.now()
-    try:
-        req_total.labels(operation="create_super_user", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(tenant_id))
-
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        # Check if email exists
-        existing = db.query(User).filter(func.lower(User.email) == req.email.lower()).first()
-        if existing:
-            raise HTTPException(status_code=409, detail="Email already exists")
-
-        # Generate password if not provided
-        password = req.password
-        if not password:
-            password = secrets.token_urlsafe(16)
-        
-        # Hash password
-        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-        # Generate API key
-        api_key = generate_api_key()
-        api_key_expires_at = datetime.now(timezone.utc) + timedelta(days=SETTINGS.API_KEY_EXPIRY_DAYS)
-
-        # Create user
-        user = User(
-            user_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(tenant_id),
-            email=req.email.lower(),
-            display_name=req.display_name,
-            password_hash=password_hash,
-            active=True,
-            api_key=api_key,
-            api_key_created_at=datetime.now(timezone.utc),
-            api_key_expires_at=api_key_expires_at
-        )
-        db.add(user)
-        db.flush()  # Get user_id
-
-        # Create or get "tenant_admin" role
-        admin_role = db.query(Role).filter(Role.code == "tenant_admin").first()
-        if not admin_role:
-            admin_role = Role(
-                role_id=uuid.uuid4(),
-                code="tenant_admin",
-                description="Tenant administrator with full permissions"
-            )
-            db.add(admin_role)
-            db.flush()
-
-        # Get all permissions
-        all_permissions = db.query(Permission).all()
-        
-        # Assign all permissions to tenant_admin role
-        for perm in all_permissions:
-            existing_rp = db.query(RolePermission).filter(
-                RolePermission.role_id == admin_role.role_id,
-                RolePermission.permission_id == perm.permission_id
-            ).first()
-            if not existing_rp:
-                rp = RolePermission(
-                    id=uuid.uuid4(),
-                    role_id=admin_role.role_id,
-                    permission_id=perm.permission_id
-                )
-                db.add(rp)
-
-        # Add tenant-level scope to role (allows access to all resources in tenant)
-        existing_scope = db.query(RoleScope).filter(
-            RoleScope.role_id == admin_role.role_id,
-            RoleScope.resource_type == "tenant",
-            RoleScope.resource_id == uuid.UUID(tenant_id)
-        ).first()
-        
-        if not existing_scope:
-            scope = RoleScope(
-                id=uuid.uuid4(),
-                role_id=admin_role.role_id,
-                resource_type="tenant",
-                resource_id=uuid.UUID(tenant_id),
-                grant_type="include"
-            )
-            db.add(scope)
-
-        # Assign role to user
-        user_role = UserRole(
-            id=uuid.uuid4(),
-            user_id=user.user_id,
-            role_id=admin_role.role_id
-        )
-        db.add(user_role)
-        db.commit()
-        db.refresh(user)
-
-        req_total.labels(operation="create_super_user", status="success").inc()
-        req_duration.labels(operation="create_super_user").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Created super user: {user.user_id} ({user.email}) for tenant: {tenant_id}")
-        invalidate_user_context(str(user.user_id), str(user.tenant_id))
-
-        return {
-            "user_id": str(user.user_id),
-            "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "display_name": user.display_name,
-            "api_key": api_key,
-            "api_key_expires_at": api_key_expires_at.isoformat(),
-            "password": password if not req.password else None,  # Only return if auto-generated
-            "role_assigned": "tenant_admin",
-            "created_at": user.created_at.isoformat()
-        }
-    except ValueError:
-        req_total.labels(operation="create_super_user", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
-    except HTTPException:
-        req_total.labels(operation="create_super_user", status="error").inc()
-        raise
-    except IntegrityError:
-        db.rollback()
-        req_total.labels(operation="create_super_user", status="error").inc()
-        raise HTTPException(status_code=409, detail="Email already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_super_user", status="error").inc()
-        logger.error(f"❌ Super user creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 
 @app.get("/v1/tenants")
 async def list_tenants(
@@ -967,8 +829,7 @@ async def bulk_import_users(
 @app.post("/v1/roles", status_code=201)
 async def create_role(
         req: RoleRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+        db: Session = Depends(get_db)
 ):
     """Create a new role"""
     start = datetime.now()

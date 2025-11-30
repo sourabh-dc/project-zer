@@ -39,8 +39,7 @@ TRIAL_DAYS = 14  # Free trial period
 @router.post("/plans", status_code=201)
 async def create_plan(
     req: SubscriptionPlanRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("subscriptions.plans.manage"))
+    db: Session = Depends(get_db)
 ):
     """Create a new subscription plan"""
     if db.query(SubscriptionPlan).filter_by(code=req.code).first():

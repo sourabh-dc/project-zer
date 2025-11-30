@@ -22,7 +22,6 @@ class Tenant(Base):
     tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
     registration_number = Column(String(100), nullable=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
-    plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False, default='core_01', index=True)
     billing_cycle = Column(String(20), nullable=False, default="yearly")  # yearly or monthly or quarterly
     phone = Column(String(50), nullable=True)
     active = Column(Boolean, default=True, index=True)
@@ -255,15 +254,13 @@ class TenantSubscription(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
-    pending_plan_code = Column(String(50), nullable=True)  # For upgrade/downgrade at period end
-    payment_method = Column(String(20), nullable=False, default="card")  # stripe, card, trade, etc.
-    status = Column(String(20), nullable=False, index=True, default="trialing")  # trialing, active, canceled, unpaid, past_due
+    payment_method = Column(String(20), default="card")  # stripe, card, trade, etc.
     external_id = Column(String(100), index=True, nullable=True)  # External payment provider ID
     current_period_start = Column(DateTime(timezone=True), nullable=False)
     current_period_end = Column(DateTime(timezone=True), nullable=False)
-    trial_ends_at = Column(DateTime(timezone=True), nullable=True)  # Renamed for consistency
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_trial = Column(Boolean, default=False, nullable=False)
     canceled_at = Column(DateTime(timezone=True), nullable=True)
-    ends_at = Column(DateTime(timezone=True), nullable=True)  # When subscription actually ends (after cancellation)
     cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
