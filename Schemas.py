@@ -7,12 +7,17 @@ import re
 # ==================================================================================
 # REQUEST/RESPONSE MODELS
 # ==================================================================================
-
-
 class TenantRequest(BaseModel):
     """Tenant creation request"""
-    name: str = Field(min_length=1, max_length=255, description="Tenant name")
+    tenant_name: str = Field(min_length=1, max_length=200, description="Company name")
     type: str = Field(description="Tenant type: customer, retailer, or distributor")
+    registration_number: Optional[str] = Field(None, max_length=100, description="Registration number (optional)")
+    email: EmailStr = Field(..., description="Administrative contact email")
+    admin_username: str = Field(min_length=3, max_length=150, description="Admin username")
+    password: str = Field(min_length=8, max_length=128, description="Admin password (min 8 chars)")
+    plan_code: Optional[str] = Field(default='core_01', description="Subscription plan code (optional)")
+    billing_cycle: str = Field(default="yearly", description="Billing cycle: yearly or monthly")
+    phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
 
     @field_validator('type')
     @classmethod
@@ -21,6 +26,35 @@ class TenantRequest(BaseModel):
         if v not in allowed:
             raise ValueError(f"Type must be one of: {', '.join(allowed)}")
         return v
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+    @field_validator('billing_cycle')
+    @classmethod
+    def validate_billing_cycle(cls, v):
+        allowed = ['yearly', 'monthly']
+        if v not in allowed:
+            raise ValueError(f"billing_cycle must be one of: {', '.join(allowed)}")
+        return v
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\+?\d{7,15}$', v):
+            raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
+        return v
+
 
 
 class SiteRequest(BaseModel):

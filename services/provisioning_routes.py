@@ -2,28 +2,25 @@ import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from sqlalchemy import text, func, Index
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from starlette.responses import JSONResponse, Response
+from starlette.responses import  Response
 
 from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
     UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment
 from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest, SuperUserRequest, OrgUnitRequest, \
     OrgUnitAssignmentRequest, PasswordResetRequest
-from core.config import SERVICE_NAME, SERVICE_VERSION, SETTINGS
-from core.db_config import SessionLocal, get_db
+from core.config import SETTINGS
+from core.db_config import get_db
 from core.permission_check_helpers import require_permission, check_tenant_access
 from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
-
 
 app = APIRouter()
 
@@ -38,8 +35,7 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 @app.post("/v1/tenants", status_code=201)
 async def create_tenant(
         req: TenantRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("tenants.create"))
+        db: Session = Depends(get_db)
 ):
     """Create a new tenant"""
     start = datetime.now()
@@ -47,20 +43,38 @@ async def create_tenant(
         req_total.labels(operation="create_tenant", status="start").inc()
 
         # Check if tenant exists
-        existing = db.query(Tenant).filter(Tenant.name == req.name).first()
+        existing = db.query(Tenant).filter(Tenant.email == req.email).first()
         if existing:
-            raise HTTPException(status_code=409, detail="Tenant name already exists")
+            raise HTTPException(status_code=409, detail="Tenant email already exists")
 
+        password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
         # Create tenant
         tenant = Tenant(
             tenant_id=uuid.uuid4(),
-            name=req.name,
+            tenant_name=req.tenant_name,
             tenant_type=req.type,
+            registration_number=req.registration_number,
+            email=req.email,
+            plan_code=req.plan_code,
+            billing_cycle=req.billing_cycle,
+            phone=req.phone,
             active=True
         )
         db.add(tenant)
         db.commit()
         db.refresh(tenant)
+        # create user
+        user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, display_name=tenant.tenant_name, email=tenant.email,
+                    username=req.admin_username, password=password_hash, active=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        tenant_admin_role_id = db.query(Role.role_id).filter(Role.code == "tenant_admin").first()[0]
+        # create user role
+        role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=tenant_admin_role_id)
+        db.add(role)
+        db.commit()
 
         req_total.labels(operation="create_tenant", status="success").inc()
         req_duration.labels(operation="create_tenant").observe(
@@ -71,7 +85,7 @@ async def create_tenant(
 
         return {
             "tenant_id": str(tenant.tenant_id),
-            "name": tenant.name,
+            "name": tenant.tenant_name,
             "type": tenant.tenant_type,
             "created_at": tenant.created_at.isoformat()
         }

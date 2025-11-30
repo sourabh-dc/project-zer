@@ -15,15 +15,19 @@ Base = declarative_base()
 class Tenant(Base):
     """Tenant organization model"""
     __tablename__ = "tenants"
+
     tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
-    name = Column(String(255), nullable=False, unique=True)
+    tenant_name = Column(String(200), nullable=False, unique=True, index=True)
     tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
+    registration_number = Column(String(100), nullable=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False, default='core_01', index=True)
+    billing_cycle = Column(String(20), nullable=False, default="yearly")  # yearly or monthly or quarterly
+    phone = Column(String(50), nullable=True)
     active = Column(Boolean, default=True, index=True)
-    tenant_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
 
 class Site(Base):
     """Site model - physical locations that can be managed by multiple tenants"""
@@ -56,13 +60,10 @@ class User(Base):
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     email = Column(String(255), unique=True, nullable=False)
     display_name = Column(String(255), nullable=False)
-    password_hash = Column(String(255), nullable=True)
+    username = Column(String(255), unique=True, nullable=False)
+    password = Column(String(255), nullable=True)
     active = Column(Boolean, default=True, index=True)
-    api_key = Column(String(255), unique=True, index=True)
-    api_key_created_at = Column(DateTime(timezone=True))
-    api_key_expires_at = Column(DateTime(timezone=True))
     failed_login_attempts = Column(Integer, default=0)
-    account_locked_until = Column(DateTime(timezone=True), nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -81,6 +82,7 @@ class UserRole(Base):
     """User-Role assignment model"""
     __tablename__ = "user_roles"
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
     role_id = Column(SQLUUID(as_uuid=True), ForeignKey("roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
