@@ -948,3 +948,18 @@ class ApproverLimitRequest(BaseModel):
     daily_limit_minor: int = Field(..., description="Daily approval limit in minor units", ge=0)
     monthly_limit_minor: int = Field(..., description="Monthly approval limit in minor units", ge=0)
     currency_code: str = Field(default="INR", description="Currency code")
+
+class ResetPasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v

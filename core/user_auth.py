@@ -467,7 +467,7 @@ def check_user_authorization(permission: str):
     """
     Dependency factory usable as Depends(check_user_authorization("some.permission"))
     """
-    def dependency(claims: Dict[str, Any] = Depends(decode_jwt_with_settings)) -> bool:
+    def dependency(claims: Dict[str, Any] = Depends(decode_jwt_with_settings)):
         try:
             # prefer explicit permissions in token
             claim_perms = claims.get("permissions")
@@ -502,7 +502,7 @@ def check_user_authorization(permission: str):
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Authorization lookup failed")
 
             if match_count and match_count > 0:
-                return True
+                return claims
 
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         except HTTPException:

@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from Models import User, UserRole, Role
-from Schemas import LoginRequest, LoginResponse, RefreshJwtResponse, RefreshJwtRequest
+from Schemas import LoginRequest, LoginResponse, RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest
 from core.db_config import get_db
 from core.config import SETTINGS
 from core.user_auth import check_user_authorization
@@ -231,3 +231,39 @@ async def logout(user_id: str, db: Session = Depends(get_db)):
 @app.get("/test")
 async def test_token(user_auth: bool=Depends(check_user_authorization(permission="test"))):
     return {"message": "Authorized"}
+
+@app.post("/v1/auth/reset-password", status_code=200)
+async def reset_password(
+    user_id: str,
+    req: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Reset password for the currently authenticated user.
+    Requires current password and a new password (min length validated by schema).
+    """
+    try:
+        current_user = db.query(User).filter(User.user_id == user_id).first()
+        # Verify current password
+        if not bcrypt.checkpw(req.current_password.encode("utf-8"), current_user.password.encode("utf-8")):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+
+        # Optional: prevent reuse of the same password
+        if bcrypt.checkpw(req.new_password.encode("utf-8"), current_user.password.encode("utf-8")):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be different")
+
+        # Hash and save new password
+        hashed = bcrypt.hashpw(req.new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        current_user.password = hashed
+        db.commit()
+        db.refresh(current_user)
+
+        logger.info(f"🔒 Password changed for user {current_user.email}")
+        return {"message": "Password updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Password reset failed: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
