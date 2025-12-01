@@ -237,8 +237,8 @@ class TenantSubscriptionRequest(BaseModel):
     tenant_id: str = Field(description="Tenant ID")
     plan_code: str = Field(description="Plan code")
     payment_method: str = Field(default="card", description="Payment method")
-    billing_cycle: str = Field(default="yearly", description="Billing cycle: yearly or monthly")
-    auto_renew: bool = Field(default=True, description="Auto-renew subscription")
+    current_period_end: Optional[datetime] = Field(None, description="Current period end date (optional)")
+    current_period_start: Optional[datetime] = Field(None, description="Current period start date (optional)")
 
 
 class CurrentSubscriptionResponse(BaseModel):
@@ -246,11 +246,9 @@ class CurrentSubscriptionResponse(BaseModel):
     tenant_id: str
     plan_code: Optional[str] = None
     plan_name: Optional[str] = None
-    status: str  # trialing, active, canceled, unpaid, past_due, no_subscription
-    trial_ends_at: Optional[str] = None
+    is_active: bool
     current_period_start: Optional[str] = None
     current_period_end: Optional[str] = None
-    pending_plan_code: Optional[str] = None
     on_trial: bool = False
     days_remaining: Optional[int] = None
     
