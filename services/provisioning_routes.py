@@ -77,7 +77,7 @@ async def create_tenant(
         db.commit()
 
         # create a default subscription for the tenant
-        subscription = TenantSubscription(tenant_id=req.id, plan_code="core_01", current_period_start=datetime.now(),
+        subscription = TenantSubscription(tenant_id=tenant.tenant_id, plan_code="core_01", current_period_start=datetime.now(),
                                           current_period_end=datetime.now()+timedelta(days=7), is_trial=True)
         db.add(subscription)
         db.commit()
@@ -98,10 +98,10 @@ async def create_tenant(
     except HTTPException:
         req_total.labels(operation="create_tenant", status="error").inc()
         raise
-    except IntegrityError:
-        db.rollback()
-        req_total.labels(operation="create_tenant", status="error").inc()
-        raise HTTPException(status_code=409, detail="Tenant already exists")
+    # except IntegrityError:
+    #     db.rollback()
+    #     req_total.labels(operation="create_tenant", status="error").inc()
+    #     raise HTTPException(status_code=409, detail="Tenant already exists")
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_tenant", status="error").inc()

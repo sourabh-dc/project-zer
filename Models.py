@@ -64,6 +64,9 @@ class User(Base):
     active = Column(Boolean, default=True, index=True)
     failed_login_attempts = Column(Integer, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_token = Column(String(255), nullable=True)
+    refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_logout_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

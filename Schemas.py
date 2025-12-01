@@ -190,19 +190,18 @@ class LoginResponse(BaseModel):
     last_login_at: Optional[str] = None
     token: str
     expiring_at: datetime
+    refresh_token: Optional[str] = None
 
+class RefreshJwtRequest(BaseModel):
+    user_id: str = Field(..., description="User id associated with the refresh token")
+    refresh_token: str = Field(..., description="Refresh token string returned at login")
 
-class RefreshApiKeyRequest(BaseModel):
-    """Refresh API key request"""
-    email: EmailStr = Field(description="User email")
-    password: str = Field(description="User password")
-
-
-class RefreshApiKeyResponse(BaseModel):
-    """Refresh API key response"""
-    api_key: str
-    api_key_expires_at: str
-    message: str
+class RefreshJwtResponse(BaseModel):
+    token: str
+    expiring_at: str
+    refresh_token: Optional[str] = None
+    refresh_token_expires_at: Optional[str] = None
+    roles: Optional[List[str]] = None
 
 
 class SubscriptionPlanRequest(BaseModel):
