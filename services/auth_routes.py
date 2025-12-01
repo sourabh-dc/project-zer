@@ -228,6 +228,6 @@ async def logout(user_id: str, db: Session = Depends(get_db)):
     logger.info(f"🔓 User {user.email} logged out and refresh token revoked")
     return {"message":"Logged out successfully"}
 
-app.get("/test")
+@app.get("/test")
 async def test_token(user_auth: bool=Depends(check_user_authorization(permission="test"))):
     return {"message": "Authorized"}

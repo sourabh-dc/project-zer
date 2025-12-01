@@ -405,94 +405,86 @@ def get_db_with_rls(uctx: UserContext = Depends(get_user_context)):
     finally:
         db.close()
 
-def decode_jwt_with_settings(token: Optional[str] = Header(default=None, alias="Authorization")) -> Dict[str, Any]:
+async def decode_jwt_with_settings(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> Dict[str, Any]:
     """
-    Decode and verify a JWT using SETTINGS:
-      - JWT_EXPIRY_MINUTES (default 60) => maximum token age enforced against `iat`
-      - JWT_ALGORITHM (default 'HS256') => header alg must match
-      - JWT_SECRET (default 'jwt_secret') => used for HS verification
-    Returns decoded claims on success. Raises HTTPException(401) on any verification failure.
+    Extract token from Authorization header (accepts "Bearer <token>" or raw token),
+    decode via existing decode_jwt_token(), and enforce JWT_EXPIRY_MINUTES (default 60).
+    Raises HTTPException on any failure so it can be used directly as a FastAPI dependency.
     """
-    try:
-        jwt_exp_minutes = getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60)
-        jwt_algorithm = getattr(SETTINGS, "JWT_ALGORITHM", "HS256")
-        jwt_secret = getattr(SETTINGS, "JWT_SECRET", "jwt_secret")
+    jwt_secret = SETTINGS.JWT_SECRET
+    jwt_algorithm = SETTINGS.JWT_ALGORITHM
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
 
-        # quick header check (no verification)
-        header = jwt.get_unverified_header(token)
-        header_alg = header.get("alg", "").upper()
-        if header_alg != jwt_algorithm.upper():
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unexpected JWT algorithm")
+    # accept "Bearer <token>" or raw token
+    raw = authorization
+    if isinstance(raw, str) and raw.lower().startswith("bearer "):
+        raw = raw.split(" ", 1)[1]
 
-        # Decode and verify signature (let PyJWT verify exp if present)
-        claims = jwt.decode(
-            token,
-            jwt_secret,
-            algorithms=[jwt_algorithm],
-            options={"verify_aud": False}  # adjust if you want audience/issuer checks
-        )
+    if not isinstance(raw, str) or not raw:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token")
 
-        now_ts = int(datetime.now(timezone.utc).timestamp())
+    # try:
+    claims = jwt.decode(
+        raw,
+        jwt_secret,
+        algorithms=[jwt_algorithm],
+        options={"verify_aud": False}  # adjust if you want audience/issuer checks
+    )
+    # except HTTPException:
+    #     raise
+    # except Exception as exc:
+    #     logger.debug(f"JWT decode error: {exc}")
+    #     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT verification failed")
 
-        # Prefer enforcing maximum age via 'iat'
-        iat = claims.get("iat")
-        if iat:
-            try:
-                iat_ts = int(iat)
-            except Exception:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid iat claim")
-            max_age_seconds = int(jwt_exp_minutes) * 60
-            if now_ts - iat_ts > max_age_seconds:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired (age exceeds configured expiry)")
+    jwt_exp_minutes = int(getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60))
+    now_ts = int(datetime.now(timezone.utc).timestamp())
 
-        # If no iat present, ensure 'exp' exists and hasn't passed
-        elif "exp" in claims:
-            try:
-                exp_ts = int(claims["exp"])
-            except Exception:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid exp claim")
-            if now_ts > exp_ts:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired")
-        else:
-            # neither iat nor exp -> reject
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT missing iat/exp claims")
+    iat = claims.get("iat")
+    if iat is not None:
+        try:
+            iat_ts = int(iat)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid iat claim")
+        max_age_seconds = jwt_exp_minutes * 60
+        if now_ts - iat_ts > max_age_seconds:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired (age exceeds configured expiry)")
+    elif "exp" in claims:
+        try:
+            exp_ts = int(claims["exp"])
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid exp claim")
+        if now_ts > exp_ts:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired")
+    else:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT missing iat/exp claims")
 
-        return claims
-
-    except HTTPException:
-        raise
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT signature has expired")
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid JWT: {exc}")
-    except Exception as exc:
-        logger.debug(f"JWT verification error: {exc}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT verification failed")
+    return claims
 
 
 # python
 def check_user_authorization(permission: str):
     """
-    Dependency factory for endpoints:
-      Depends(check_user_authorization("some.permission"))
-
-    Verifies token-level permissions first, then checks DB role->permission mapping.
-    Raises HTTPException(401/403) on error, returns True when authorized.
+    Dependency factory usable as Depends(check_user_authorization("some.permission"))
     """
     def dependency(claims: Dict[str, Any] = Depends(decode_jwt_with_settings)) -> bool:
         try:
             # prefer explicit permissions in token
             claim_perms = claims.get("permissions")
+            logger.debug(f"token permissions: {claim_perms}")
             if isinstance(claim_perms, list):
                 if "*" in claim_perms or permission in claim_perms:
                     return True
 
-            # extract role codes from token
+            # extract role codes from token (accept string, list, or iterable)
             roles = claims.get("roles") or claims.get("role") or []
             if isinstance(roles, str):
                 roles = [roles]
-            if not isinstance(roles, list):
-                roles = list(roles)
+            elif not isinstance(roles, list):
+                try:
+                    roles = list(roles)
+                except Exception:
+                    roles = []
 
             if not roles:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No roles available in token")
@@ -520,4 +512,3 @@ def check_user_authorization(permission: str):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token")
 
     return dependency
-
