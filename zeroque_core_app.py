@@ -7,8 +7,6 @@ from starlette.responses import JSONResponse, Response
 
 from core.config import SETTINGS, SERVICE_NAME, SERVICE_VERSION
 from core.db_config import SessionLocal
-from utils.logger import logger
-from utils.redis_client import redis_client
 from services.provisioning_routes import app as provisioning_router
 from services.catalog_routes import app as catalog_router
 from services.subscriptions_routes import router as subscriptions_router
@@ -16,6 +14,8 @@ from services.approval_routes import app as approval_router
 from services.entitlements_routes import router as entitlements_router
 from services.auth_routes import app as auth_router
 from services.instant_budget import router as instant_budget_router
+from services.budget_routes import app as budget_router
+from services.internal_routes import app as internal_router
 
 # FastAPI app
 app = FastAPI(
@@ -39,7 +39,8 @@ app.include_router(approval_router, tags=["approval"])
 app.include_router(subscriptions_router)
 app.include_router(entitlements_router)
 app.include_router(auth_router, tags=["authentication"])
-app.include_router(instant_budget_router, tags=["instant-budget"])
+app.include_router(internal_router)
+app.include_router(budget_router)
 
 
 @app.get("/health")
