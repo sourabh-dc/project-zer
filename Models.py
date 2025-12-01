@@ -226,9 +226,9 @@ class Feature(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
-    category = Column(String(50), nullable=True)
+    cluster = Column(String(50), nullable=True)
     usage_type = Column(String(50), nullable=False, default="count")  # count, boolean, storage, api_calls
-    unit = Column(String(50), nullable=True)  # reports, users, GB, requests
+    max_unit = Column(String(50), nullable=True)  # reports, users, GB, requests
     reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
     
     active = Column(Boolean, default=True, nullable=False, index=True)
@@ -243,9 +243,6 @@ class PlanFeature(Base):
     plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), nullable=False, index=True)
     feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
-    
-    # ENHANCED LIMITS with JSON schema validation
-    limits = Column(JSONB, nullable=True)  # { "max_value": 50, "warn_at": 40 }
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

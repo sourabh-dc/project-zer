@@ -112,8 +112,7 @@ async def create_tenant(
 async def list_tenants(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(require_permission("tenants.create"))
+        offset: int = Query(0, ge=0)
 ):
     """List all tenants with pagination"""
     total = db.query(Tenant).filter(Tenant.active == True).count()
@@ -1319,8 +1318,7 @@ async def list_cost_centres(
 async def create_permission(
     code: str,
     description: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
+    db: Session = Depends(get_db)
 ):
     """Create a new permission"""
     try:
@@ -1364,14 +1362,13 @@ async def list_permissions(
         ]
     }
 
-@app.post("/v1/roles/{role_id}/permissions/{permission_id}", status_code=201)
+@app.post("/v1/roles/map-permission", status_code=201)
 async def add_permission_to_role(
     role_id: str,
     permission_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+    db: Session = Depends(get_db)
 ):
-    """Add permission to role"""
+    """Add permission to a role"""
     try:
         # Check if already exists
         existing = db.query(RolePermission).filter(
@@ -1399,12 +1396,11 @@ async def add_permission_to_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.delete("/v1/roles/{role_id}/permissions/{permission_id}", status_code=204)
+@app.delete("/v1/roles/delete-permission", status_code=204)
 async def remove_permission_from_role(
     role_id: str,
     permission_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+    db: Session = Depends(get_db)
 ):
     """Remove permission from role"""
     try:
@@ -1431,8 +1427,7 @@ async def remove_permission_from_role(
 @app.get("/v1/roles/{role_id}/permissions")
 async def get_role_permissions(
     role_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+    db: Session = Depends(get_db)
 ):
     """Get all permissions for a role"""
     role_perms = db.query(RolePermission, Permission).join(
@@ -1452,88 +1447,6 @@ async def get_role_permissions(
             for rp, p in role_perms
         ]
     }
-
-@app.post("/v1/roles/{role_id}/scopes", status_code=201)
-async def add_scope_to_role(
-    role_id: str,
-    resource_type: str,
-    resource_id: Optional[str] = None,
-    grant_type: str = "include",
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
-):
-    """Add scope to role (tenant, site, store, cost_centre level)"""
-    try:
-        scope = RoleScope(
-            id=uuid.uuid4(),
-            role_id=uuid.UUID(role_id),
-            resource_type=resource_type,
-            resource_id=uuid.UUID(resource_id) if resource_id else None,
-            grant_type=grant_type
-        )
-        db.add(scope)
-        db.commit()
-        
-        return {
-            "message": f"Scope added: {resource_type}",
-            "scope_id": str(scope.id)
-        }
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to add scope: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/v1/roles/{role_id}/scopes")
-async def get_role_scopes(
-    role_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
-):
-    """Get all scopes for a role"""
-    scopes = db.query(RoleScope).filter(RoleScope.role_id == uuid.UUID(role_id)).all()
-    
-    return {
-        "role_id": role_id,
-        "scopes": [
-            {
-                "scope_id": str(s.id),
-                "resource_type": s.resource_type,
-                "resource_id": str(s.resource_id) if s.resource_id else None,
-                "grant_type": s.grant_type
-            }
-            for s in scopes
-        ]
-    }
-
-
-@app.delete("/v1/roles/{role_id}/scopes/{scope_id}", status_code=204)
-async def remove_scope_from_role(
-    role_id: str,
-    scope_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("admin.scopes.manage"))
-):
-    """Remove a scope from a role"""
-    try:
-        scope = db.query(RoleScope).filter(
-            RoleScope.role_id == uuid.UUID(role_id),
-            RoleScope.id == uuid.UUID(scope_id)
-        ).first()
-
-        if not scope:
-            raise HTTPException(status_code=404, detail="Scope not found for role")
-
-        db.delete(scope)
-        db.commit()
-        return Response(status_code=204)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid role or scope ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to remove scope from role: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================================================================================

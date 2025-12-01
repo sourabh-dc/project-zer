@@ -140,8 +140,7 @@ async def get_plan(
 @router.post("/features", status_code=201)
 async def create_feature(
     req: FeatureRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("subscriptions.features.manage"))
+    db: Session = Depends(get_db)
 ):
     """Create a new feature"""
     if db.query(Feature).filter_by(code=req.code).first():
@@ -152,9 +151,9 @@ async def create_feature(
         code=req.code,
         name=req.name,
         description=req.description or "",
-        category=req.category or "general",
+        cluster=req.cluster or "general",
         usage_type=req.usage_type or "count",
-        unit=req.unit,
+        max_unit=req.max_unit,
         reset_period=req.reset_period or "monthly",
         active=True
     )
@@ -174,8 +173,7 @@ async def create_feature(
 async def list_features(
     active: Optional[bool] = None,
     category: Optional[str] = None,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("subscriptions.features.manage"))
+    db: Session = Depends(get_db)
 ):
     """List all features"""
     q = db.query(Feature)
@@ -201,24 +199,21 @@ async def list_features(
     }
 
 
-@router.put("/plans/{plan_code}/features/{feature_code}")
+@router.put("/map-feature")
 async def upsert_plan_feature(
-    plan_code: str,
-    feature_code: str,
     req: PlanFeatureRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("subscriptions.plans.manage"))
+    db: Session = Depends(get_db)
 ):
     """Add or update a feature in a plan"""
     # Verify plan and feature exist
-    if not db.query(SubscriptionPlan).filter_by(code=plan_code).first():
+    if not db.query(SubscriptionPlan).filter_by(code=req.plan_code).first():
         raise HTTPException(404, "Plan not found")
-    if not db.query(Feature).filter_by(code=feature_code).first():
+    if not db.query(Feature).filter_by(code=req.feature_code).first():
         raise HTTPException(404, "Feature not found")
     
     pf = db.query(PlanFeature).filter_by(
-        plan_code=plan_code,
-        feature_code=feature_code
+        plan_code=req.plan_code,
+        feature_code=req.feature_code
     ).first()
     
     if pf:
@@ -227,24 +222,22 @@ async def upsert_plan_feature(
     else:
         pf = PlanFeature(
             id=uuid.uuid4(),
-            plan_code=plan_code,
-            feature_code=feature_code,
-            enabled=True,
-            limits=req.limits or {}
+            plan_code=req.plan_code,
+            feature_code=req.feature_code,
+            enabled=True
         )
         db.add(pf)
     db.commit()
     
-    logger.info(f"✅ Updated feature {feature_code} in plan {plan_code}")
-    return {"plan_code": plan_code, "feature_code": feature_code, "limits": pf.limits, "enabled": True}
+    logger.info(f"✅ Updated feature {req.feature_code} in plan {req.plan_code}")
+    return {"plan_code": req.plan_code, "feature_code": req.feature_code, "enabled": True}
 
 
 @router.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
 async def remove_feature_from_plan(
     plan_code: str,
     feature_code: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("subscriptions.plans.manage"))
+    db: Session = Depends(get_db)
 ):
     """Remove (disable) a feature from a plan"""
     pf = db.query(PlanFeature).filter_by(

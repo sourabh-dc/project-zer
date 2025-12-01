@@ -220,15 +220,16 @@ class FeatureRequest(BaseModel):
     code: str = Field(min_length=1, max_length=50, description="Unique feature code")
     name: str = Field(min_length=1, max_length=100, description="Feature name")
     description: Optional[str] = Field(None, max_length=500, description="Feature description (optional)")
-    category: Optional[str] = Field(None, max_length=50, description="Feature category (optional)")
+    cluster: Optional[str] = Field(None, max_length=50, description="Feature category (optional)")
     usage_type: str = Field(default="count", description="Usage type: count, gauge, etc.")
-    unit: Optional[str] = Field(None, description="Unit label (optional)")
+    max_unit: Optional[str] = Field(None, description="Unit label (optional)")
     reset_period: str = Field(default="monthly", description="Reset period: daily, weekly, monthly, yearly")
 
 
 class PlanFeatureRequest(BaseModel):
     """Plan-feature association request"""
-    limits: Optional[Dict[str, Any]] = Field(None, description="Feature limits (optional)")
+    plan_code: str = Field(description="Plan code")
+    feature_code: str = Field(description="Feature code")
 
 
 class TenantSubscriptionRequest(BaseModel):
