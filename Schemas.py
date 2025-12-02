@@ -239,6 +239,8 @@ class TenantSubscriptionRequest(BaseModel):
     payment_method: str = Field(default="card", description="Payment method")
     current_period_end: Optional[datetime] = Field(None, description="Current period end date (optional)")
     current_period_start: Optional[datetime] = Field(None, description="Current period start date (optional)")
+    external_id: Optional[str] = Field(None, description="External reference ID (optional)")
+    previous_sub_id: Optional[int] = Field(None, description="Previous subscription ID (optional)")
 
 
 class CurrentSubscriptionResponse(BaseModel):
@@ -246,7 +248,8 @@ class CurrentSubscriptionResponse(BaseModel):
     tenant_id: str
     plan_code: Optional[str] = None
     plan_name: Optional[str] = None
-    is_active: bool
+    is_active: Optional[bool] = None
+    status: Optional[str] = None
     current_period_start: Optional[str] = None
     current_period_end: Optional[str] = None
     on_trial: bool = False
@@ -257,6 +260,8 @@ class CurrentSubscriptionResponse(BaseModel):
 
 class CancelSubscriptionRequest(BaseModel):
     """Cancel subscription request"""
+    tenant_id: str = Field(description="Tenant ID")
+    subscription_id: int = Field(None, description="Subscription ID (optional)")
     reason: Optional[str] = Field(None, description="Cancellation reason")
     cancel_immediately: bool = Field(default=False, description="Cancel immediately or at period end")
 

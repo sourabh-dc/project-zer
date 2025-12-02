@@ -252,6 +252,7 @@ class TenantSubscription(Base):
     """Tenant subscription model - tracks tenant plan subscriptions"""
     __tablename__ = "tenant_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    previous_sub_id = Column(Integer, ForeignKey("tenant_subscriptions.id"), nullable=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
     payment_method = Column(String(20), default="card")  # stripe, card, trade, etc.
