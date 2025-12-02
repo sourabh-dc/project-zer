@@ -15,11 +15,10 @@ from Models import (
     SubscriptionPlan, TenantSubscription
 )
 from Schemas import (
-    TenantSubscriptionRequest, UserContext, CurrentSubscriptionResponse,
-    CancelSubscriptionRequest
+    TenantSubscriptionRequest, CurrentSubscriptionResponse,
+    CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse
 )
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission
 from utils.logger import logger
 
 router = APIRouter(prefix="/v1/subscriptions", tags=["subscriptions"])
@@ -69,6 +68,59 @@ async def renew_subscription(
     db.add(tenant_subscription)
     db.commit()
     return tenant_subscription
+
+@router.get("/upgrade-preview", response_model=UpgradePreviewResponse)
+async def upgrade_preview(
+    req: TenantSubscriptionUpgradeRequest,
+    db: Session = Depends(get_db)
+):
+    """Check the current subscription balance and calculate prorated upgrade cost"""
+
+    # 1. Fetch current subscription
+    subscription = db.query(TenantSubscription).filter(
+        TenantSubscription.id == req.subscription_id,
+        TenantSubscription.tenant_id == req.tenant_id
+    ).first()
+
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    # 2. Fetch current and new plan
+    current_plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == subscription.plan_code).first()
+    new_plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == req.upgrade_plan_code).first()
+
+    if not current_plan or not new_plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    # 3. Calculate prorated difference
+    now = datetime.utcnow()
+    if not subscription.current_period_end or now >= subscription.current_period_end:
+        raise HTTPException(status_code=400, detail="Subscription already expired")
+
+    total_days = (subscription.current_period_end - subscription.current_period_start).days
+    remaining_days = (subscription.current_period_end - now).days
+
+    current_billing_cycle = subscription.billing_cycle or 'monthly'
+    if current_billing_cycle == 'monthly':
+        daily_delta = (new_plan.price_monthly_minor - current_plan.price_monthly_minor) / total_days
+        prorated_amount = round(daily_delta * remaining_days, 2)
+        return UpgradePreviewResponse(
+            current_plan=current_plan.code,
+            new_plan=new_plan.code,
+            remaining_days=remaining_days,
+            prorated_amount=max(prorated_amount, 0.0),
+            next_cycle_amount=new_plan.price_monthly_minor
+        )
+    else:
+        daily_delta = (new_plan.price_yearly_minor - current_plan.price_yearly_minor) / total_days
+        prorated_amount = round(daily_delta * remaining_days, 2)
+        return UpgradePreviewResponse(
+            current_plan=current_plan.code,
+            new_plan=new_plan.code,
+            remaining_days=remaining_days,
+            prorated_amount=max(prorated_amount, 0.0),
+            next_cycle_amount=new_plan.price_yearly_minor
+        )
+
 
 @router.get("/upgrade")
 async def upgrade_current_subscription(req: TenantSubscriptionRequest,db: Session = Depends(get_db)):

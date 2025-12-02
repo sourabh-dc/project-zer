@@ -255,6 +255,7 @@ class TenantSubscription(Base):
     previous_sub_id = Column(Integer, ForeignKey("tenant_subscriptions.id"), nullable=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
     plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=False)
+    billing_cycle = Column(String(50), nullable=False, default="monthly")  # standard, trial, promotional
     payment_method = Column(String(20), default="card")  # stripe, card, trade, etc.
     external_id = Column(String(100), index=True, nullable=True)  # External payment provider ID
     current_period_start = Column(DateTime(timezone=True), nullable=False)

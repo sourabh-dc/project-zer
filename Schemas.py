@@ -242,6 +242,19 @@ class TenantSubscriptionRequest(BaseModel):
     external_id: Optional[str] = Field(None, description="External reference ID (optional)")
     previous_sub_id: Optional[int] = Field(None, description="Previous subscription ID (optional)")
 
+class TenantSubscriptionUpgradeRequest(BaseModel):
+    """Tenant subscription creation request"""
+    tenant_id: str = Field(description="Tenant ID")
+    subscription_id: int = Field(description="Subscription ID")
+    upgrade_plan_code: str = Field(description="Plan code")
+
+class UpgradePreviewResponse(BaseModel):
+    current_plan: str
+    new_plan: str
+    remaining_days: int
+    prorated_amount: float
+    next_cycle_amount: float
+
 
 class CurrentSubscriptionResponse(BaseModel):
     """Current subscription response"""
