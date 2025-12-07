@@ -20,13 +20,9 @@ from core.user_auth import invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
-app = APIRouter(prefix="/v1/internal", tags=["internal"])
+router = APIRouter(prefix="/v1/internal", tags=["internal"])
 
-# Configuration
-TRIAL_DAYS = 14  # Free trial period
-
-
-@app.post("/plans", status_code=201)
+@router.post("/plans", status_code=201)
 async def create_plan(
         req: SubscriptionPlanRequest,
         db: Session = Depends(get_db)
@@ -57,7 +53,7 @@ async def create_plan(
     }
 
 
-@app.get("/plans")
+@router.get("/plans")
 async def list_plans(
         active: Optional[bool] = None,
         db: Session = Depends(get_db),
@@ -85,7 +81,7 @@ async def list_plans(
     }
 
 
-@app.get("/plans/{plan_code}")
+@router.get("/plans/{plan_code}")
 async def get_plan(
         plan_code: str,
         db: Session = Depends(get_db),
@@ -127,7 +123,7 @@ async def get_plan(
 # Feature Management
 # ============================================================================
 
-@app.post("/features", status_code=201)
+@router.post("/features", status_code=201)
 async def create_feature(
         req: FeatureRequest,
         db: Session = Depends(get_db)
@@ -159,7 +155,7 @@ async def create_feature(
     }
 
 
-@app.get("/features")
+@router.get("/features")
 async def list_features(
         active: Optional[bool] = None,
         category: Optional[str] = None,
@@ -189,7 +185,7 @@ async def list_features(
     }
 
 
-@app.put("/map-feature")
+@router.put("/map-feature")
 async def upsert_plan_feature(
         req: PlanFeatureRequest,
         db: Session = Depends(get_db)
@@ -223,7 +219,7 @@ async def upsert_plan_feature(
     return {"plan_code": req.plan_code, "feature_code": req.feature_code, "enabled": True}
 
 
-@app.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
+@router.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
 async def remove_feature_from_plan(
         plan_code: str,
         feature_code: str,
@@ -244,7 +240,7 @@ async def remove_feature_from_plan(
 #       Roles and Permissions
 # ===========================================================================
 
-@app.post("/roles", status_code=201)
+@router.post("/roles", status_code=201)
 async def create_role(
         req: RoleRequest,
         db: Session = Depends(get_db)
@@ -298,7 +294,7 @@ async def create_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/roles")
+@router.get("/roles")
 async def list_roles(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
@@ -325,7 +321,7 @@ async def list_roles(
         "offset": offset
     }
 
-@app.post("/permissions", status_code=201)
+@router.post("/permissions", status_code=201)
 async def create_permission(
         code: str,
         description: str,
@@ -360,7 +356,7 @@ async def create_permission(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/permissions")
+@router.get("/permissions")
 async def list_permissions(
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
@@ -375,7 +371,7 @@ async def list_permissions(
     }
 
 
-@app.post("/roles/map-permission", status_code=201)
+@router.post("/roles/map-permission", status_code=201)
 async def add_permission_to_role(
         role_id: str,
         permission_id: str,
@@ -409,7 +405,7 @@ async def add_permission_to_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.delete("/roles/delete-permission", status_code=204)
+@router.delete("/roles/delete-permission", status_code=204)
 async def remove_permission_from_role(
         role_id: str,
         permission_id: str,
@@ -438,7 +434,7 @@ async def remove_permission_from_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/roles/{role_id}/permissions")
+@router.get("/roles/{role_id}/permissions")
 async def get_role_permissions(
         role_id: str,
         db: Session = Depends(get_db)

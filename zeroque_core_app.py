@@ -16,7 +16,6 @@ from services.auth_routes import router as auth_router
 from services.plan_routes import router as plan_router
 from services.payments_routes import router as payments_router
 
-
 # FastAPI app
 app = FastAPI(
     title="ZeroQue Core API",
@@ -56,7 +55,6 @@ async def health():
             status_code=503,
             content={"status": "unhealthy", "error": str(e)}
         )
-
 
 @app.get("/metrics")
 async def metrics():
