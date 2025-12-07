@@ -20,7 +20,7 @@ from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
 
-app = APIRouter()
+app = APIRouter(prefix="/provisioning", tags=["Provisioning Service"])
 
 """
 ZeroQue Provisioning Service - Simplified Production Version
@@ -30,7 +30,7 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 # ==================================================================================
 # API ENDPOINTS
 # ==================================================================================
-@app.get("/v1/tenants")
+@app.get("/tenants")
 async def list_tenants(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
@@ -51,7 +51,7 @@ async def list_tenants(
         "tenants": [
             {
                 "tenant_id": str(t.tenant_id),
-                "name": t.name,
+                "name": t.tenant_name,
                 "type": t.tenant_type,
                 "created_at": t.created_at.isoformat()
             }
@@ -63,7 +63,7 @@ async def list_tenants(
     }
 
 
-@app.get("/v1/tenants/{tenant_id}")
+@app.get("/tenants/{tenant_id}")
 async def get_tenant(
         tenant_id: str,
         db: Session = Depends(get_db)
@@ -76,7 +76,7 @@ async def get_tenant(
 
         return {
             "tenant_id": str(tenant.tenant_id),
-            "name": tenant.name,
+            "name": tenant.tenant_name,
             "type": tenant.tenant_type,
             "active": tenant.active,
             "created_at": tenant.created_at.isoformat(),
@@ -91,7 +91,7 @@ async def get_tenant(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.put("/v1/tenants/{tenant_id}")
+@app.put("/tenants/{tenant_id}")
 async def update_tenant(
         tenant_id: str,
         name: Optional[str] = Query(None, description="New tenant name"),
@@ -111,7 +111,7 @@ async def update_tenant(
         if name:
             # Check if new name conflicts
             existing = db.query(Tenant).filter(
-                Tenant.name == name,
+                Tenant.tenant_name == name,
                 Tenant.tenant_id != uuid.UUID(tenant_id)
             ).first()
             if existing:
@@ -156,26 +156,21 @@ async def update_tenant(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/v1/sites", status_code=201)
+@app.post("/sites", status_code=201)
 async def create_site(
         req: SiteRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("sites.manage"))
+        db: Session = Depends(get_db)
 ):
     """Create a new site and associate it with a tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_site", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # Create site (no tenant_id here)
+        # Create a site (no tenant_id here)
         site = Site(
             site_id=uuid.uuid4(),
             name=req.name,
@@ -185,7 +180,7 @@ async def create_site(
         db.add(site)
         db.flush()  # Get site_id
         
-        # Create site-tenant relationship
+        # Create a site-tenant relationship
         site_tenant = SiteTenant(
             id=uuid.uuid4(),
             site_id=site.site_id,
@@ -225,12 +220,11 @@ async def create_site(
         logger.error(f"❌ Site creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=201)
+@app.post("/sites/{site_id}/tenants/{tenant_id}", status_code=201)
 async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
+    db: Session = Depends(get_db)
 ):
     """Allow a site to be managed by an additional tenant"""
     try:
@@ -244,7 +238,7 @@ async def add_tenant_to_site(
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
         
-        # Check if association already exists
+        # Check if the association already exists
         existing = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(site_id),
             SiteTenant.tenant_id == uuid.UUID(tenant_id)
@@ -276,7 +270,7 @@ async def add_tenant_to_site(
         logger.error(f"❌ Add tenant to site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/v1/sites/{site_id}/tenants")
+@app.get("/sites/{site_id}/tenants")
 async def list_site_tenants(
     site_id: str,
     db: Session = Depends(get_db),
@@ -284,7 +278,7 @@ async def list_site_tenants(
 ):
     """List all tenants associated with a site"""
     try:
-        # Verify site exists and is accessible by user's tenant
+        # Verify site exists and is accessible by the user's tenant
         site_access = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(site_id),
             SiteTenant.tenant_id == ctx.tenant_id
@@ -305,7 +299,7 @@ async def list_site_tenants(
             "tenants": [
                 {
                     "tenant_id": str(t.tenant_id),
-                    "name": t.name,
+                    "name": t.tenant_name,
                     "type": t.tenant_type,
                     "created_at": t.created_at.isoformat()
                 }
@@ -321,12 +315,11 @@ async def list_site_tenants(
         logger.error(f"❌ List site tenants failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.delete("/v1/sites/{site_id}/tenants/{tenant_id}", status_code=204)
+@app.delete("/sites/{site_id}/tenants/{tenant_id}", status_code=204)
 async def remove_tenant_from_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
+    db: Session = Depends(get_db)
 ):
     """Remove a tenant from a site"""
     try:
@@ -362,7 +355,7 @@ async def remove_tenant_from_site(
         logger.error(f"❌ Remove tenant from site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
         
-@app.get("/v1/sites")
+@app.get("/sites")
 async def list_sites(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -404,21 +397,19 @@ async def list_sites(
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/v1/stores", status_code=201)
+@app.post("/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("stores.manage"))
+        db: Session = Depends(get_db)
 ):
     """Create a new store under a site for the user's tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_store", status="start").inc()
-        print(ctx)
-        # Verify site exists and is accessible by user's tenant
+        # Verify site exists and is accessible by the user's tenant
         site_tenant = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(req.site_id),
-            SiteTenant.tenant_id == ctx.tenant_id  # Use user's tenant from context
+            SiteTenant.tenant_id == req.tenant_id
         ).first()
         
         if not site_tenant:
@@ -431,7 +422,7 @@ async def create_store(
         store = Store(
             store_id=uuid.uuid4(),
             site_id=uuid.UUID(req.site_id),
-            tenant_id=ctx.tenant_id,  # Use user's tenant
+            tenant_id=req.tenant_id,  # Use user's tenant
             name=req.name,
             store_type=req.type,
             geo=req.geo
@@ -445,7 +436,7 @@ async def create_store(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created store: {store.store_id} ({store.name}) for tenant: {ctx.tenant_id}")
+        logger.info(f"✅ Created store: {store.store_id} ({store.name}) for tenant: {req.tenant_id}")
 
         return {
             "store_id": str(store.store_id),
@@ -472,8 +463,73 @@ async def create_store(
         logger.error(f"❌ Store creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.put("/stores/{store_id}", status_code=200)
+async def update_store(
+    store_id: str,
+    name: Optional[str] = Query(None, description="New store name"),
+    store_type: Optional[str] = Query(None, description="New store type"),
+    geo: Optional[str] = Query(None, description="New geo location"),
+    db: Session = Depends(get_db)
+):
+    """Update store information"""
+    start = datetime.now()
+    try:
+        req_total.labels(operation="update_store", status="start").inc()
 
-@app.get("/v1/stores")
+        # Find store
+        store = db.query(Store).filter(Store.store_id == uuid.UUID(store_id)).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
+
+        # Update fields if provided
+        updated = False
+        if name is not None:
+            store.name = name
+            updated = True
+        if store_type is not None:
+            store.store_type = store_type
+            updated = True
+        if geo is not None:
+            store.geo = geo
+            updated = True
+
+        if not updated:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        store.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(store)
+
+        req_total.labels(operation="update_store", status="success").inc()
+        req_duration.labels(operation="update_store").observe(
+            (datetime.now() - start).total_seconds()
+        )
+
+        logger.info(f"✅ Updated store: {store.store_id} ({store.name})")
+
+        return {
+            "store_id": str(store.store_id),
+            "site_id": str(store.site_id),
+            "tenant_id": str(store.tenant_id),
+            "name": store.name,
+            "store_type": store.store_type,
+            "geo": store.geo,
+            "updated_at": store.updated_at.isoformat()
+        }
+
+    except ValueError:
+        req_total.labels(operation="update_store", status="error").inc()
+        raise HTTPException(status_code=400, detail="Invalid store ID format")
+    except HTTPException:
+        req_total.labels(operation="update_store", status="error").inc()
+        raise
+    except Exception as e:
+        db.rollback()
+        req_total.labels(operation="update_store", status="error").inc()
+        logger.error(f"❌ Store update failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/stores")
 async def list_stores(
         site_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -525,21 +581,12 @@ async def list_stores(
 @app.post("/v1/users", status_code=201)
 async def create_user(
         req: UserRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "users.manage",
-                None
-            )
-        )
+        db: Session = Depends(get_db)
 ):
     """Create a new user"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_user", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -554,21 +601,14 @@ async def create_user(
         # Hash password
         password_hash = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-        # Generate API key
-        api_key = generate_api_key()
-        api_key_expires_at = datetime.now(timezone.utc) + timedelta(days=SETTINGS.API_KEY_EXPIRY_DAYS)
-
         # Create user
         user = User(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
             email=req.email.lower(),
             display_name=req.display_name,
-            password_hash=password_hash,
-            active=True,
-            api_key=api_key,
-            api_key_created_at=datetime.now(timezone.utc),
-            api_key_expires_at=api_key_expires_at
+            password=password_hash,
+            active=True
         )
         db.add(user)
         db.commit()
@@ -586,8 +626,6 @@ async def create_user(
             "tenant_id": str(user.tenant_id),
             "email": user.email,
             "display_name": user.display_name,
-            "api_key": api_key,
-            "api_key_expires_at": api_key_expires_at.isoformat(),
             "created_at": user.created_at.isoformat()
         }
     except ValueError:

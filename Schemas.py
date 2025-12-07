@@ -70,6 +70,7 @@ class StoreRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255, description="Store name")
     type: str = Field(description="Store type")
     site_id: str = Field(description="Site ID")
+    tenant_id: str = Field(description="Tenant ID")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
 
 

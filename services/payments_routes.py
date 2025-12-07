@@ -149,4 +149,3 @@ async def subscription_status_websocket(
     except Exception as e:
         logger.error(f"WebSocket error for tenant {tenant_id}: {e}", exc_info=True)
         await websocket.close(code=1011, reason="Internal server error")
-
