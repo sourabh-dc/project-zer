@@ -9,11 +9,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from Models import Tenant, Role, UserRole, User, Vendor, Site, Store, CostCentre, Permission, RolePermission, RoleScope, \
-    UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment, TenantSubscription
-from Schemas import TenantRequest, UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
-    AssignRoleRequest, RoleRequest, CostCentreRequest, VendorRequest, SuperUserRequest, OrgUnitRequest, \
-    OrgUnitAssignmentRequest, PasswordResetRequest
+from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment
+from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
+    CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest
 from core.config import SETTINGS
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission, check_tenant_access
@@ -32,82 +30,6 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 # ==================================================================================
 # API ENDPOINTS
 # ==================================================================================
-@app.post("/v1/tenants", status_code=201)
-async def create_tenant(
-        req: TenantRequest,
-        db: Session = Depends(get_db)
-):
-    """Create a new tenant"""
-    start = datetime.now()
-    try:
-        req_total.labels(operation="create_tenant", status="start").inc()
-
-        # Check if tenant exists
-        existing = db.query(Tenant).filter(Tenant.email == req.email).first()
-        if existing:
-            raise HTTPException(status_code=409, detail="Tenant email already exists")
-
-        password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
-        # Create tenant
-        tenant = Tenant(
-            tenant_id=uuid.uuid4(),
-            tenant_name=req.tenant_name,
-            tenant_type=req.type,
-            registration_number=req.registration_number,
-            email=req.email,
-            billing_cycle=req.billing_cycle,
-            phone=req.phone,
-            active=True
-        )
-        db.add(tenant)
-        db.commit()
-        db.refresh(tenant)
-
-        # create user
-        user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, display_name=tenant.tenant_name, email=tenant.email,
-                    username=req.admin_username, password=password_hash, active=True)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        # create user role
-        tenant_admin_role_id = db.query(Role.role_id).filter(Role.code == "tenant_admin").first()[0]
-        role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=tenant_admin_role_id)
-        db.add(role)
-        db.commit()
-
-        # create a default subscription for the tenant
-        subscription = TenantSubscription(tenant_id=tenant.tenant_id, plan_code="core_01", current_period_start=datetime.now(),
-                                          current_period_end=datetime.now()+timedelta(days=7), is_trial=True)
-        db.add(subscription)
-        db.commit()
-
-        req_total.labels(operation="create_tenant", status="success").inc()
-        req_duration.labels(operation="create_tenant").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Created tenant: {tenant.tenant_id} ({tenant.tenant_name})")
-
-        return {
-            "tenant_id": str(tenant.tenant_id),
-            "name": tenant.tenant_name,
-            "type": tenant.tenant_type,
-            "created_at": tenant.created_at.isoformat()
-        }
-    except HTTPException:
-        req_total.labels(operation="create_tenant", status="error").inc()
-        raise
-    # except IntegrityError:
-    #     db.rollback()
-    #     req_total.labels(operation="create_tenant", status="error").inc()
-    #     raise HTTPException(status_code=409, detail="Tenant already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_tenant", status="error").inc()
-        logger.error(f"❌ Tenant creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @app.get("/v1/tenants")
 async def list_tenants(
         db: Session = Depends(get_db),
