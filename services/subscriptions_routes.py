@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
 
 from Models import SubscriptionPlan, TenantSubscription
 from Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
@@ -233,63 +231,3 @@ async def cancel_subscription(
         "ends_at": sub.ends_at.isoformat() if sub.ends_at else None,
         "message": message
     }
-
-
-@router.websocket("/ws/subscription-status/{tenant_id}")
-async def subscription_status_websocket(
-        websocket: WebSocket,
-        tenant_id: str,
-        db: Session = Depends(get_db)
-):
-    """
-    WebSocket endpoint to check subscription status in real-time.
-    Sends periodic updates about subscription creation/status for a tenant.
-    """
-    await websocket.accept()
-    logger.info(f"WebSocket connected for tenant {tenant_id}")
-
-    try:
-        while True:
-            # Query the current subscription status
-            now = datetime.now(timezone.utc)
-            subscription = db.query(TenantSubscription).filter(
-                TenantSubscription.tenant_id == tenant_id,
-                TenantSubscription.is_active == True,
-                TenantSubscription.current_period_end > now
-            ).first()
-
-            if subscription:
-                # Subscription found
-                plan = db.query(SubscriptionPlan).filter_by(code=subscription.plan_code).first()
-
-                response = {
-                    "status": "active",
-                    "subscription_exists": True,
-                    "subscription_id": str(subscription.id),
-                    "plan_code": subscription.plan_code,
-                    "plan_name": plan.name if plan else None,
-                    "is_active": subscription.is_active,
-                    "is_trial": subscription.is_trial,
-                    "current_period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
-                    "timestamp": now.isoformat()
-                }
-            else:
-                # No active subscription
-                response = {
-                    "status": "no_subscription",
-                    "subscription_exists": False,
-                    "timestamp": now.isoformat()
-                }
-
-            # Send status to a client
-            await websocket.send_json(response)
-
-            # Wait 3 seconds before the next check
-            await asyncio.sleep(3)
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for tenant {tenant_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error for tenant {tenant_id}: {e}", exc_info=True)
-        await websocket.close(code=1011, reason="Internal server error")
-
