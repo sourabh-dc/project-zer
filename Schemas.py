@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from pydantic import field_validator, BaseModel, Field, EmailStr, ConfigDict
+from pydantic import field_validator, BaseModel, Field, EmailStr, ConfigDict, constr
 from typing import Optional, Dict, List, Tuple, Any
 import re
 
@@ -985,4 +985,24 @@ class ForgotPasswordRequest(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     token: str
-    new_password: constr(min_length=8)
+    new_password:str = Field(..., min_length=8)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+class CheckoutRequest(BaseModel):
+    tenant_id: str
+    price_id: str | None = None
+    amount: int = None
+    currency: str = "usd"
+    mode: str = "payment"
+    billing_cycle: str = "monthly"
+    plan_code: str
