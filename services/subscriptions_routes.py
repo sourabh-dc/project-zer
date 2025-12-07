@@ -1,42 +1,26 @@
-# services/core/routes/subscriptions.py
-"""
-Subscription Management Service
-- Plan CRUD
-- Feature management
-- Tenant subscription lifecycle (trial, active, cancel, upgrade/downgrade)
-- Current subscription status
-"""
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from Models import (
-    SubscriptionPlan, TenantSubscription
-)
-from Schemas import (
-    TenantSubscriptionRequest, CurrentSubscriptionResponse,
+from Models import SubscriptionPlan, TenantSubscription
+from Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
     CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse
-)
 from core.db_config import get_db
 from utils.logger import logger
 
-router = APIRouter(prefix="/v1/subscriptions", tags=["subscriptions"])
-
-# Configuration
-TRIAL_DAYS = 14  # Free trial period
+router = APIRouter(prefix="/subscriptions", tags=["Subscription Plans"])
 
 # ============================================================================
 # Tenant Subscription Management
 # ============================================================================
 
-@router.post("/", status_code=201)
+@router.post("/create", status_code=201)
 async def create_subscription(
     req: TenantSubscriptionRequest,
     db: Session = Depends(get_db)
 ):
     """Create a new subscription"""
-    # create a new subscription
     tenant_subscription = TenantSubscription(tenant_id=req.tenant_id, plan_code=req.plan_code,
                                              current_period_start=req.current_period_start, is_trial=False,
                                              current_period_end=req.current_period_end, payment_method=req.payment_method,
@@ -52,7 +36,6 @@ async def renew_subscription(
     db: Session = Depends(get_db)
 ):
     """Renew current subscription"""
-    # Update current subscription status
     current_subscription = db.query(TenantSubscription).filter_by(id=req.previous_sub_id).first()
     current_subscription.is_active = False
     db.commit()
@@ -248,4 +231,3 @@ async def cancel_subscription(
         "ends_at": sub.ends_at.isoformat() if sub.ends_at else None,
         "message": message
     }
-
