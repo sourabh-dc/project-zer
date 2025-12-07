@@ -17,9 +17,9 @@ from core.config import SETTINGS
 from utils.logger import logger
 import bcrypt
 
-app = APIRouter(prefix="onboarding", tags=["onboarding tenant"])
+router = APIRouter(prefix="onboarding", tags=["onboarding tenant"])
 
-@app.post("tenant-signup", status_code=201)
+@router.post("tenant-signup", status_code=201)
 async def create_tenant(
         req: TenantRequest,
         db: Session = Depends(get_db)
@@ -92,7 +92,7 @@ async def create_tenant(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/tenant-signin", response_model=LoginResponse, status_code=200)
+@router.post("/tenant-signin", response_model=LoginResponse, status_code=200)
 async def tenant_login(
         req: LoginRequest,
         db: Session = Depends(get_db)

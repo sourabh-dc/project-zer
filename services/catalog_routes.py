@@ -1,8 +1,6 @@
-# routes/catalog.py
 import uuid
-from datetime import datetime, timezone
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import and_, or_
@@ -17,18 +15,15 @@ from Schemas import (
 )
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission
-from utils.logger import logger
 
-# The main FastAPI app expects to import `app` from this module.
-# Keep `router` for readability and expose it as `app`.
-router = APIRouter()
-app = router
+
+router = APIRouter(prefix="/catalog", tags=["Catalog"])
 
 # =============================================================================
 # CATEGORY ENDPOINTS
 # =============================================================================
 
-@router.post("/v1/catalog/categories", status_code=201)
+@router.post("/categories", status_code=201)
 async def create_category(
     req: CategoryRequest,
     db: Session = Depends(get_db),
@@ -87,7 +82,7 @@ async def create_category(
     }
 
 
-@router.get("/v1/catalog/categories")
+@router.get("/categories")
 async def list_categories(
     active: Optional[bool] = Query(None),
     parent_id: Optional[str] = Query(None),
@@ -134,7 +129,7 @@ async def list_categories(
 # PRODUCT ENDPOINTS
 # =============================================================================
 
-@router.post("/v1/catalog/products", status_code=201)
+@router.post("/products", status_code=201)
 async def create_product(
     req: ProductRequest,
     db: Session = Depends(get_db),
@@ -209,7 +204,7 @@ async def create_product(
     }
 
 
-@router.get("/v1/catalog/products")
+@router.get("/products")
 async def list_products(
     category_id: Optional[str] = None,
     vendor_id: Optional[str] = None,
@@ -267,7 +262,7 @@ async def list_products(
 # VARIANT ENDPOINTS
 # =============================================================================
 
-@router.post("/v1/catalog/variants", status_code=201)
+@router.post("/variants", status_code=201)
 async def create_variant(
     req: VariantRequest,
     db: Session = Depends(get_db),

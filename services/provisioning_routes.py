@@ -22,7 +22,7 @@ from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
 
-app = APIRouter(prefix="/provisioning", tags=["Provisioning Service"])
+router = APIRouter(prefix="/provisioning", tags=["Provisioning Service"])
 
 """
 ZeroQue Provisioning Service - Simplified Production Version
@@ -32,7 +32,7 @@ A clean, powerful API for multi-tenant provisioning with PostgreSQL RLS.
 # ==================================================================================
 # API ENDPOINTS
 # ==================================================================================
-@app.get("/tenants")
+@router.get("/tenants")
 async def list_tenants(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
@@ -65,7 +65,7 @@ async def list_tenants(
     }
 
 
-@app.get("/tenants/{tenant_id}")
+@router.get("/tenants/{tenant_id}")
 async def get_tenant(
         tenant_id: str,
         db: Session = Depends(get_db)
@@ -93,7 +93,7 @@ async def get_tenant(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.put("/tenants/{tenant_id}")
+@router.put("/tenants/{tenant_id}")
 async def update_tenant(
         tenant_id: str,
         name: Optional[str] = Query(None, description="New tenant name"),
@@ -158,7 +158,7 @@ async def update_tenant(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/sites", status_code=201)
+@router.post("/sites", status_code=201)
 async def create_site(
         req: SiteRequest,
         db: Session = Depends(get_db)
@@ -222,7 +222,7 @@ async def create_site(
         logger.error(f"❌ Site creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/sites/{site_id}/tenants/{tenant_id}", status_code=201)
+@router.post("/sites/{site_id}/tenants/{tenant_id}", status_code=201)
 async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
@@ -272,7 +272,7 @@ async def add_tenant_to_site(
         logger.error(f"❌ Add tenant to site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/sites/{site_id}/tenants")
+@router.get("/sites/{site_id}/tenants")
 async def list_site_tenants(
     site_id: str,
     db: Session = Depends(get_db),
@@ -317,7 +317,7 @@ async def list_site_tenants(
         logger.error(f"❌ List site tenants failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.delete("/sites/{site_id}/tenants/{tenant_id}", status_code=204)
+@router.delete("/sites/{site_id}/tenants/{tenant_id}", status_code=204)
 async def remove_tenant_from_site(
     site_id: str,
     tenant_id: str,
@@ -357,7 +357,7 @@ async def remove_tenant_from_site(
         logger.error(f"❌ Remove tenant from site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
         
-@app.get("/sites")
+@router.get("/sites")
 async def list_sites(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -399,7 +399,7 @@ async def list_sites(
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/stores", status_code=201)
+@router.post("/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
         db: Session = Depends(get_db)
@@ -465,7 +465,7 @@ async def create_store(
         logger.error(f"❌ Store creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.put("/stores/{store_id}", status_code=200)
+@router.put("/stores/{store_id}", status_code=200)
 async def update_store(
     store_id: str,
     name: Optional[str] = Query(None, description="New store name"),
@@ -531,7 +531,7 @@ async def update_store(
         logger.error(f"❌ Store update failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/stores")
+@router.get("/stores")
 async def list_stores(
         site_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -580,7 +580,7 @@ async def list_stores(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/v1/users", status_code=201)
+@router.post("/v1/users", status_code=201)
 async def create_user(
         req: UserRequest,
         db: Session = Depends(get_db)
@@ -647,7 +647,7 @@ async def create_user(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/users")
+@router.get("/users")
 async def list_users(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -688,7 +688,7 @@ async def list_users(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/users/bulk-import", status_code=201)
+@router.post("/users/bulk-import", status_code=201)
 async def bulk_import_users(
         req: BulkUserRequest,
         db: Session = Depends(get_db),
@@ -783,7 +783,7 @@ async def bulk_import_users(
         logger.error(f"❌ Bulk import failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/vendors", status_code=201)
+@router.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
         db: Session = Depends(get_db)
@@ -840,7 +840,7 @@ async def create_vendor(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/vendors")
+@router.get("/vendors")
 async def list_vendors(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
@@ -880,7 +880,7 @@ async def list_vendors(
         "offset": offset
     }
 
-@app.post("/cost-centres", status_code=201)
+@router.post("/cost-centres", status_code=201)
 async def create_cost_centre(
         req: CostCentreRequest,
         db: Session = Depends(get_db)
@@ -949,7 +949,7 @@ async def create_cost_centre(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/cost-centres")
+@router.get("/cost-centres")
 async def list_cost_centres(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
@@ -996,7 +996,7 @@ async def list_cost_centres(
 # USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
 # ==================================================================================
 
-@app.post("/users/{user_id}/cost-centres", status_code=201)
+@router.post("/users/{user_id}/cost-centres", status_code=201)
 async def assign_user_to_cost_centre(
     user_id: str,
     cost_centre_id: str = Query(..., description="Cost centre ID"),
@@ -1056,7 +1056,7 @@ async def assign_user_to_cost_centre(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/users/{user_id}/budget")
+@router.get("/users/{user_id}/budget")
 async def get_user_budget(
     user_id: str,
     db: Session = Depends(get_db)
@@ -1105,7 +1105,7 @@ async def get_user_budget(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/users/{user_id}/spending-history")
+@router.get("/users/{user_id}/spending-history")
 async def get_user_spending_history(
     user_id: str,
     limit: int = Query(50, le=200),
@@ -1158,7 +1158,7 @@ async def get_user_spending_history(
 # ORGANIZATIONAL UNIT ENDPOINTS
 # ==================================================================================
 
-@app.post("departments", status_code=201)
+@router.post("departments", status_code=201)
 async def create_org_unit(
     req: OrgUnitRequest,
     db: Session = Depends(get_db)
@@ -1209,7 +1209,7 @@ async def create_org_unit(
         logger.error(f"Failed to create org unit: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/departments")
+@router.get("/departments")
 async def list_org_units(
     tenant_id: Optional[str] = Query(None),
     parent_org_unit_id: Optional[str] = Query(None),
@@ -1259,7 +1259,7 @@ async def list_org_units(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/org-units/{org_unit_id}/users/{user_id}", status_code=201)
+@router.post("/org-units/{org_unit_id}/users/{user_id}", status_code=201)
 async def assign_user_to_org_unit(
     org_unit_id: str,
     user_id: str,
@@ -1327,7 +1327,7 @@ async def assign_user_to_org_unit(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/users/{user_id}/subordinates")
+@router.get("/users/{user_id}/subordinates")
 async def get_user_subordinates(
     user_id: str,
     db: Session = Depends(get_db)
@@ -1391,7 +1391,7 @@ async def get_user_subordinates(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.delete("/v1/org-units/{org_unit_id}/users/{user_id}", status_code=204)
+@router.delete("/v1/org-units/{org_unit_id}/users/{user_id}", status_code=204)
 async def remove_user_from_org_unit(
     org_unit_id: str,
     user_id: str,
@@ -1433,7 +1433,7 @@ async def remove_user_from_org_unit(
         logger.error(f"Failed to remove user from org unit: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/roles", status_code=201)
+@router.post("/roles", status_code=201)
 async def create_role(
         req: RoleRequest,
         db: Session = Depends(get_db)
@@ -1487,7 +1487,7 @@ async def create_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/roles")
+@router.get("/roles")
 async def list_roles(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
@@ -1513,7 +1513,7 @@ async def list_roles(
         "offset": offset
     }
 
-@app.post("/users/{user_id}/roles", status_code=201)
+@router.post("/users/{user_id}/roles", status_code=201)
 async def assign_role_to_user(
         user_id: str,
         req: AssignRoleRequest,
@@ -1585,7 +1585,7 @@ async def assign_role_to_user(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/users/{user_id}/roles")
+@router.get("/users/{user_id}/roles")
 async def get_user_roles(
         user_id: str,
         db: Session = Depends(get_db)
@@ -1629,7 +1629,7 @@ async def get_user_roles(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.delete("/users/{user_id}/roles/{role_id}")
+@router.delete("/users/{user_id}/roles/{role_id}")
 async def remove_role_from_user(
         user_id: str,
         role_id: str,

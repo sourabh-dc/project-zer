@@ -14,13 +14,13 @@ from core.permission_check_helpers import require_permission, resolve_approvers_
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
-app = APIRouter(tags=["Approvals"])
+router = APIRouter(prefix="/approvals", tags=["Approvals"])
 
 # ==================================================================================
 # APPROVALS MANAGEMENT ENDPOINTS
 # ==================================================================================
 
-@app.post("/approvals/chains", status_code=201)
+@router.post("/chains", status_code=201)
 async def create_approval_chain(
         req: ApprovalChainRequest,
         db: Session = Depends(get_db)
@@ -77,7 +77,7 @@ async def create_approval_chain(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/approvals/chains")
+@router.get("/chains")
 async def list_approval_chains(
         tenant_id: Optional[str] = Query(None),
         chain_type: Optional[str] = Query(None),
@@ -123,7 +123,7 @@ async def list_approval_chains(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/approvals/chains/steps", status_code=201)
+@router.post("/chains/steps", status_code=201)
 async def create_approval_chain_step(
         req: ApprovalChainStepRequest,
         db: Session = Depends(get_db)
@@ -184,7 +184,7 @@ async def create_approval_chain_step(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/approvals/chains/{chain_id}/steps")
+@router.get("/chains/{chain_id}/steps")
 async def list_chain_steps(
         chain_id: str,
         db: Session = Depends(get_db)
@@ -226,7 +226,7 @@ async def list_chain_steps(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/approvals/requests", status_code=201)
+@router.post("/requests", status_code=201)
 async def create_approval_request(
         req: ApprovalRequestRequest,
         current_user_id: str,
@@ -341,7 +341,7 @@ async def create_approval_request(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/approvals/requests")
+@router.get("/requests")
 async def list_approval_requests(
         tenant_id: Optional[str] = Query(None),
         request_type: Optional[str] = Query(None),
@@ -395,7 +395,7 @@ async def list_approval_requests(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/approvals/requests/{request_id}")
+@router.get("/requests/{request_id}")
 async def get_approval_request(
         request_id: str,
         db: Session = Depends(get_db)
@@ -451,7 +451,7 @@ async def get_approval_request(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/approvals/requests/{request_id}/approvers")
+@router.get("/requests/{request_id}/approvers")
 async def get_request_approvers(
         request_id: str,
         db: Session = Depends(get_db)
@@ -505,7 +505,7 @@ async def get_request_approvers(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/approvals/requests/{request_id}/respond")
+@router.post("/requests/{request_id}/respond")
 async def respond_to_approval_request(
         request_id: str,
         req: ApprovalResponseRequest,
@@ -655,7 +655,7 @@ async def respond_to_approval_request(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/approvals/requests/{request_id}/cancel")
+@router.post("/requests/{request_id}/cancel")
 async def cancel_approval_request(
         request_id: str,
         cancellation_reason: Optional[str] = Query(None, description="Cancellation reason"),

@@ -19,9 +19,9 @@ from core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
 from utils.logger import logger
 import bcrypt
 
-app = APIRouter(prefix="authentication", tags=["authentication"])
+router = APIRouter(prefix="authentication", tags=["authentication"])
 
-@app.post("/refresh-jwt", response_model=RefreshJwtResponse, status_code=200)
+@router.post("/refresh-jwt", response_model=RefreshJwtResponse, status_code=200)
 async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
     """
     Exchange a valid refresh token for a new JWT.
@@ -85,7 +85,7 @@ async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
     )
 
 
-@app.post("/logout", status_code=200)
+@router.post("/logout", status_code=200)
 async def logout(user_id: str, db: Session = Depends(get_db)):
     """
     Log out a user: set last_logout_at, revoke stored refresh token.
@@ -102,7 +102,7 @@ async def logout(user_id: str, db: Session = Depends(get_db)):
     logger.info(f"🔓 User {user.email} logged out and refresh token revoked")
     return {"message":"Logged out successfully"}
 
-@app.post("/reset-password", status_code=200)
+@router.post("/reset-password", status_code=200)
 async def reset_password(
     user_id: str,
     req: ResetPasswordRequest,
@@ -139,7 +139,7 @@ async def reset_password(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
-@app.post("/forgot-password", status_code=200)
+@router.post("/forgot-password", status_code=200)
 async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """
     Request a password reset. If the email exists, send a signed reset URL by email.
@@ -233,7 +233,7 @@ async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
-@app.post("/reset-password/confirm", status_code=200)
+@router.post("/reset-password/confirm", status_code=200)
 async def confirm_reset_password(req: PasswordResetConfirmRequest, db: Session = Depends(get_db)):
     """
     Verify a password-reset JWT token and set a new password for the user.
