@@ -19,7 +19,7 @@ from core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
 from utils.logger import logger
 import bcrypt
 
-router = APIRouter(prefix="authentication", tags=["authentication"])
+router = APIRouter(prefix="/authentication", tags=["authentication"])
 
 @router.post("/refresh-jwt", response_model=RefreshJwtResponse, status_code=200)
 async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
 from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
-    OrgUnit, UserOrgAssignment, UserRole
+    OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission
 from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
     RoleRequest
@@ -1511,6 +1511,93 @@ async def list_roles(
         "total": total,
         "limit": limit,
         "offset": offset
+    }
+
+@router.post("/roles/map-permission", status_code=201)
+async def add_permission_to_role(
+        role_id: str,
+        permission_id: str,
+        db: Session = Depends(get_db)
+):
+    """Add permission to a role"""
+    try:
+        # Check if already exists
+        existing = db.query(RolePermission).filter(
+            RolePermission.role_id == uuid.UUID(role_id),
+            RolePermission.permission_id == uuid.UUID(permission_id)
+        ).first()
+
+        if existing:
+            raise HTTPException(status_code=409, detail="Permission already assigned to role")
+
+        rp = RolePermission(
+            id=uuid.uuid4(),
+            role_id=uuid.UUID(role_id),
+            permission_id=uuid.UUID(permission_id)
+        )
+        db.add(rp)
+        db.commit()
+
+        return {"message": "Permission added to role"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to add permission to role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/roles/delete-permission", status_code=204)
+async def remove_permission_from_role(
+        role_id: str,
+        permission_id: str,
+        db: Session = Depends(get_db)
+):
+    """Remove permission from a role"""
+    try:
+        assignment = db.query(RolePermission).filter(
+            RolePermission.role_id == uuid.UUID(role_id),
+            RolePermission.permission_id == uuid.UUID(permission_id)
+        ).first()
+
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Permission not assigned to role")
+
+        db.delete(assignment)
+        db.commit()
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid role or permission ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to remove permission from role: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/roles/{role_id}/permissions")
+async def get_role_permissions(
+        role_id: str,
+        db: Session = Depends(get_db)
+):
+    """Get all permissions for a role"""
+    role_perms = db.query(RolePermission, Permission).join(
+        Permission, RolePermission.permission_id == Permission.permission_id
+    ).filter(
+        RolePermission.role_id == uuid.UUID(role_id)
+    ).all()
+
+    return {
+        "role_id": role_id,
+        "permissions": [
+            {
+                "permission_id": str(p.permission_id),
+                "code": p.code,
+                "description": p.description
+            }
+            for rp, p in role_perms
+        ]
     }
 
 @router.post("/users/{user_id}/roles", status_code=201)

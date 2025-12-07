@@ -17,7 +17,7 @@ from core.config import SETTINGS
 from utils.logger import logger
 import bcrypt
 
-router = APIRouter(prefix="onboarding", tags=["onboarding tenant"])
+router = APIRouter(prefix="/onboarding", tags=["onboarding tenant"])
 
 @router.post("tenant-signup", status_code=201)
 async def create_tenant(

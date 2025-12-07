@@ -24,11 +24,15 @@ if environment == "Development":
     db_password = client.get_secret("dbPassword").value
     db_host = client.get_secret("dbHost").value
     db_username = client.get_secret("dbUsername").value
+    stripe_secret_key = client.get_secret("stripeSecretKey").value
+    stripe_webhook_secret = client.get_secret("stripeWebhookSecret").value
 else:
     db_name = os.getenv("POSTGRES_DB")
     db_password = os.getenv("POSTGRES_PASSWORD")
     db_host = os.getenv("POSTGRES_HOST")
     db_username = os.getenv("POSTGRES_USER")
+    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
+    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 
 class Settings(BaseSettings):
@@ -65,8 +69,8 @@ class Settings(BaseSettings):
     ACCOUNT_LOCKOUT_MINUTES: int = 30
 
     #Stripe settings
-    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY")
-    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
+    STRIPE_SECRET_KEY: str = stripe_secret_key
+    STRIPE_WEBHOOK_SECRET: str = stripe_webhook_secret
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
