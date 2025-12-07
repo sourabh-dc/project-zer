@@ -43,7 +43,6 @@ async def cv_create_customer(customer_dict):
         url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}"
         r = await client.post(url, headers=get_headers(), json=payload)
         print("\n👤 Create Customer Response:", r.status_code)
-        print("Response:", r.text)
 
 async def cv_create_product(product_dict):
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -58,6 +57,58 @@ async def cv_create_product(product_dict):
         url = f"{AIFI_BASE_URL}{PATH_PRODUCTS}"
         r = await client.post(url, headers=get_headers(), json=payload)
         print("\n📦 Create Product Response:", r.status_code)
+
+
+def cv_get_products():
+    products = []
+    offset = 0
+    count = 50  # default page size
+
+    with httpx.Client(timeout=15.0) as client:
+        while True:
+            url = f"{AIFI_BASE_URL}{PATH_PRODUCTS}?offset={offset}&count={count}"
+            r = client.get(url, headers=get_headers())
+            r.raise_for_status()
+            data = r.json()
+
+            # Add the current batch
+            products.extend(data.get("products", []))
+
+            # Check if there's a next page
+            pagination = data.get("pagination", {})
+            next_page = pagination.get("next")
+            if next_page:
+                offset = next_page.get("offset", 0)
+                count = next_page.get("count", 50)
+            else:
+                break
+    return products
+
+def cv_get_customers():
+    with httpx.Client(timeout=15.0) as client:
+        url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}"
+        r = client.get(url, headers=get_headers())
+        r.raise_for_status()
+        data = r.json()
+        return data
+
+def cv_delete_customer(customer_id):
+    with httpx.Client(timeout=15.0) as client:
+        url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}/{customer_id}"
+        r = client.delete(url, headers=get_headers())
+        print(r.status_code)
+
+def cv_delete_product(product_id):
+    with httpx.Client(timeout=15.0) as client:
+        url = f"{AIFI_BASE_URL}{PATH_PRODUCTS}/{product_id}"
+        r = client.delete(url, headers=get_headers())
+        print(r.status_code)
+
+async def cv_get_users():
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}"
+        r = await client.get(url, headers=get_headers())
+        print("\n📦 Get customers Response:", r.status_code)
         print("Response:", r.text)
 
 async def test_entry_code(customer_id):
