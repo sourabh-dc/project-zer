@@ -244,7 +244,7 @@ async def remove_feature_from_plan(
 #       Roles and Permissions
 # ===========================================================================
 
-@app.post("/v1/roles", status_code=201)
+@app.post("/roles", status_code=201)
 async def create_role(
         req: RoleRequest,
         db: Session = Depends(get_db)
@@ -298,7 +298,7 @@ async def create_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/roles")
+@app.get("/roles")
 async def list_roles(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
@@ -325,193 +325,7 @@ async def list_roles(
         "offset": offset
     }
 
-
-@app.post("/v1/users/{user_id}/roles", status_code=201)
-async def assign_role_to_user(
-        user_id: str,
-        req: AssignRoleRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "roles.assign",
-                None
-            )
-        )
-):
-    """Assign a role to a user"""
-    start = datetime.now()
-    try:
-        req_total.labels(operation="assign_role", status="start").inc()
-
-        # Verify user exists
-        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Verify role exists
-        role = db.query(Role).filter(Role.role_id == uuid.UUID(req.role_id)).first()
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-
-        # Check if assignment already exists
-        existing = db.query(UserRole).filter(
-            UserRole.user_id == uuid.UUID(user_id),
-            UserRole.role_id == uuid.UUID(req.role_id)
-        ).first()
-
-        if existing:
-            raise HTTPException(status_code=409, detail="Role already assigned to user")
-
-        # Create assignment
-        user_role = UserRole(
-            id=uuid.uuid4(),
-            user_id=uuid.UUID(user_id),
-            role_id=uuid.UUID(req.role_id)
-        )
-        db.add(user_role)
-        db.commit()
-        db.refresh(user_role)
-
-        req_total.labels(operation="assign_role", status="success").inc()
-        req_duration.labels(operation="assign_role").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Assigned role {req.role_id} to user {user_id}")
-        invalidate_user_context(str(user.user_id), str(user.tenant_id))
-
-        return {
-            "user_id": user_id,
-            "role_id": req.role_id,
-            "role_name": role.code,
-            "assigned": True,
-            "created_at": user_role.created_at.isoformat()
-        }
-    except ValueError:
-        req_total.labels(operation="assign_role", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid user ID or role ID format")
-    except HTTPException:
-        req_total.labels(operation="assign_role", status="error").inc()
-        raise
-    except IntegrityError:
-        db.rollback()
-        req_total.labels(operation="assign_role", status="error").inc()
-        raise HTTPException(status_code=409, detail="Role assignment already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="assign_role", status="error").inc()
-        logger.error(f"❌ Assign role failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/v1/users/{user_id}/roles")
-async def get_user_roles(
-        user_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "roles.assign",
-                None
-            )
-        )
-):
-    """Get all roles assigned to a user"""
-    try:
-        # Verify user exists
-        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Get user roles
-        user_roles = (
-            db.query(UserRole, Role)
-            .join(Role, UserRole.role_id == Role.role_id)
-            .filter(UserRole.user_id == uuid.UUID(user_id))
-            .all()
-        )
-
-        return {
-            "user_id": user_id,
-            "email": user.email,
-            "display_name": user.display_name,
-            "roles": [
-                {
-                    "role_id": str(r.role_id),
-                    "role_code": r.code,
-                    "role_name": r.code,
-                    "assigned_at": ur.created_at.isoformat()
-                }
-                for ur, r in user_roles
-            ],
-            "total": len(user_roles)
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Get user roles failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.delete("/v1/users/{user_id}/roles/{role_id}")
-async def remove_role_from_user(
-        user_id: str,
-        role_id: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "roles.assign",
-                None
-            )
-        )
-):
-    """Remove a role from a user"""
-    start = datetime.now()
-    try:
-        req_total.labels(operation="remove_role", status="start").inc()
-
-        # Find user role assignment
-        user_role = db.query(UserRole).filter(
-            UserRole.user_id == uuid.UUID(user_id),
-            UserRole.role_id == uuid.UUID(role_id)
-        ).first()
-
-        if not user_role:
-            raise HTTPException(status_code=404, detail="Role assignment not found")
-
-        user = db.query(User).filter(User.user_id == user_role.user_id).first()
-        db.delete(user_role)
-        db.commit()
-
-        req_total.labels(operation="remove_role", status="success").inc()
-        req_duration.labels(operation="remove_role").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Removed role {role_id} from user {user_id}")
-        if user:
-            invalidate_user_context(str(user.user_id), str(user.tenant_id))
-
-        return {
-            "user_id": user_id,
-            "role_id": role_id,
-            "removed": True
-        }
-    except ValueError:
-        req_total.labels(operation="remove_role", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid user ID or role ID format")
-    except HTTPException:
-        req_total.labels(operation="remove_role", status="error").inc()
-        raise
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="remove_role", status="error").inc()
-        logger.error(f"❌ Remove role failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/v1/permissions", status_code=201)
+@app.post("/permissions", status_code=201)
 async def create_permission(
         code: str,
         description: str,
@@ -546,7 +360,7 @@ async def create_permission(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/permissions")
+@app.get("/permissions")
 async def list_permissions(
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
@@ -561,7 +375,7 @@ async def list_permissions(
     }
 
 
-@app.post("/v1/roles/map-permission", status_code=201)
+@app.post("/roles/map-permission", status_code=201)
 async def add_permission_to_role(
         role_id: str,
         permission_id: str,
@@ -595,13 +409,13 @@ async def add_permission_to_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.delete("/v1/roles/delete-permission", status_code=204)
+@app.delete("/roles/delete-permission", status_code=204)
 async def remove_permission_from_role(
         role_id: str,
         permission_id: str,
         db: Session = Depends(get_db)
 ):
-    """Remove permission from role"""
+    """Remove permission from a role"""
     try:
         assignment = db.query(RolePermission).filter(
             RolePermission.role_id == uuid.UUID(role_id),
@@ -624,7 +438,7 @@ async def remove_permission_from_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/roles/{role_id}/permissions")
+@app.get("/roles/{role_id}/permissions")
 async def get_role_permissions(
         role_id: str,
         db: Session = Depends(get_db)

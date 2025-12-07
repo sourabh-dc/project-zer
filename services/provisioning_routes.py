@@ -9,9 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, OrgUnit, UserOrgAssignment
+from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
+    OrgUnit, UserOrgAssignment, UserRole
 from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
-    CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest
+    CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
+    RoleRequest
 from core.config import SETTINGS
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission, check_tenant_access
@@ -645,7 +647,7 @@ async def create_user(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/users")
+@app.get("/users")
 async def list_users(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
@@ -686,7 +688,7 @@ async def list_users(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/v1/users/bulk-import", status_code=201)
+@app.post("/users/bulk-import", status_code=201)
 async def bulk_import_users(
         req: BulkUserRequest,
         db: Session = Depends(get_db),
@@ -741,11 +743,8 @@ async def bulk_import_users(
                     tenant_id=tenant_uuid,
                     email=email.lower(),
                     display_name=display_name,
-                    password_hash=password_hash,
-                    active=True,
-                    api_key=api_key,
-                    api_key_created_at=datetime.now(timezone.utc),
-                    api_key_expires_at=api_key_expires_at
+                    password=password_hash,
+                    active=True
                 )
                 db.add(user)
                 db.flush()
@@ -784,19 +783,15 @@ async def bulk_import_users(
         logger.error(f"❌ Bulk import failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/v1/vendors", status_code=201)
+@app.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("vendors.manage"))
+        db: Session = Depends(get_db)
 ):
     """Create a new vendor"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_vendor", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -845,7 +840,7 @@ async def create_vendor(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/vendors")
+@app.get("/vendors")
 async def list_vendors(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
@@ -885,21 +880,15 @@ async def list_vendors(
         "offset": offset
     }
 
-
-@app.post("/v1/cost-centres", status_code=201)
+@app.post("/cost-centres", status_code=201)
 async def create_cost_centre(
         req: CostCentreRequest,
-        
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("cost_centres.manage"))
+        db: Session = Depends(get_db)
 ):
     """Create a new cost centre"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -914,7 +903,7 @@ async def create_cost_centre(
                 raise HTTPException(status_code=404, detail="Manager user not found")
             manager_user_uuid = uuid.UUID(req.manager_user_id)
 
-        # Create cost centre
+        # Create a cost centre
         cc = CostCentre(
             cost_centre_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
@@ -960,7 +949,7 @@ async def create_cost_centre(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/cost-centres")
+@app.get("/cost-centres")
 async def list_cost_centres(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
@@ -1007,13 +996,12 @@ async def list_cost_centres(
 # USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
 # ==================================================================================
 
-@app.post("/v1/users/{user_id}/cost-centres", status_code=201)
+@app.post("/users/{user_id}/cost-centres", status_code=201)
 async def assign_user_to_cost_centre(
     user_id: str,
     cost_centre_id: str = Query(..., description="Cost centre ID"),
     allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("cost_centres.manage"))
+    db: Session = Depends(get_db)
 ):
     """Assign a user to a cost centre with optional budget allocation"""
     try:
@@ -1027,7 +1015,7 @@ async def assign_user_to_cost_centre(
         if not cc:
             raise HTTPException(status_code=404, detail="Cost centre not found")
         
-        # Check if assignment already exists
+        # Check if the assignment already exists
         existing = db.query(UserCostCentre).filter(
             UserCostCentre.user_id == uuid.UUID(user_id),
             UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
@@ -1068,11 +1056,10 @@ async def assign_user_to_cost_centre(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/users/{user_id}/budget")
+@app.get("/users/{user_id}/budget")
 async def get_user_budget(
     user_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("users.manage"))
+    db: Session = Depends(get_db)
 ):
     """Get user's budget information"""
     try:
@@ -1118,15 +1105,14 @@ async def get_user_budget(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/users/{user_id}/spending-history")
+@app.get("/users/{user_id}/spending-history")
 async def get_user_spending_history(
     user_id: str,
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("users.manage"))
+    db: Session = Depends(get_db)
 ):
-    """Get user's spending history"""
+    """Get a user's spending history"""
     try:
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
@@ -1168,70 +1154,17 @@ async def get_user_spending_history(
         logger.error(f"Failed to get spending history: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-# ==================================================================================
-# PASSWORD MANAGEMENT ENDPOINTS
-# ==================================================================================
-
-@app.post("/v1/users/{user_id}/reset-password", status_code=200)
-async def reset_user_password(
-    user_id: str,
-    req: PasswordResetRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("users.password.reset"))
-):
-    """Reset a user's password"""
-    try:
-        # Verify user exists
-        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, user.tenant_id)
-        
-        # Hash new password
-        password_hash = bcrypt.hashpw(req.new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        # Update password
-        user.password_hash = password_hash
-        user.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        
-        # Invalidate cached user context
-        invalidate_user_context(str(user.user_id), str(user.tenant_id))
-        
-        logger.info(f"✅ Password reset for user: {user.user_id}")
-        
-        return {
-            "user_id": user_id,
-            "message": "Password reset successfully"
-        }
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to reset password: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
 # ==================================================================================
 # ORGANIZATIONAL UNIT ENDPOINTS
 # ==================================================================================
 
-@app.post("/v1/org-units", status_code=201)
+@app.post("departments", status_code=201)
 async def create_org_unit(
     req: OrgUnitRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("org_units.manage"))
+    db: Session = Depends(get_db)
 ):
     """Create an organizational unit"""
     try:
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-        
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -1243,11 +1176,9 @@ async def create_org_unit(
             parent = db.query(OrgUnit).filter(OrgUnit.org_unit_id == uuid.UUID(req.parent_org_unit_id)).first()
             if not parent:
                 raise HTTPException(status_code=404, detail="Parent org unit not found")
-            # Verify parent belongs to same tenant
-            check_tenant_access(ctx, parent.tenant_id)
             parent_uuid = uuid.UUID(req.parent_org_unit_id)
         
-        # Create org unit
+        # Create an org unit
         org_unit = OrgUnit(
             org_unit_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
@@ -1278,15 +1209,13 @@ async def create_org_unit(
         logger.error(f"Failed to create org unit: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-@app.get("/v1/org-units")
+@app.get("/departments")
 async def list_org_units(
     tenant_id: Optional[str] = Query(None),
     parent_org_unit_id: Optional[str] = Query(None),
     limit: int = Query(100, le=1000, ge=1),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("org_units.manage"))
+    db: Session = Depends(get_db)
 ):
     """List organizational units"""
     try:
@@ -1294,10 +1223,9 @@ async def list_org_units(
         
         # Filter by tenant
         if tenant_id:
-            check_tenant_access(ctx, uuid.UUID(tenant_id))
             q = q.filter(OrgUnit.tenant_id == uuid.UUID(tenant_id))
         else:
-            q = q.filter(OrgUnit.tenant_id == ctx.tenant_id)
+            q = q.filter(OrgUnit.tenant_id == tenant_id)
         
         # Filter by parent (optional)
         if parent_org_unit_id:
@@ -1331,13 +1259,13 @@ async def list_org_units(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/v1/org-units/{org_unit_id}/users/{user_id}", status_code=201)
+@app.post("/org-units/{org_unit_id}/users/{user_id}", status_code=201)
 async def assign_user_to_org_unit(
     org_unit_id: str,
     user_id: str,
     req: OrgUnitAssignmentRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("org_units.assign"))
+    current_user_id: str,
+    db: Session = Depends(get_db)
 ):
     """Assign a user to an organizational unit"""
     try:
@@ -1346,23 +1274,17 @@ async def assign_user_to_org_unit(
         if not org_unit:
             raise HTTPException(status_code=404, detail="Org unit not found")
         
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, org_unit.tenant_id)
-        
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        # Verify user belongs to same tenant
-        check_tenant_access(ctx, user.tenant_id)
         
         # Verify role exists
         role = db.query(Role).filter(Role.role_id == uuid.UUID(req.role_id)).first()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
         
-        # Check if assignment already exists
+        # Check if the assignment already exists
         existing = db.query(UserOrgAssignment).filter(
             UserOrgAssignment.user_id == uuid.UUID(user_id),
             UserOrgAssignment.org_unit_id == uuid.UUID(org_unit_id)
@@ -1377,7 +1299,7 @@ async def assign_user_to_org_unit(
             user_id=uuid.UUID(user_id),
             org_unit_id=uuid.UUID(org_unit_id),
             role_id=uuid.UUID(req.role_id),
-            assigned_by=uuid.UUID(ctx.user_id)
+            assigned_by=uuid.UUID(current_user_id)
         )
         db.add(assignment)
         db.commit()
@@ -1405,21 +1327,17 @@ async def assign_user_to_org_unit(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/v1/users/{user_id}/subordinates")
+@app.get("/users/{user_id}/subordinates")
 async def get_user_subordinates(
     user_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("users.manage"))
+    db: Session = Depends(get_db)
 ):
-    """Get list of users who report to this user"""
+    """Get a list of users who report to this user"""
     try:
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, user.tenant_id)
         
         # Get manager's org unit assignments
         manager_assignments = db.query(UserOrgAssignment).filter(
@@ -1491,7 +1409,7 @@ async def remove_user_from_org_unit(
         if not assignment:
             raise HTTPException(status_code=404, detail="Assignment not found")
         
-        # Verify org unit exists and check tenant access
+        # Verify the org unit exists and check tenant access
         org_unit = db.query(OrgUnit).filter(OrgUnit.org_unit_id == assignment.org_unit_id).first()
         if org_unit:
             check_tenant_access(ctx, org_unit.tenant_id)
@@ -1513,4 +1431,250 @@ async def remove_user_from_org_unit(
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to remove user from org unit: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/roles", status_code=201)
+async def create_role(
+        req: RoleRequest,
+        db: Session = Depends(get_db)
+):
+    """Create a new role"""
+    start = datetime.now()
+    try:
+        req_total.labels(operation="create_role", status="start").inc()
+
+        # Check if code exists (if provided)
+        if req.code:
+            existing = db.query(Role).filter(Role.code == req.code).first()
+            if existing:
+                raise HTTPException(status_code=409, detail="Role code already exists")
+
+        # Create role
+        role = Role(
+            role_id=uuid.uuid4(),
+            code=req.code,
+            description=req.description or ""
+        )
+        db.add(role)
+        db.commit()
+        db.refresh(role)
+
+        req_total.labels(operation="create_role", status="success").inc()
+        req_duration.labels(operation="create_role").observe(
+            (datetime.now() - start).total_seconds()
+        )
+
+        logger.info(f"✅ Created role: {role.role_id} ({role.code})")
+
+        return {
+            "role_id": str(role.role_id),
+            "name": role.code,
+            "code": role.code,
+            "description": role.description,
+            "created_at": role.created_at.isoformat()
+        }
+    except HTTPException:
+        req_total.labels(operation="create_role", status="error").inc()
+        raise
+    except IntegrityError:
+        db.rollback()
+        req_total.labels(operation="create_role", status="error").inc()
+        raise HTTPException(status_code=409, detail="Role code already exists")
+    except Exception as e:
+        db.rollback()
+        req_total.labels(operation="create_role", status="error").inc()
+        logger.error(f"❌ Role creation failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/roles")
+async def list_roles(
+        db: Session = Depends(get_db),
+        limit: int = Query(100, le=1000, ge=1),
+        offset: int = Query(0, ge=0)
+):
+    """List all roles"""
+    total = db.query(Role).count()
+    roles = db.query(Role).order_by(Role.created_at.desc()).limit(limit).offset(offset).all()
+
+    return {
+        "roles": [
+            {
+                "role_id": str(r.role_id),
+                "name": r.code,
+                "code": r.code,
+                "description": r.description,
+                "created_at": r.created_at.isoformat()
+            }
+            for r in roles
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+@app.post("/users/{user_id}/roles", status_code=201)
+async def assign_role_to_user(
+        user_id: str,
+        req: AssignRoleRequest,
+        db: Session = Depends(get_db)
+):
+    """Assign a role to a user"""
+    start = datetime.now()
+    try:
+        req_total.labels(operation="assign_role", status="start").inc()
+
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Verify role exists
+        role = db.query(Role).filter(Role.role_id == uuid.UUID(req.role_id)).first()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        # Check if the assignment already exists
+        existing = db.query(UserRole).filter(
+            UserRole.user_id == uuid.UUID(user_id),
+            UserRole.role_id == uuid.UUID(req.role_id)
+        ).first()
+
+        if existing:
+            raise HTTPException(status_code=409, detail="Role already assigned to user")
+
+        # Create assignment
+        user_role = UserRole(
+            id=uuid.uuid4(),
+            user_id=uuid.UUID(user_id),
+            role_id=uuid.UUID(req.role_id)
+        )
+        db.add(user_role)
+        db.commit()
+        db.refresh(user_role)
+
+        req_total.labels(operation="assign_role", status="success").inc()
+        req_duration.labels(operation="assign_role").observe(
+            (datetime.now() - start).total_seconds()
+        )
+
+        logger.info(f"✅ Assigned role {req.role_id} to user {user_id}")
+        invalidate_user_context(str(user.user_id), str(user.tenant_id))
+
+        return {
+            "user_id": user_id,
+            "role_id": req.role_id,
+            "role_name": role.code,
+            "assigned": True,
+            "created_at": user_role.created_at.isoformat()
+        }
+    except ValueError:
+        req_total.labels(operation="assign_role", status="error").inc()
+        raise HTTPException(status_code=400, detail="Invalid user ID or role ID format")
+    except HTTPException:
+        req_total.labels(operation="assign_role", status="error").inc()
+        raise
+    except IntegrityError:
+        db.rollback()
+        req_total.labels(operation="assign_role", status="error").inc()
+        raise HTTPException(status_code=409, detail="Role assignment already exists")
+    except Exception as e:
+        db.rollback()
+        req_total.labels(operation="assign_role", status="error").inc()
+        logger.error(f"❌ Assign role failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/users/{user_id}/roles")
+async def get_user_roles(
+        user_id: str,
+        db: Session = Depends(get_db)
+):
+    """Get all roles assigned to a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Get user roles
+        user_roles = (
+            db.query(UserRole, Role)
+            .join(Role, UserRole.role_id == Role.role_id)
+            .filter(UserRole.user_id == uuid.UUID(user_id))
+            .all()
+        )
+
+        return {
+            "user_id": user_id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "roles": [
+                {
+                    "role_id": str(r.role_id),
+                    "role_code": r.code,
+                    "role_name": r.code,
+                    "assigned_at": ur.created_at.isoformat()
+                }
+                for ur, r in user_roles
+            ],
+            "total": len(user_roles)
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get user roles failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/users/{user_id}/roles/{role_id}")
+async def remove_role_from_user(
+        user_id: str,
+        role_id: str,
+        db: Session = Depends(get_db)
+):
+    """Remove a role from a user"""
+    start = datetime.now()
+    try:
+        req_total.labels(operation="remove_role", status="start").inc()
+
+        # Find user role assignment
+        user_role = db.query(UserRole).filter(
+            UserRole.user_id == uuid.UUID(user_id),
+            UserRole.role_id == uuid.UUID(role_id)
+        ).first()
+
+        if not user_role:
+            raise HTTPException(status_code=404, detail="Role assignment not found")
+
+        user = db.query(User).filter(User.user_id == user_role.user_id).first()
+        db.delete(user_role)
+        db.commit()
+
+        req_total.labels(operation="remove_role", status="success").inc()
+        req_duration.labels(operation="remove_role").observe(
+            (datetime.now() - start).total_seconds()
+        )
+
+        logger.info(f"✅ Removed role {role_id} from user {user_id}")
+        if user:
+            invalidate_user_context(str(user.user_id), str(user.tenant_id))
+
+        return {
+            "user_id": user_id,
+            "role_id": role_id,
+            "removed": True
+        }
+    except ValueError:
+        req_total.labels(operation="remove_role", status="error").inc()
+        raise HTTPException(status_code=400, detail="Invalid user ID or role ID format")
+    except HTTPException:
+        req_total.labels(operation="remove_role", status="error").inc()
+        raise
+    except Exception as e:
+        db.rollback()
+        req_total.labels(operation="remove_role", status="error").inc()
+        logger.error(f"❌ Remove role failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
