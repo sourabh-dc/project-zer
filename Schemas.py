@@ -979,3 +979,10 @@ class ResetPasswordRequest(BaseModel):
         if not re.search(r'\d', v):
             raise ValueError('Password must contain at least one digit')
         return v
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str
+    new_password: constr(min_length=8)
