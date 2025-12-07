@@ -104,14 +104,7 @@ def cv_delete_product(product_id):
         r = client.delete(url, headers=get_headers())
         print(r.status_code)
 
-async def cv_get_users():
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}"
-        r = await client.get(url, headers=get_headers())
-        print("\n📦 Get customers Response:", r.status_code)
-        print("Response:", r.text)
-
-async def test_entry_code(customer_id):
+async def generate_entry_code(customer_id):
     async with httpx.AsyncClient(timeout=15.0) as client:
         url = f"{AIFI_BASE_URL}{PATH_ENTRY_CODES_CREATE.format(customerId=customer_id)}"
         r = await client.post(url, headers=get_headers(), params={"displayable": "true"})
