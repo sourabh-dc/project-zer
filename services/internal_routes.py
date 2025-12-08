@@ -1,9 +1,3 @@
-from Models import (
-    SubscriptionPlan, Feature, PlanFeature
-)
-from Schemas import (
-    SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest, UserContext
-)
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -12,15 +6,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from Models import  Role, UserRole, User, Permission, RolePermission
-from Schemas import  UserContext, AssignRoleRequest, RoleRequest
+from Models import  Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature
+from Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
 from core.db_config import get_db
-from core.permission_check_helpers import require_permission
-from core.user_auth import invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
-router = APIRouter(prefix="/v1/internal", tags=["internal"])
+router = APIRouter(prefix="internal", tags=["internal"])
 
 @router.post("/plans", status_code=201)
 async def create_plan(
@@ -52,12 +44,10 @@ async def create_plan(
         "currency": plan.currency
     }
 
-
 @router.get("/plans")
 async def list_plans(
         active: Optional[bool] = None,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.plans.view"))
+        db: Session = Depends(get_db)
 ):
     """List all subscription plans"""
     q = db.query(SubscriptionPlan)
@@ -84,8 +74,7 @@ async def list_plans(
 @router.get("/plans/{plan_code}")
 async def get_plan(
         plan_code: str,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("subscriptions.plans.view"))
+        db: Session = Depends(get_db)
 ):
     """Get a specific plan with its features"""
     plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
@@ -298,8 +287,7 @@ async def create_role(
 async def list_roles(
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(require_permission("admin.roles.manage"))
+        offset: int = Query(0, ge=0)
 ):
     """List all roles"""
     total = db.query(Role).count()
@@ -358,8 +346,7 @@ async def create_permission(
 
 @router.get("/permissions")
 async def list_permissions(
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("admin.permissions.manage"))
+        db: Session = Depends(get_db)
 ):
     """List all permissions"""
     permissions = db.query(Permission).all()
