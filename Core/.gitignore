@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Byte-compiled
+*.log
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+
+# Packaging
+dist/
+build/
+
+# Env files
+.env
+*.env
+
