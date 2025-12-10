@@ -12,7 +12,7 @@ from core.db_config import get_db
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 
-router = APIRouter(prefix="internal", tags=["internal"])
+router = APIRouter(prefix="/internal", tags=["internal"])
 
 @router.post("/plans", status_code=201)
 async def create_plan(
