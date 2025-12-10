@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from Models import  Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature
+from Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
 from Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
 from core.db_config import get_db
 from utils.logger import logger
@@ -23,25 +23,63 @@ async def create_plan(
     if db.query(SubscriptionPlan).filter_by(code=req.code).first():
         raise HTTPException(409, "Plan code already exists")
 
+    plan_id = uuid.uuid4()
     plan = SubscriptionPlan(
+        plan_id=plan_id,
         code=req.code,
         name=req.name,
-        description=req.description or "",
-        price_yearly_minor=req.price_yearly_minor,
-        price_monthly_minor=req.price_monthly_minor,
-        currency=req.currency or "GBP",
-        active=True
+        description=req.description,
+        created_by=req.created_by,
+        is_active=True
     )
     db.add(plan)
+
+    price_yearly = (req.price_monthly_minor * 12) * 0.90
+    price_quarterly = (req.price_monthly_minor * 3) * 0.95
+
+    pricing = PlanPrice(
+        plan_code=req.code,
+        price_monthly_minor=req.price_monthly_minor,
+        currency=req.currency,
+        quarterly_discount_pct=req.quarterly_discount_pct,
+        yearly_discount_pct=req.yearly_discount_pct,
+        price_yearly_minor=price_yearly,
+        price_quarterly_minor=price_quarterly
+    )
+    db.add(pricing)
+
     db.commit()
 
     logger.info(f"✅ Created plan: {plan.code} ({plan.name})")
     return {
         "plan_code": plan.code,
         "name": plan.name,
-        "price_yearly_minor": plan.price_yearly_minor,
-        "price_monthly_minor": plan.price_monthly_minor,
-        "currency": plan.currency
+        "price_monthly_minor": pricing.price_monthly_minor,
+        "currency": pricing.currency
+    }
+
+@router.put("/plans/{plan_code}", status_code=201)
+async def update_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db)):
+
+    plan = db.query(SubscriptionPlan).filter_by(code=req.code).first()
+    pricing = db.query(PlanPrice).filter_by(plan_code=req.code).first()
+    if not plan or not pricing:
+        raise HTTPException(404, "Plan/Pricing not found")
+    plan.name = req.name
+    plan.description = req.description
+
+    pricing.price_monthly_minor = req.price_monthly_minor
+    pricing.currency = req.currency
+    pricing.quarterly_discount_pct = req.quarterly_discount_pct
+    pricing.yearly_discount_pct = req.yearly_discount_pct
+
+    db.commit()
+    logger.info(f"✅ Updated Plan: {plan.code} ({plan.name})")
+    return {
+        "plan_code": plan.code,
+        "name": plan.name,
+        "price_monthly_minor": pricing.price_monthly_minor,
+        "currency": pricing.currency
     }
 
 @router.get("/plans")
@@ -49,37 +87,48 @@ async def list_plans(
         active: Optional[bool] = None,
         db: Session = Depends(get_db)
 ):
-    """List all subscription plans"""
-    q = db.query(SubscriptionPlan)
+    """List all subscription plans with their pricing (if any)"""
+    q = db.query(SubscriptionPlan, PlanPrice).outerjoin(
+        PlanPrice, PlanPrice.plan_code == SubscriptionPlan.code
+    )
     if active is not None:
-        q = q.filter(SubscriptionPlan.active == active)
-    plans = q.order_by(SubscriptionPlan.name).all()
+        q = q.filter(SubscriptionPlan.is_active == active)
+
+    rows = q.order_by(SubscriptionPlan.name).all()
+
+    plans = []
+    for plan, pricing in rows:
+        plans.append({
+            "code": plan.code,
+            "name": plan.name,
+            "description": plan.description,
+            "price_monthly_minor": getattr(pricing, "price_monthly_minor", None) or getattr(plan, "price_monthly_minor",
+                                                                                            None),
+            "price_yearly_minor": getattr(pricing, "price_yearly_minor", None) or getattr(plan, "price_yearly_minor",
+                                                                                          None),
+            "currency": getattr(pricing, "currency", None) or getattr(plan, "currency", None),
+            "active": getattr(plan, "active", getattr(plan, "is_active", None))
+        })
+
     return {
-        "plans": [
-            {
-                "code": p.code,
-                "name": p.name,
-                "description": p.description,
-                "price_yearly_minor": p.price_yearly_minor,
-                "price_monthly_minor": p.price_monthly_minor,
-                "currency": p.currency,
-                "active": p.active
-            }
-            for p in plans
-        ],
+        "plans": plans,
         "total": len(plans)
     }
-
 
 @router.get("/plans/{plan_code}")
 async def get_plan(
         plan_code: str,
         db: Session = Depends(get_db)
 ):
-    """Get a specific plan with its features"""
-    plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
-    if not plan:
+    """Get a specific plan with its pricing and features"""
+    row = db.query(SubscriptionPlan, PlanPrice).outerjoin(
+        PlanPrice, PlanPrice.plan_code == SubscriptionPlan.code
+    ).filter(SubscriptionPlan.code == plan_code).first()
+
+    if not row:
         raise HTTPException(404, "Plan not found")
+
+    plan, pricing = row
 
     # Get plan features
     features = db.query(PlanFeature, Feature).join(
@@ -93,10 +142,10 @@ async def get_plan(
         "code": plan.code,
         "name": plan.name,
         "description": plan.description,
-        "price_yearly_minor": plan.price_yearly_minor,
-        "price_monthly_minor": plan.price_monthly_minor,
-        "currency": plan.currency,
-        "active": plan.active,
+        "price_yearly_minor": getattr(pricing, "price_yearly_minor", None) or getattr(plan, "price_yearly_minor", None),
+        "price_monthly_minor": getattr(pricing, "price_monthly_minor", None) or getattr(plan, "price_monthly_minor", None),
+        "currency": getattr(pricing, "currency", None) or getattr(plan, "currency", None),
+        "active": getattr(plan, "active", getattr(plan, "is_active", None)),
         "features": [
             {
                 "code": f.code,
@@ -106,7 +155,6 @@ async def get_plan(
             for pf, f in features
         ]
     }
-
 
 # ============================================================================
 # Feature Management

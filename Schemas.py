@@ -207,13 +207,14 @@ class RefreshJwtResponse(BaseModel):
 
 class SubscriptionPlanRequest(BaseModel):
     """Subscription plan creation request"""
-    code: str = Field(min_length=1, max_length=50, description="Unique plan code")
-    name: str = Field(min_length=1, max_length=100, description="Plan name")
-    description: Optional[str] = Field(None, max_length=500, description="Plan description (optional)")
-    price_yearly_minor: int = Field(ge=0, description="Yearly price in minor units")
-    price_monthly_minor: Optional[int] = Field(None, ge=0, description="Monthly price in minor units (optional)")
-    currency: str = Field(default="GBP", max_length=3, description="Currency code")
-    billing_cycle: str = Field(default="yearly", description="Default billing cycle: yearly or monthly")
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    created_by: Optional[str] = Field(default="zeroque_admin", max_length=100)
+    price_monthly_minor: int = Field(ge=0)
+    currency: str = Field(default="GBP", max_length=3)
+    quarterly_discount_pct: float = Field(default=5.0, ge=0, le=100)
+    yearly_discount_pct: float = Field(default=10.0, ge=0, le=100)
 
 
 class FeatureRequest(BaseModel):

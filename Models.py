@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from narwhals import Decimal
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
@@ -39,6 +42,7 @@ class Site(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
+
 class Store(Base):
     """Store model - retail locations under a site"""
     __tablename__ = "stores"
@@ -203,21 +207,27 @@ class UserCostCentre(Base):
 class SubscriptionPlan(Base):
     """Subscription plan - TODO: migrate to UUID for consistency"""
     __tablename__ = "subscription_plans"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Keep INTEGER for now, needs migration to UUID
+    plan_id = Column(SQLUUID(as_uuid=True), primary_key=True)
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
-    price_yearly_minor = Column(Integer, nullable=False)
-    price_monthly_minor = Column(Integer, nullable=True)  # NEW: monthly option
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow)
+
+class PlanPrice(Base):
+    __tablename__ = "plan_price"
+    plan_price_id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), unique=True, nullable=False, index=True)
     currency = Column(String(3), default="GBP", nullable=False)
-    
-    # NEW: Billing cycle options
-    billing_cycle = Column(String(20), default="monthly")  # monthly, yearly
-    
-    active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    price_monthly_minor = Column(Numeric, nullable=False)
+    quarterly_discount_pct = Column(Numeric(5, 2), nullable=False, server_default=text("5.0"))
+    yearly_discount_pct = Column(Numeric(5, 2), nullable=False, server_default=text("10.0"))
+    price_quarterly_minor = Column(Numeric, nullable=False)
+    price_yearly_minor = Column(Numeric, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow)
 
 class Feature(Base):
     """Feature model - defines available system features"""
