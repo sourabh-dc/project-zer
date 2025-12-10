@@ -14,15 +14,15 @@ from services.provisioning_routes import app as provisioning_router
 from services.catalog_routes import app as catalog_router
 from services.subscriptions_routes import router as subscriptions_router
 from services.approval_routes import app as approval_router
-from services.pricing_routes import app as pricing_router
-from services.entitlements_routes import router as entitlements_router
+from remaining_services.pricing_routes import app as pricing_router
+from remaining_services.entitlements_routes import router as entitlements_router
 from services.payments_routes import app as payments_router
-from services.orders_router import app as orders_router
-from services.ledger_routes import app as ledger_router
-from services.billing_routes import app as billing_router
-from services.instant_budget import router as instant_budget_router
+from remaining_services.orders_router import app as orders_router
+from remaining_services.ledger_routes import app as ledger_router
+from remaining_services.billing_routes import app as billing_router
+from remaining_services.instant_budget import router as instant_budget_router
 from services.auth_routes import app as auth_router
-from services.shopping_routes import router as shopping_router
+from remaining_services.shopping_routes import router as shopping_router
 # FastAPI app
 app = FastAPI(
     title="ZeroQue All in One API",

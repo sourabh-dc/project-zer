@@ -5,7 +5,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.responses import JSONResponse, Response
 
-from core.config import SETTINGS, SERVICE_NAME, SERVICE_VERSION
+from core.config import SERVICE_NAME, SERVICE_VERSION
 from core.db_config import SessionLocal
 from services.tenant_onboarding import router as onboarding_router
 from services.provisioning_routes import router as provisioning_router
@@ -15,6 +15,7 @@ from services.approval_routes import router as approval_router
 from services.auth_routes import router as auth_router
 from services.plan_routes import router as plan_router
 from services.payments_routes import router as payments_router
+from services.internal_routes import router as internal_router
 
 # FastAPI app
 app = FastAPI(
@@ -33,6 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(internal_router)
 app.include_router(onboarding_router)
 app.include_router(auth_router)
 app.include_router(plan_router)
