@@ -107,8 +107,8 @@ class RolePermission(Base):
     """Role to permission mapping"""
     __tablename__ = "role_permissions"
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    role_id = Column(SQLUUID(as_uuid=True), ForeignKey("roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
-    permission_id = Column(SQLUUID(as_uuid=True), ForeignKey("permissions.permission_id", ondelete="CASCADE"), nullable=False, index=True)
+    role_code = Column(SQLUUID(as_uuid=True), ForeignKey("roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+    permission_code = Column(SQLUUID(as_uuid=True), ForeignKey("permissions.permission_id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

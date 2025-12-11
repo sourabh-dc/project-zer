@@ -10,7 +10,7 @@ from Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, 
 from Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
 from core.db_config import get_db
 from utils.logger import logger
-from utils.metrics import req_total, req_duration
+from utils.metrics import req_total
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -33,6 +33,7 @@ async def create_plan(
         is_active=True
     )
     db.add(plan)
+    db.commit()
 
     price_yearly = (req.price_monthly_minor * 12) * 0.90
     price_quarterly = (req.price_monthly_minor * 3) * 0.95
@@ -72,6 +73,8 @@ async def update_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db
     pricing.currency = req.currency
     pricing.quarterly_discount_pct = req.quarterly_discount_pct
     pricing.yearly_discount_pct = req.yearly_discount_pct
+    pricing.price_yearly_minor = (req.price_monthly_minor * 12) * 0.90
+    pricing.price_quarterly_minor = (req.price_monthly_minor * 3) * 0.95
 
     db.commit()
     logger.info(f"✅ Updated Plan: {plan.code} ({plan.name})")
@@ -103,6 +106,8 @@ async def list_plans(
             "name": plan.name,
             "description": plan.description,
             "price_monthly_minor": getattr(pricing, "price_monthly_minor", None) or getattr(plan, "price_monthly_minor",
+                                                                                            None),
+            "price_quarterly_minor": getattr(pricing, "price_quarterly_minor", None) or getattr(plan, "price_quarterly_minor",
                                                                                             None),
             "price_yearly_minor": getattr(pricing, "price_yearly_minor", None) or getattr(plan, "price_yearly_minor",
                                                                                           None),
@@ -143,6 +148,7 @@ async def get_plan(
         "name": plan.name,
         "description": plan.description,
         "price_yearly_minor": getattr(pricing, "price_yearly_minor", None) or getattr(plan, "price_yearly_minor", None),
+        "price_quarterly_minor": getattr(pricing, "price_quarterly_minor", None) or getattr(plan, "price_quarterly_minor", None),
         "price_monthly_minor": getattr(pricing, "price_monthly_minor", None) or getattr(plan, "price_monthly_minor", None),
         "currency": getattr(pricing, "currency", None) or getattr(plan, "currency", None),
         "active": getattr(plan, "active", getattr(plan, "is_active", None)),
@@ -150,7 +156,6 @@ async def get_plan(
             {
                 "code": f.code,
                 "name": f.name,
-                "limits": pf.limits
             }
             for pf, f in features
         ]
@@ -195,23 +200,23 @@ async def create_feature(
 @router.get("/features")
 async def list_features(
         active: Optional[bool] = None,
-        category: Optional[str] = None,
+        cluster: Optional[str] = None,
         db: Session = Depends(get_db)
 ):
     """List all features"""
     q = db.query(Feature)
     if active is not None:
         q = q.filter(Feature.active == active)
-    if category:
-        q = q.filter(Feature.category == category)
-    features = q.order_by(Feature.category, Feature.name).all()
+    if cluster:
+        q = q.filter(Feature.cluster == cluster)
+    features = q.order_by(Feature.cluster, Feature.name).all()
     return {
         "features": [
             {
                 "code": f.code,
                 "name": f.name,
                 "description": f.description,
-                "category": f.category,
+                "category": f.cluster,
                 "usage_type": f.usage_type,
                 "reset_period": f.reset_period,
                 "active": f.active
@@ -283,10 +288,7 @@ async def create_role(
         db: Session = Depends(get_db)
 ):
     """Create a new role"""
-    start = datetime.now()
     try:
-        req_total.labels(operation="create_role", status="start").inc()
-
         # Check if code exists (if provided)
         if req.code:
             existing = db.query(Role).filter(Role.code == req.code).first()
@@ -302,11 +304,6 @@ async def create_role(
         db.add(role)
         db.commit()
         db.refresh(role)
-
-        req_total.labels(operation="create_role", status="success").inc()
-        req_duration.labels(operation="create_role").observe(
-            (datetime.now() - start).total_seconds()
-        )
 
         logger.info(f"✅ Created role: {role.role_id} ({role.code})")
 
@@ -408,16 +405,16 @@ async def list_permissions(
 
 @router.post("/roles/map-permission", status_code=201)
 async def add_permission_to_role(
-        role_id: str,
-        permission_id: str,
+        role_code: str,
+        permission_code: str,
         db: Session = Depends(get_db)
 ):
     """Add permission to a role"""
     try:
         # Check if already exists
         existing = db.query(RolePermission).filter(
-            RolePermission.role_id == uuid.UUID(role_id),
-            RolePermission.permission_id == uuid.UUID(permission_id)
+            RolePermission.role_code == role_code,
+            RolePermission.permission_code == permission_code
         ).first()
 
         if existing:
@@ -425,8 +422,8 @@ async def add_permission_to_role(
 
         rp = RolePermission(
             id=uuid.uuid4(),
-            role_id=uuid.UUID(role_id),
-            permission_id=uuid.UUID(permission_id)
+            role_code=role_code,
+            permission_code=permission_code
         )
         db.add(rp)
         db.commit()
@@ -442,15 +439,15 @@ async def add_permission_to_role(
 
 @router.delete("/roles/delete-permission", status_code=204)
 async def remove_permission_from_role(
-        role_id: str,
-        permission_id: str,
+        role_code: str,
+        permission_code: str,
         db: Session = Depends(get_db)
 ):
     """Remove permission from a role"""
     try:
         assignment = db.query(RolePermission).filter(
-            RolePermission.role_id == uuid.UUID(role_id),
-            RolePermission.permission_id == uuid.UUID(permission_id)
+            RolePermission.role_code == role_code,
+            RolePermission.permission_code == permission_code
         ).first()
 
         if not assignment:
@@ -469,24 +466,23 @@ async def remove_permission_from_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/roles/{role_id}/permissions")
+@router.get("/roles/{role_code}/permissions")
 async def get_role_permissions(
-        role_id: str,
+        role_code: str,
         db: Session = Depends(get_db)
 ):
     """Get all permissions for a role"""
     role_perms = db.query(RolePermission, Permission).join(
-        Permission, RolePermission.permission_id == Permission.permission_id
+        Permission, RolePermission.permission_code == Permission.code
     ).filter(
-        RolePermission.role_id == uuid.UUID(role_id)
+        RolePermission.role_code == role_code
     ).all()
 
     return {
-        "role_id": role_id,
+        "role_code": role_code,
         "permissions": [
             {
-                "permission_id": str(p.permission_id),
-                "code": p.code,
+                "permission_code": str(p.code),
                 "description": p.description
             }
             for rp, p in role_perms
