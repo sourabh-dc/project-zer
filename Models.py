@@ -54,22 +54,29 @@ class Store(Base):
 
 
 class User(Base):
-    """User model - tenant-level users"""
     __tablename__ = "users"
+
     user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    email = Column(String(255), unique=True, nullable=False)
-    display_name = Column(String(255), nullable=False)
-    first_name = Column(String(255), nullable=True)
-    last_name = Column(String(255), nullable=True)
-    password_hash = Column(String(255), nullable=True)
-    active = Column(Boolean, default=True, index=True)
+    email = Column(String(255), nullable=False)
+    first_name = Column(String(255), nullable=False)
+    last_name = Column(String(255), nullable=False)
+    phone = Column(String(50), nullable=True)
+    user_metadata = Column(JSONB, nullable=True)
+    password = Column(String(255), nullable=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    failed_login_attempts = Column(Integer, nullable=False, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     refresh_token = Column(String(255), nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    display_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow, nullable=True)
+
+    __table_args__ = (
+        Index("ix_users_tenant_email_unique", "tenant_id", "email", unique=True),
+    )
 
 
 class Role(Base):
@@ -371,25 +378,35 @@ class Category(Base):
 
 
 class Product(Base):
-    """Product model - catalog items"""
     __tablename__ = "products"
+
     product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"), nullable=True, index=True)
     category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
-    sku = Column(String(100), nullable=False, index=True)
+    sku = Column(String(100), nullable=False)
+    barcode = Column(String(128), nullable=False)
     name = Column(String(255), nullable=False)
     description = Column(String(1000), nullable=True)
-    brand = Column(String(100), nullable=True, index=True)
+    brand = Column(String(100), nullable=True)
     manufacturer = Column(String(255), nullable=True)
-    base_price_minor = Column(Integer, nullable=False)  # Base price in minor units
-    currency = Column(String(3), default="GBP", nullable=False)
-    tax_rate = Column(BigInteger, default=0)  # Tax rate in basis points (e.g., 2000 = 20%)
-    product_type = Column(String(50), nullable=True, index=True)  # physical, digital, service
-    active = Column(Boolean, default=True, nullable=False, index=True)
+    base_price_minor = Column(Integer, nullable=False)
+    currency = Column(String(3), nullable=False, server_default=text("'GBP'"))
+    tax_rate = Column(BigInteger, nullable=False, server_default="0")
+    tax_code = Column(String(64), nullable=True)
+    product_type = Column(String(50), nullable=True)
+    restricted = Column(Boolean, nullable=False, default=False, index=True)
     product_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow, nullable=True)
+
+    __table_args__ = (
+        Index("ix_products_tenant_sku_unique", "tenant_id", "sku", unique=True),
+        Index("ix_products_tenant_barcode_unique", "tenant_id", "barcode", unique=True),
+    )
+
 
 
 class Variant(Base):
