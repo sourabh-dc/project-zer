@@ -10,7 +10,7 @@ import smtplib
 from email.message import EmailMessage
 from urllib.parse import quote_plus
 
-from Models import User, UserRole, Role
+from Models import User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice
 from Schemas import RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest, ForgotPasswordRequest, \
     PasswordResetConfirmRequest
 from core.db_config import get_db
@@ -279,3 +279,43 @@ async def confirm_reset_password(req: PasswordResetConfirmRequest, db: Session =
     except Exception as e:
         logger.error(f"Password reset confirmation failed: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+'''To modify this endpoint, add more Details about tenant'''
+@router.get("/whoami", status_code=200)
+async def whoami(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Return basic identity and subscription details for the authenticated user.
+    """
+    sub = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id,
+        TenantSubscription.is_active.is_(True)
+    ).first()
+
+    subscription = None
+    if sub:
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == sub.plan_code).first()
+        price = db.query(PlanPrice).filter(PlanPrice.plan_code == sub.plan_code).first()
+        subscription = {
+            "plan_code": sub.plan_code,
+            "plan_name": plan.name if plan else None,
+            "is_active": sub.is_active,
+            "is_trial": sub.is_trial,
+            "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
+            "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+            "billing_cycle": sub.billing_cycle,
+            "currency": price.currency if price else None,
+            "catalog_price": {
+                "monthly_minor": price.price_monthly_minor if price else None,
+                "quarterly_minor": price.price_quarterly_minor if price else None,
+                "yearly_minor": price.price_yearly_minor if price else None,
+                "currency": price.currency if price else None,
+            } if price else None,
+        }
+
+    return {
+        "tenant_id": tenant_id,
+        "subscription": subscription,
+    }
