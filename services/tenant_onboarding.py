@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from Models import Tenant
 from Schemas import TenantRequest
 from core.helpers.auth_helper import issue_refresh_token
-from core.user_auth import check_user_authorization
 from utils.metrics import req_total
 from Models import User, UserRole, Role
 from Schemas import LoginRequest, LoginResponse
@@ -27,8 +26,6 @@ async def create_tenant(
 ):
     """Create a new tenant"""
     try:
-        req_total.labels(operation="create_tenant", status="start").inc()
-
         # Check if tenant exists
         existing = db.query(Tenant).filter(Tenant.email == req.email).first()
         if existing:
@@ -42,7 +39,6 @@ async def create_tenant(
             tenant_type=req.type,
             registration_number=req.registration_number,
             email=req.email,
-            billing_cycle=req.billing_cycle,
             phone=req.phone,
             active=True
         )
@@ -51,8 +47,9 @@ async def create_tenant(
         db.refresh(tenant)
 
         # create user
-        user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, display_name=tenant.tenant_name, email=tenant.email,
-                    username=req.admin_username, password=password_hash, active=True)
+        user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, first_name=req.admin_firstname,
+                    last_name=req.admin_lastname, display_name=req.admin_firstname+" "+req.admin_lastname, email=tenant.email,
+                    password_hash=password_hash, active=True)
         db.add(user)
         db.commit()
         db.refresh(user)

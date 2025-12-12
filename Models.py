@@ -1,6 +1,4 @@
 from datetime import datetime
-
-from narwhals import Decimal
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
@@ -25,7 +23,6 @@ class Tenant(Base):
     tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
     registration_number = Column(String(100), nullable=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
-    billing_cycle = Column(String(20), nullable=False, default="yearly")  # yearly or monthly or quarterly
     phone = Column(String(50), nullable=True)
     active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -63,10 +60,10 @@ class User(Base):
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     email = Column(String(255), unique=True, nullable=False)
     display_name = Column(String(255), nullable=False)
-    username = Column(String(255), unique=True, nullable=False)
-    password = Column(String(255), nullable=True)
+    first_name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)
     active = Column(Boolean, default=True, index=True)
-    failed_login_attempts = Column(Integer, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     refresh_token = Column(String(255), nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
