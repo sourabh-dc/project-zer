@@ -16,6 +16,7 @@ from Schemas import RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest,
 from core.db_config import get_db
 from core.config import SETTINGS
 from core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
+from core.user_auth import check_user_authorization
 from utils.logger import logger
 import bcrypt
 
@@ -319,3 +320,7 @@ async def whoami(
         "tenant_id": tenant_id,
         "subscription": subscription,
     }
+
+@router.get("/healthcheck")
+async def auth_test(user=Depends(check_user_authorization('tenant.admin'))):
+    return user

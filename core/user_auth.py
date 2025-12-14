@@ -405,9 +405,9 @@ def get_db_with_rls(uctx: UserContext = Depends(get_user_context)):
     finally:
         db.close()
 
-async def decode_jwt_with_settings(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> Dict[str, Any]:
+async def decode_jwt_with_settings(authorization:str = Header(alias="Authorization")) -> Dict[str, Any]:
     """
-    Extract token from Authorization header (accepts "Bearer <token>" or raw token),
+    Extract token from the Authorization header (accepts "Bearer <token>" or raw token),
     decode via existing decode_jwt_token(), and enforce JWT_EXPIRY_MINUTES (default 60).
     Raises HTTPException on any failure so it can be used directly as a FastAPI dependency.
     """
@@ -458,7 +458,7 @@ async def decode_jwt_with_settings(authorization: Optional[str] = Header(default
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired")
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT missing iat/exp claims")
-
+    print(claims)
     return claims
 
 
@@ -474,7 +474,8 @@ def check_user_authorization(permission: str):
             logger.debug(f"token permissions: {claim_perms}")
             if isinstance(claim_perms, list):
                 if "*" in claim_perms or permission in claim_perms:
-                    return True
+                    claims['user_id'] = claims.pop('sub')
+                    return claims
 
             # extract role codes from token (accept string, list, or iterable)
             roles = claims.get("roles") or claims.get("role") or []
@@ -493,8 +494,8 @@ def check_user_authorization(permission: str):
             try:
                 with SessionLocal() as db:
                     match_count = db.query(RolePermission) \
-                        .join(Role, RolePermission.role_id == Role.role_id) \
-                        .join(Permission, RolePermission.permission_id == Permission.permission_id) \
+                        .join(Role, RolePermission.role_code == Role.code) \
+                        .join(Permission, RolePermission.permission_code == Permission.code) \
                         .filter(Role.code.in_(roles), Permission.code == permission) \
                         .count()
             except Exception as exc:
@@ -502,6 +503,7 @@ def check_user_authorization(permission: str):
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Authorization lookup failed")
 
             if match_count and match_count > 0:
+                claims['user_id'] = claims.pop('sub')
                 return claims
 
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")

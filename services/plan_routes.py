@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from Models import SubscriptionPlan, PlanFeature, Feature
+from Models import SubscriptionPlan, PlanFeature, Feature, PlanPrice
 from core.db_config import get_db
 from utils.logger import logger
 
@@ -16,7 +16,7 @@ async def get_plans(db: Session = Depends(get_db)):
     """
     try:
         plans = db.query(SubscriptionPlan).filter(
-            SubscriptionPlan.active == True
+            SubscriptionPlan.is_active == True
         ).all()
 
         if not plans:
@@ -25,6 +25,7 @@ async def get_plans(db: Session = Depends(get_db)):
         result = []
         for plan in plans:
             # Get all features for this plan
+            plan_pricing = db.query(PlanPrice).filter(PlanPrice.plan_code == plan.code).first()
             plan_features = db.query(Feature, PlanFeature).join(
                 PlanFeature, Feature.code == PlanFeature.feature_code
             ).filter(
@@ -49,25 +50,30 @@ async def get_plans(db: Session = Depends(get_db)):
 
             # Build plan response
             plan_data = {
-                "id": plan.id,
+                "id": plan.plan_id,
                 "code": plan.code,
                 "name": plan.name,
                 "description": plan.description,
-                "currency": plan.currency,
+                "currency": plan_pricing.currency,
                 "pricing": {
                     "monthly": {
-                        "amount_minor": plan.price_monthly_minor,
-                        "amount": plan.price_monthly_minor / 100 if plan.price_monthly_minor else None,
-                        "available": plan.price_monthly_minor is not None
+                        "amount_minor": plan_pricing.price_monthly_minor,
+                        "amount": plan_pricing.price_monthly_minor  if plan_pricing.price_monthly_minor else None,
+                        "available": True
+                    },
+                    "quarterly": {
+                        "amount_minor": plan_pricing.price_quarterly_minor,
+                        "amount": plan_pricing.price_quarterly_minor if plan_pricing.price_quarterly_minor else None,
+                        "available": True
                     },
                     "yearly": {
-                        "amount_minor": plan.price_yearly_minor,
-                        "amount": plan.price_yearly_minor / 100,
+                        "amount_minor": plan_pricing.price_yearly_minor,
+                        "amount": plan_pricing.price_yearly_minor,
                         "available": True
                     }
                 },
                 "features": features_list,
-                "active": plan.active,
+                "active": plan.is_active,
                 "created_at": plan.created_at.isoformat() if plan.created_at else None
             }
 

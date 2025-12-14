@@ -35,7 +35,7 @@ async def create_tenant(
         # Create tenant
         tenant = Tenant(
             tenant_id=uuid.uuid4(),
-            tenant_name=req.tenant_name,
+            tenant_name=req.name,
             tenant_type=req.type,
             registration_number=req.registration_number,
             email=req.email,
@@ -49,7 +49,7 @@ async def create_tenant(
         # create user
         user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, first_name=req.admin_firstname,
                     last_name=req.admin_lastname, display_name=req.admin_firstname+" "+req.admin_lastname, email=tenant.email,
-                    password_hash=password_hash, active=True)
+                    password=password_hash, active=True)
         db.add(user)
         db.commit()
         db.refresh(user)

@@ -21,7 +21,7 @@ def issue_refresh_token(user: User, db: Session, days: int = None) -> str:
 
 def revoke_refresh_token(user: User, db: Session) -> None:
     """Remove stored refresh token (logout / revoke)."""
-    user.refresh_token_hash = None
+    user.refresh_token = None
     user.refresh_token_expires_at = None
     db.commit()
     db.refresh(user)

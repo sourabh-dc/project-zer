@@ -13,11 +13,11 @@ from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCost
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission
 from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
-    RoleRequest
+    RoleRequest, TenantUpdateRequest
 from core.config import SETTINGS
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission, check_tenant_access
-from core.user_auth import generate_api_key, invalidate_user_context
+from core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
@@ -95,52 +95,47 @@ async def get_tenant(
 
 @router.put("/tenants/{tenant_id}")
 async def update_tenant(
-        tenant_id: str,
-        name: Optional[str] = Query(None, description="New tenant name"),
+        req: TenantUpdateRequest,
         db: Session = Depends(get_db)
 ):
     """Update a tenant's information"""
-    start = datetime.now()
     try:
-        req_total.labels(operation="update_tenant", status="start").inc()
-
         # Find tenant
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # Update fields
-        if name:
+        print(req.active.lower())
+        if req.name:
             # Check if new name conflicts
             existing = db.query(Tenant).filter(
-                Tenant.tenant_name == name,
-                Tenant.tenant_id != uuid.UUID(tenant_id)
+                Tenant.tenant_name == req.name,
+                Tenant.tenant_id != uuid.UUID(req.tenant_id)
             ).first()
             if existing:
                 raise HTTPException(status_code=409, detail="Tenant name already exists")
-            tenant.name = name
-
-        tenant.updated_at = datetime.now(timezone.utc)
+            tenant.tenant_name = req.name
+            tenant.tenant_type = req.type,
+            tenant.registration_number = req.registration_number,
+            tenant.active = True if req.active.lower() == "true" else False
+            tenant.phone = req.phone
+            tenant.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(tenant)
 
         # Clear cache
         if redis_client:
             try:
-                redis_client.delete(f"tenant:{tenant_id}")
+                redis_client.delete(f"tenant:{req.tenant_id}")
             except Exception as e:
                 logger.warning(f"Cache clear failed: {e}")
-
-        req_total.labels(operation="update_tenant", status="success").inc()
-        req_duration.labels(operation="update_tenant").observe(
-            (datetime.now() - start).total_seconds()
-        )
 
         logger.info(f"✅ Updated tenant: {tenant.tenant_id}")
 
         return {
             "tenant_id": str(tenant.tenant_id),
-            "name": tenant.name,
+            "name": tenant.tenant_name,
             "type": tenant.tenant_type,
             "active": tenant.active,
             "updated_at": tenant.updated_at.isoformat()
@@ -164,9 +159,7 @@ async def create_site(
         db: Session = Depends(get_db)
 ):
     """Create a new site and associate it with a tenant"""
-    start = datetime.now()
     try:
-        req_total.labels(operation="create_site", status="start").inc()
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -191,11 +184,6 @@ async def create_site(
         db.add(site_tenant)
         db.commit()
         db.refresh(site)
-
-        req_total.labels(operation="create_site", status="success").inc()
-        req_duration.labels(operation="create_site").observe(
-            (datetime.now() - start).total_seconds()
-        )
 
         logger.info(f"✅ Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
@@ -226,7 +214,8 @@ async def create_site(
 async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user = Depends(check_user_authorization('tenant.admin'))
 ):
     """Allow a site to be managed by an additional tenant"""
     try:
@@ -276,14 +265,13 @@ async def add_tenant_to_site(
 async def list_site_tenants(
     site_id: str,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("sites.manage"))
-):
+    user = Depends(check_user_authorization('tenant.admin'))):
     """List all tenants associated with a site"""
     try:
         # Verify site exists and is accessible by the user's tenant
         site_access = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == ctx.tenant_id
+            SiteTenant.tenant_id == user.tenant_id
         ).first()
         
         if not site_access:
@@ -363,7 +351,7 @@ async def list_sites(
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("sites.manage"))
+        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
 ):
     """List sites with optional tenant filtering"""
     try:
@@ -537,7 +525,7 @@ async def list_stores(
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("stores.manage"))
+        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
 ):
     """List stores with optional site filtering"""
     try:
@@ -580,7 +568,7 @@ async def list_stores(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/v1/users", status_code=201)
+@router.post("users", status_code=201)
 async def create_user(
         req: UserRequest,
         db: Session = Depends(get_db)
@@ -608,8 +596,11 @@ async def create_user(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
             email=req.email.lower(),
-            display_name=req.display_name,
+            first_name=req.first_name,
+            last_name=req.last_name,
+            display_name=req.first_name + " " + req.last_name,
             password=password_hash,
+            phone=req.phone,
             active=True
         )
         db.add(user)
@@ -653,7 +644,7 @@ async def list_users(
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("users.manage"))
+        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
 ):
     """List users with optional tenant filtering"""
     try:
@@ -692,11 +683,7 @@ async def list_users(
 async def bulk_import_users(
         req: BulkUserRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(
-            require_permission(
-                "users.manage",
-                None
-            )
+        ctx: UserContext = Depends(check_user_authorization('tenant.admin')
         )
 ):
     """Bulk import users"""

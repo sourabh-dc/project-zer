@@ -9,15 +9,13 @@ import re
 # ==================================================================================
 class TenantRequest(BaseModel):
     """Tenant creation request"""
-    tenant_name: str = Field(min_length=1, max_length=200, description="Company name")
+    name: str = Field(min_length=1, max_length=200, description="Company name")
     type: str = Field(description="Tenant type: customer, retailer, or distributor")
     registration_number: Optional[str] = Field(None, max_length=100, description="Registration number (optional)")
     email: EmailStr = Field(..., description="Administrative contact email")
-    admin_firstname: str = Field(min_length=3, max_length=150, description="First Name")
-    admin_lastname: str = Field(max_length=100, description="Last Name")
+    admin_firstname: str = Field(min_length=1, max_length=150, description="Admin first name")
+    admin_lastname: str = Field(min_length=1, max_length=150, description="Admin last name")
     password: str = Field(min_length=8, max_length=128, description="Admin password (min 8 chars)")
-    plan_code: Optional[str] = Field(default='core_01', description="Subscription plan code (optional)")
-    billing_cycle: str = Field(default="yearly", description="Billing cycle: yearly or monthly")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
 
     @field_validator('type')
@@ -39,12 +37,29 @@ class TenantRequest(BaseModel):
             raise ValueError('Password must contain at least one digit')
         return v
 
-    @field_validator('billing_cycle')
+    @field_validator('phone')
     @classmethod
-    def validate_billing_cycle(cls, v):
-        allowed = ['yearly', 'monthly']
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\+?\d{7,15}$', v):
+            raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
+        return v
+
+class TenantUpdateRequest(BaseModel):
+    tenant_id: str = Field(description="Tenant ID")
+    name: str = Field(min_length=1, max_length=200, description="Company name")
+    type: str = Field(description="Tenant type: customer, retailer, or distributor")
+    registration_number: Optional[str] = Field(None, max_length=100, description="Registration number (optional)")
+    phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
+    active: Optional[str] = Field("true", description="Is tenant active?")
+
+    @field_validator('type')
+    @classmethod
+    def validate_tenant_type(cls, v):
+        allowed = ["customer", "retailer", "distributor"]
         if v not in allowed:
-            raise ValueError(f"billing_cycle must be one of: {', '.join(allowed)}")
+            raise ValueError(f"Type must be one of: {', '.join(allowed)}")
         return v
 
     @field_validator('phone')
@@ -56,11 +71,8 @@ class TenantRequest(BaseModel):
             raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
         return v
 
-
-
 class SiteRequest(BaseModel):
     tenant_id: str = Field(description="Tenant ID")
-    """Site creation request"""
     name: str = Field(min_length=1, max_length=255, description="Site name")
     type: str = Field(description="Site type")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
@@ -80,8 +92,10 @@ class StoreRequest(BaseModel):
 class UserRequest(BaseModel):
     """User creation request"""
     email: EmailStr = Field(description="Valid email address")
-    display_name: str = Field(min_length=1, max_length=255, description="Display name")
+    first_name: str = Field(min_length=1, max_length=255, description="Display name")
+    last_name: str = Field(min_length=1, max_length=255, description="Display name")
     tenant_id: str = Field(description="Tenant ID")
+    phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
     password: str = Field(min_length=8, max_length=128, description="Password (min 8 chars)")
 
     @field_validator('password')
@@ -94,6 +108,15 @@ class UserRequest(BaseModel):
             raise ValueError('Password must contain at least one lowercase letter')
         if not re.search(r'\d', v):
             raise ValueError('Password must contain at least one digit')
+        return v
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\+?\d{7,15}$', v):
+            raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
         return v
 
 
