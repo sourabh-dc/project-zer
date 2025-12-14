@@ -352,7 +352,7 @@ class ShoppingResponse(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     """Assign role to user request"""
-    role_id: str = Field(description="Role ID to assign")
+    role_code: str = Field(description="Role ID to assign")
 
 
 class CategoryRequest(BaseModel):

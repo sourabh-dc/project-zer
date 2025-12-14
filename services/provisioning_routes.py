@@ -832,21 +832,13 @@ async def list_vendors(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "vendors.manage",
-                None
-            )
-        )
+        offset: int = Query(0, ge=0)
 ):
     """List vendors with optional tenant filtering"""
     q = db.query(Vendor)
     
     if tenant_id:
         q = q.filter(Vendor.tenant_id == uuid.UUID(tenant_id))
-    else:
-        q = q.filter(Vendor.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     vendors = q.order_by(Vendor.created_at.desc()).limit(limit).offset(offset).all()
@@ -941,21 +933,13 @@ async def list_cost_centres(
         tenant_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
-        offset: int = Query(0, ge=0),
-        ctx: UserContext = Depends(
-            require_permission(
-                "cost_centres.manage",
-                None
-            )
-        )
+        offset: int = Query(0, ge=0)
 ):
     """List cost centres with optional tenant filtering"""
     q = db.query(CostCentre).filter(CostCentre.status == "active")
     
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
-    else:
-        q = q.filter(CostCentre.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
     total = q.count()
     ccs = q.order_by(CostCentre.created_at.desc()).limit(limit).offset(offset).all()
@@ -1145,7 +1129,7 @@ async def get_user_spending_history(
 # ORGANIZATIONAL UNIT ENDPOINTS
 # ==================================================================================
 
-@router.post("departments", status_code=201)
+@router.post("/departments", status_code=201)
 async def create_org_unit(
     req: OrgUnitRequest,
     db: Session = Depends(get_db)
@@ -1378,7 +1362,7 @@ async def get_user_subordinates(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.delete("/v1/org-units/{org_unit_id}/users/{user_id}", status_code=204)
+@router.delete("/org-units/{org_unit_id}/users/{user_id}", status_code=204)
 async def remove_user_from_org_unit(
     org_unit_id: str,
     user_id: str,
@@ -1502,16 +1486,16 @@ async def list_roles(
 
 @router.post("/roles/map-permission", status_code=201)
 async def add_permission_to_role(
-        role_id: str,
-        permission_id: str,
+        role_code: str,
+        permission_code: str,
         db: Session = Depends(get_db)
 ):
     """Add permission to a role"""
     try:
         # Check if already exists
         existing = db.query(RolePermission).filter(
-            RolePermission.role_id == uuid.UUID(role_id),
-            RolePermission.permission_id == uuid.UUID(permission_id)
+            RolePermission.role_code == role_code,
+            RolePermission.permission_code == permission_code
         ).first()
 
         if existing:
@@ -1519,8 +1503,8 @@ async def add_permission_to_role(
 
         rp = RolePermission(
             id=uuid.uuid4(),
-            role_id=uuid.UUID(role_id),
-            permission_id=uuid.UUID(permission_id)
+            role_code=role_code,
+            permission_code=permission_code
         )
         db.add(rp)
         db.commit()
@@ -1536,15 +1520,15 @@ async def add_permission_to_role(
 
 @router.delete("/roles/delete-permission", status_code=204)
 async def remove_permission_from_role(
-        role_id: str,
-        permission_id: str,
+        role_code: str,
+        permission_code: str,
         db: Session = Depends(get_db)
 ):
     """Remove permission from a role"""
     try:
         assignment = db.query(RolePermission).filter(
-            RolePermission.role_id == uuid.UUID(role_id),
-            RolePermission.permission_id == uuid.UUID(permission_id)
+            RolePermission.role_code == role_code,
+            RolePermission.permission_code == permission_code
         ).first()
 
         if not assignment:
@@ -1563,23 +1547,23 @@ async def remove_permission_from_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/roles/{role_id}/permissions")
+@router.get("/roles/{role_code}/permissions")
 async def get_role_permissions(
-        role_id: str,
+        role_code: str,
         db: Session = Depends(get_db)
 ):
     """Get all permissions for a role"""
     role_perms = db.query(RolePermission, Permission).join(
-        Permission, RolePermission.permission_id == Permission.permission_id
+        Permission, RolePermission.permission_code == Permission.code
     ).filter(
-        RolePermission.role_id == uuid.UUID(role_id)
+        RolePermission.role_code == role_code
     ).all()
 
     return {
-        "role_id": role_id,
+        "role_code": role_code,
         "permissions": [
             {
-                "permission_id": str(p.permission_id),
+                "permission_code": str(p.permission_code),
                 "code": p.code,
                 "description": p.description
             }
@@ -1604,7 +1588,7 @@ async def assign_role_to_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Verify role exists
-        role = db.query(Role).filter(Role.role_id == uuid.UUID(req.role_id)).first()
+        role = db.query(Role).filter(Role.role_id == req.role_code).first()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
 
