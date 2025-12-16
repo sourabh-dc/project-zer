@@ -115,7 +115,6 @@ class RolePermission(Base):
     permission_code = Column(String, ForeignKey("permissions.code", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-
 class RoleScope(Base):
     """Role scope mapping for fine-grained access control"""
     __tablename__ = "role_scopes"

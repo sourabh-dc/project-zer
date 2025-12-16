@@ -15,7 +15,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from starlette import status
 
-from Models import User, UserOrgAssignment, RoleScope, RolePermission, Permission, Tenant, Role, UserRole
+from Models import User, RoleScope, RolePermission, Permission, Tenant, Role, UserRole
 from Schemas import UserContext
 from core.config import SETTINGS
 from core.db_config import SessionLocal

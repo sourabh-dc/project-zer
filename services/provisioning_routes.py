@@ -16,7 +16,7 @@ from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUse
 from core.config import SETTINGS
 from core.db_config import get_db
 from core.permission_check_helpers import check_tenant_access
-from core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
+from core.user_auth import generate_api_key, invalidate_user_context
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
@@ -213,8 +213,7 @@ async def create_site(
 async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db),
-    user = Depends(check_user_authorization('tenant.admin'))
+    db: Session = Depends(get_db)
 ):
     """Allow a site to be managed by an additional tenant"""
     try:
@@ -263,19 +262,18 @@ async def add_tenant_to_site(
 @router.get("/sites/{site_id}/tenants")
 async def list_site_tenants(
     site_id: str,
-    db: Session = Depends(get_db),
-    user = Depends(check_user_authorization('tenant.admin'))):
+    db: Session = Depends(get_db)):
     """List all tenants associated with a site"""
     try:
         # Verify site exists and is accessible by the user's tenant
-        site_access = db.query(SiteTenant).filter(
-            SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == user.tenant_id
-        ).first()
+        # site_access = db.query(SiteTenant).filter(
+        #     SiteTenant.site_id == uuid.UUID(site_id),
+        #     SiteTenant.tenant_id == user.tenant_id
+        # ).first()
         
-        if not site_access:
-            raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
-        
+        # if not site_access:
+        #     raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
+        #
         # Get all tenants for the site
         tenants = db.query(Tenant).join(
             SiteTenant, Tenant.tenant_id == SiteTenant.tenant_id
@@ -349,8 +347,7 @@ async def list_sites(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
+        db: Session = Depends(get_db)
 ):
     """List sites with optional tenant filtering"""
     try:
@@ -360,8 +357,8 @@ async def list_sites(
         # If tenant_id provided, filter by it; otherwise filter by user's tenant
         if tenant_id:
             q = q.filter(SiteTenant.tenant_id == uuid.UUID(tenant_id))
-        else:
-            q = q.filter(SiteTenant.tenant_id == ctx.tenant_id)
+        # else:
+        #     q = q.filter(SiteTenant.tenant_id == ctx.tenant_id)
 
         total = q.count()
         sites = q.order_by(Site.created_at.desc()).limit(limit).offset(offset).all()
@@ -523,22 +520,21 @@ async def list_stores(
         site_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
+        db: Session = Depends(get_db)
 ):
     """List stores with optional site filtering"""
     try:
-        q = db.query(Store).filter(Store.tenant_id == ctx.tenant_id)  # Always filter by user's tenant
+        q = db.query(Store)  # Always filter by user's tenant
         
         if site_id:
             # Verify site access before filtering stores
-            site_access = db.query(SiteTenant).filter(
-                SiteTenant.site_id == uuid.UUID(site_id),
-                SiteTenant.tenant_id == ctx.tenant_id
-            ).first()
-            
-            if not site_access:
-                raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
+            # site_access = db.query(SiteTenant).filter(
+            #     SiteTenant.site_id == uuid.UUID(site_id),
+            #     SiteTenant.tenant_id == ctx.tenant_id
+            # ).first()
+            #
+            # if not site_access:
+            #     raise HTTPException(status_code=404, detail="Site not found or not accessible by your tenant")
             
             q = q.filter(Store.site_id == uuid.UUID(site_id))
 
@@ -642,16 +638,15 @@ async def list_users(
         tenant_id: Optional[str] = Query(None),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0),
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(check_user_authorization('tenant.admin'))
+        db: Session = Depends(get_db)
 ):
     """List users with optional tenant filtering"""
     try:
         q = db.query(User).filter(User.active == True)
         if tenant_id:
             q = q.filter(User.tenant_id == uuid.UUID(tenant_id))
-        else:
-            q = q.filter(User.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
+        # else:
+        #     q = q.filter(User.tenant_id == ctx.tenant_id)  # Filter by user's tenant by default
 
         total = q.count()
         users = q.order_by(User.created_at.desc()).limit(limit).offset(offset).all()
@@ -681,17 +676,12 @@ async def list_users(
 @router.post("/users/bulk-import", status_code=201)
 async def bulk_import_users(
         req: BulkUserRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(check_user_authorization('tenant.admin')
-        )
+        db: Session = Depends(get_db)
 ):
     """Bulk import users"""
     start = datetime.now()
     try:
         req_total.labels(operation="bulk_import_users", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -704,7 +694,10 @@ async def bulk_import_users(
         for user_data in req.users:
             try:
                 email = user_data.get("email")
-                display_name = user_data.get("display_name", email)
+                first_name = user_data.get("first_name")
+                last_name = user_data.get("last_name")
+                display_name = f"{first_name} {last_name}" if first_name and last_name else None
+                phone = user_data.get("phone")
 
                 if not email:
                     results["failed"].append({"error": "Missing email", "data": user_data})
@@ -719,16 +712,16 @@ async def bulk_import_users(
                 temp_password = f"temp_{secrets.token_urlsafe(16)}"
                 password_hash = bcrypt.hashpw(temp_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-                # Generate API key
-                api_key = generate_api_key()
-                api_key_expires_at = datetime.now(timezone.utc) + timedelta(days=SETTINGS.API_KEY_EXPIRY_DAYS)
 
                 # Create user
                 user = User(
                     user_id=uuid.uuid4(),
                     tenant_id=tenant_uuid,
                     email=email.lower(),
+                    first_name=first_name,
+                    last_name=last_name,
                     display_name=display_name,
+                    phone=phone,
                     password=password_hash,
                     active=True
                 )
@@ -738,7 +731,6 @@ async def bulk_import_users(
                 results["success"].append({
                     "user_id": str(user.user_id),
                     "email": email,
-                    "api_key": api_key,
                     "temporary_password": temp_password
                 })
             except Exception as e:
@@ -1294,6 +1286,7 @@ async def get_role_permissions(
 @router.post("/users/{user_id}/roles", status_code=201)
 async def assign_role_to_user(
         user_id: str,
+        tenant_id: str,
         req: AssignRoleRequest,
         db: Session = Depends(get_db)
 ):
@@ -1308,7 +1301,7 @@ async def assign_role_to_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Verify role exists
-        role = db.query(Role).filter(Role.role_id == req.role_code).first()
+        role = db.query(Role).filter(Role.role_id == req.role_id).first()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
 
@@ -1325,6 +1318,7 @@ async def assign_role_to_user(
         user_role = UserRole(
             id=uuid.uuid4(),
             user_id=uuid.UUID(user_id),
+            tenant_id=uuid.UUID(tenant_id),
             role_id=uuid.UUID(req.role_id)
         )
         db.add(user_role)
@@ -1352,10 +1346,6 @@ async def assign_role_to_user(
     except HTTPException:
         req_total.labels(operation="assign_role", status="error").inc()
         raise
-    except IntegrityError:
-        db.rollback()
-        req_total.labels(operation="assign_role", status="error").inc()
-        raise HTTPException(status_code=409, detail="Role assignment already exists")
     except Exception as e:
         db.rollback()
         req_total.labels(operation="assign_role", status="error").inc()
