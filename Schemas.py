@@ -170,19 +170,6 @@ class CostCentreRequest(BaseModel):
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
 
 
-class OrgUnitRequest(BaseModel):
-    """Organizational unit creation request"""
-    name: str = Field(min_length=1, max_length=255, description="Org unit name")
-    type: str = Field(min_length=1, max_length=50, description="Type: directorate, business_unit, department, team, etc.")
-    tenant_id: str = Field(description="Tenant ID")
-    parent_org_unit_id: Optional[str] = Field(None, description="Parent org unit ID (optional)")
-
-
-class OrgUnitAssignmentRequest(BaseModel):
-    """User to org unit assignment request"""
-    role_id: str = Field(description="Role ID for this assignment")
-
-
 class PasswordResetRequest(BaseModel):
     """Password reset request"""
     new_password: str = Field(min_length=8, max_length=128, description="New password (min 8 chars)")

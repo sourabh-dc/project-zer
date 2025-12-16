@@ -126,30 +126,6 @@ class RoleScope(Base):
     grant_type = Column(String(20), nullable=False, default="include")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-
-class OrgUnit(Base):
-    """Organisational hierarchy unit"""
-    __tablename__ = "org_units"
-    org_unit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    type = Column(String(50), nullable=False, index=True)  # directorate, business_unit, cost_centre, etc.
-    name = Column(String(255), nullable=False)
-    parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class UserOrgAssignment(Base):
-    """User assignment into organisational hierarchy"""
-    __tablename__ = "user_org_assignments"
-    assignment_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="CASCADE"), nullable=False, index=True)
-    role_id = Column(SQLUUID(as_uuid=True), ForeignKey("roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
-    assigned_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
-    assigned_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class ApprovalDelegation(Base):
     """Delegated approval assignments"""
     __tablename__ = "approval_delegations"
