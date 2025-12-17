@@ -26,17 +26,15 @@ router = APIRouter(prefix="/catalog", tags=["Catalog"])
 @router.post("/categories", status_code=201)
 async def create_category(
     req: CategoryRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.categories.manage"))
+    db: Session = Depends(get_db)
 ):
-    if str(ctx.tenant_id) != req.tenant_id:
-        raise HTTPException(403, "Tenant mismatch")
+    # if str(ctx.tenant_id) != req.tenant_id:
+    #     raise HTTPException(403, "Tenant mismatch")
 
     # Enforce tenant-scoped unique code
     exists = db.query(Category).filter(
-        Category.tenant_id == ctx.tenant_id,
-        Category.code == req.code,
-        Category.deleted_at.is_(None)
+        Category.tenant_id == req.tenant_id,
+        Category.code == req.code
     ).first()
     if exists:
         raise HTTPException(409, "Category code already exists")
@@ -50,15 +48,14 @@ async def create_category(
 
         parent = db.query(Category).filter(
             Category.category_id == parent_id,
-            Category.tenant_id == ctx.tenant_id,
-            Category.deleted_at.is_(None)
+            Category.tenant_id == req.tenant_id
         ).first()
         if not parent:
             raise HTTPException(404, "Parent category not found")
 
     category = Category(
         category_id=uuid.uuid4(),
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         name=req.name.strip(),
         code=req.code.strip(),
         description=req.description,
@@ -84,16 +81,15 @@ async def create_category(
 
 @router.get("/categories")
 async def list_categories(
+    tenant_id: str,
     active: Optional[bool] = Query(None),
     parent_id: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.categories.view"))
+    db: Session = Depends(get_db)
 ):
     q = db.query(Category).filter(
-        Category.tenant_id == ctx.tenant_id,
-        Category.deleted_at.is_(None)
+        Category.tenant_id == tenant_id
     )
 
     if active is not None:
@@ -116,8 +112,7 @@ async def list_categories(
                 "parent_category_id": str(c.parent_category_id) if c.parent_category_id else None,
                 "active": c.active,
                 "has_children": db.query(Category).filter(
-                    Category.parent_category_id == c.category_id,
-                    Category.deleted_at.is_(None)
+                    Category.parent_category_id == c.category_id
                 ).count() > 0
             }
             for c in items
@@ -132,15 +127,14 @@ async def list_categories(
 @router.post("/products", status_code=201)
 async def create_product(
     req: ProductRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.products.manage"))
+    db: Session = Depends(get_db)
 ):
-    if str(ctx.tenant_id) != req.tenant_id:
-        raise HTTPException(403, "Tenant mismatch")
+    # if str(ctx.tenant_id) != req.tenant_id:
+    #     raise HTTPException(403, "Tenant mismatch")
 
     # SKU must be unique per tenant
     if db.query(Product).filter(
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == req.tenant_id,
         Product.sku == req.sku,
         Product.deleted_at.is_(None)
     ).first():
@@ -154,8 +148,8 @@ async def create_product(
             raise HTTPException(400, "Invalid category_id")
         if not db.query(Category).filter(
             Category.category_id == category_id,
-            Category.tenant_id == ctx.tenant_id,
-            Category.deleted_at.is_(None)
+            Category.tenant_id == req.tenant_id,
+            Category.active == True
         ).first():
             raise HTTPException(404, "Category not found")
 
@@ -167,17 +161,18 @@ async def create_product(
             raise HTTPException(400, "Invalid vendor_id")
         if not db.query(Vendor).filter(
             Vendor.vendor_id == vendor_id,
-            Vendor.tenant_id == ctx.tenant_id
+            Vendor.tenant_id == req.tenant_id
         ).first():
             raise HTTPException(404, "Vendor not found")
 
     product = Product(
         product_id=uuid.uuid4(),
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         vendor_id=vendor_id,
         category_id=category_id,
         sku=req.sku.strip(),
         name=req.name.strip(),
+        barcode=req.barcode,
         description=req.description,
         brand=req.brand,
         base_price_minor=req.base_price_minor,
@@ -192,8 +187,9 @@ async def create_product(
         db.commit()
         db.refresh(product)
     except IntegrityError as e:
-        db.rollback()
-        raise HTTPException(409, "SKU or data conflict")
+        print(e)
+        # db.rollback()
+        # raise HTTPException(409, "SKU or data conflict")
 
     return {
         "product_id": str(product.product_id),
@@ -206,17 +202,17 @@ async def create_product(
 
 @router.get("/products")
 async def list_products(
+    tenant_id: str,
     category_id: Optional[str] = None,
     vendor_id: Optional[str] = None,
     active: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
     offset: int = Query(0),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.products.view"))
+    db: Session = Depends(get_db)
 ):
     q = db.query(Product).filter(
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == tenant_id,
         Product.deleted_at.is_(None)
     )
 
@@ -265,8 +261,7 @@ async def list_products(
 @router.post("/variants", status_code=201)
 async def create_variant(
     req: VariantRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.variants.manage"))
+    db: Session = Depends(get_db)
 ):
     try:
         product_id = UUID(req.product_id)
@@ -275,23 +270,23 @@ async def create_variant(
 
     product = db.query(Product).filter(
         Product.product_id == product_id,
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == req.tenant_id,
         Product.deleted_at.is_(None)
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
 
     if db.query(Variant).filter(
-        Variant.tenant_id == ctx.tenant_id,
+        Variant.tenant_id == req.tenant_id,
         Variant.sku == req.sku,
-        Variant.deleted_at.is_(None)
+        Variant.active == True
     ).first():
         raise HTTPException(409, "Variant SKU already exists")
 
     variant = Variant(
         variant_id=uuid.uuid4(),
         product_id=product.product_id,
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         sku=req.sku.strip(),
         name=req.name.strip(),
         attributes=req.attributes or {},
@@ -313,11 +308,10 @@ async def create_variant(
 # STORE PRODUCT ENDPOINTS
 # =============================================================================
 
-@router.post("/v1/store-products", status_code=201)
+@router.post("/store-products", status_code=201)
 async def add_product_to_store(
     req: StoreProductRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("stores.products.manage"))
+    db: Session = Depends(get_db)
 ):
     try:
         store_id = UUID(req.store_id)
@@ -327,14 +321,14 @@ async def add_product_to_store(
 
     store = db.query(Store).filter(
         Store.store_id == store_id,
-        Store.tenant_id == ctx.tenant_id
+        Store.tenant_id == req.tenant_id
     ).first()
     if not store:
         raise HTTPException(404, "Store not found")
 
     product = db.query(Product).filter(
         Product.product_id == product_id,
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == req.tenant_id,
         Product.deleted_at.is_(None)
     ).first()
     if not product:
@@ -350,7 +344,7 @@ async def add_product_to_store(
     sp = StoreProduct(
         id=uuid.uuid4(),
         store_id=store_id,
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         product_id=product_id,
         price_minor=req.price_minor or product.base_price_minor,
         currency=req.currency or "GBP",
@@ -369,13 +363,13 @@ async def add_product_to_store(
     }
 
 
-@router.get("/v1/stores/{store_id}/products")
+@router.get("/stores/{store_id}/products")
 async def list_store_products(
+    tenant_id: str,
     store_id: str,
     limit: int = Query(100, le=500),
     offset: int = Query(0),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("stores.products.view"))
+    db: Session = Depends(get_db)
 ):
     try:
         store_uuid = UUID(store_id)
@@ -384,7 +378,7 @@ async def list_store_products(
 
     store = db.query(Store).filter(
         Store.store_id == store_uuid,
-        Store.tenant_id == ctx.tenant_id
+        Store.tenant_id == tenant_id
     ).first()
     if not store:
         raise HTTPException(404, "Store not found")
@@ -395,7 +389,7 @@ async def list_store_products(
         Variant, and_(Variant.product_id == Product.product_id, Variant.active == True)
     ).filter(
         StoreProduct.store_id == store_uuid,
-        StoreProduct.tenant_id == ctx.tenant_id
+        StoreProduct.tenant_id == tenant_id
     )
 
     total = q.count()

@@ -358,6 +358,7 @@ class ProductRequest(BaseModel):
     category_id: Optional[str] = Field(None, description="Category ID (optional)")
     sku: str = Field(min_length=1, max_length=100, description="Product SKU")
     name: str = Field(min_length=1, max_length=255, description="Product name")
+    barcode: str = Field(min_length=1, max_length=255, description="Product barcode")
     description: Optional[str] = Field(None, max_length=1000, description="Product description")
     brand: Optional[str] = Field(None, max_length=100, description="Brand (optional)")
     manufacturer: Optional[str] = Field(None, max_length=255, description="Manufacturer (optional)")
@@ -370,6 +371,7 @@ class ProductRequest(BaseModel):
 
 class VariantRequest(BaseModel):
     """Variant creation request"""
+    tenant_id: str = Field(description="Tenant ID")
     product_id: str = Field(description="Product ID")
     sku: str = Field(min_length=1, max_length=100, description="Variant SKU (must be unique)")
     name: str = Field(min_length=1, max_length=255, description="Variant name")
@@ -674,6 +676,7 @@ class InvoiceResponse(BaseModel):
 # Add to Schemas.py
 
 class StoreProductRequest(BaseModel):
+    tenant_id: str
     store_id: str
     product_id: str
     price_minor: int
