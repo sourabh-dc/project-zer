@@ -42,6 +42,7 @@ async def create_checkout_session(data: CheckoutRequest):
         }
 
         session = stripe.checkout.Session.create(
+            customer=data.tenant_id,
             payment_method_types=["card"],  # could extend to ["card", "upi", "PayPal"] if supported
             mode="subscription",
             line_items=line_items,
@@ -53,6 +54,14 @@ async def create_checkout_session(data: CheckoutRequest):
         webbrowser.open_new(session.url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/create-portal-session")
+async def create_portal_session(tenant_id: str):
+    session = stripe.billing_portal.Session.create(
+        customer=tenant_id,
+        return_url="http://localhost:8000"
+    )
+    return {"url": session.url}
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db=get_db()):
@@ -87,9 +96,8 @@ async def stripe_webhook(request: Request, db=get_db()):
         db.commit()
         return tenant_subscription
     elif event["type"] == "invoice.payment_failed":
-        # ❌ Handle failed payments
-        pass
-
+        print("Payment failed")
+        raise HTTPException(status_code=400, detail="Payment failed")
     return {"status": "success"}
 
 @router.websocket("/ws/subscription-status/{tenant_id}")
