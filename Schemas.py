@@ -1018,6 +1018,7 @@ class CheckoutRequest(BaseModel):
     tenant_id: str
     price_id: str | None = None
     amount: int = None
+    quantity: int = 1
     currency: str = "usd"
     mode: str = "payment"
     billing_cycle: str = "monthly"
