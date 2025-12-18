@@ -70,7 +70,7 @@ class Settings(BaseSettings):
 
     #Stripe settings
     STRIPE_SECRET_KEY: str = stripe_secret_key
-    STRIPE_WEBHOOK_SECRET: str = stripe_webhook_secret
+    STRIPE_WEBHOOK_SECRET: str = "whsec_37c17ba923b5e08dfc62860f733733c07272879e4f75ebf44ceaff5fd53bcafd"
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 

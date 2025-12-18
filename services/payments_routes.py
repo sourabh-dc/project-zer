@@ -40,9 +40,13 @@ async def create_checkout_session(data: CheckoutRequest):
             "plan_code": data.plan_code,
             "billing_cycle": data.billing_cycle
         }
+        stripe_customer_id = getattr(data, "stripe_customer_id", None)
+        if not stripe_customer_id and getattr(data, "email", None):
+            customer = stripe.Customer.create(email=data.email, metadata={"tenant_id": data.tenant_id})
+            stripe_customer_id = customer.id
 
         session = stripe.checkout.Session.create(
-            customer=data.tenant_id,
+            customer=stripe_customer_id,
             payment_method_types=["card"],  # could extend to ["card", "upi", "PayPal"] if supported
             mode="subscription",
             line_items=line_items,
@@ -56,15 +60,15 @@ async def create_checkout_session(data: CheckoutRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/create-portal-session")
-async def create_portal_session(tenant_id: str):
+async def create_portal_session(cust_id: str):
     session = stripe.billing_portal.Session.create(
-        customer=tenant_id,
+        customer=cust_id,
         return_url="http://localhost:8000"
     )
-    return {"url": session.url}
+    webbrowser.open_new(session.url)
 
 @router.post("/webhook")
-async def stripe_webhook(request: Request, db=get_db()):
+async def stripe_webhook(request: Request, db=Depends(get_db)):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     endpoint_secret = SETTINGS.STRIPE_WEBHOOK_SECRET

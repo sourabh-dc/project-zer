@@ -1016,6 +1016,8 @@ class PasswordResetConfirmRequest(BaseModel):
 
 class CheckoutRequest(BaseModel):
     tenant_id: str
+    stripe_customer_id: Optional[str] = None
+    stripe_payment_intent_id: str
     price_id: str | None = None
     amount: int = None
     quantity: int = 1
