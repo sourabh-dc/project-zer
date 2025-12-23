@@ -6,7 +6,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from Models import Tenant, User, ApprovalRequest, ApprovalRequestApprover, \
-    UserCostCentre, SpendingEvent, ApproverLimit, CostCentre, ApprovalLog, UserRole, Role, OrgUnit
+    UserCostCentre, SpendingEvent, ApproverLimit, CostCentre, ApprovalLog, UserRole, Role, OrgUnit, \
+    ApprovalChain, ApprovalChainStep
 from Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
     ApprovalResponseRequest, ApproverLimitRequest
 from core.db_config import get_db
@@ -274,7 +275,7 @@ async def create_approval_request(
             request_id=approval_request_id,
             tenant_id=uuid.UUID(req.tenant_id),
             org_unit_id=uuid.UUID(req.org_unit_id) if req.org_unit_id else None,
-            chain_id=approval_request_id,  # satisfy NOT NULL constraint; chain concept removed
+            chain_id=None,  # chain concept removed; nullable
             request_number=request_number,
             request_type=req.request_type,
             request_data=req.request_data,
@@ -542,7 +543,7 @@ async def respond_to_approval_request(
         ).with_for_update().first()
         if not approval_request:
             raise HTTPException(status_code=404, detail="Approval request not found")
-        if approval_request.request_status not in ["pending", "partially_approved"]:
+        if approval_request.request_status not in ["pending", "partially_approved", "escalated"]:
             raise HTTPException(status_code=400, detail=f"Request not actionable (status: {approval_request.request_status})")
 
         # expiry check

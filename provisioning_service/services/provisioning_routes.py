@@ -1680,15 +1680,17 @@ async def assign_role_to_user(
         # Check if the assignment already exists (idempotent)
         existing = db.query(UserRole).filter(
             UserRole.user_id == uuid.UUID(user_id),
-            UserRole.role_id == uuid.UUID(req.role_code)
+            UserRole.role_id == uuid.UUID(req.role_code),
+            UserRole.tenant_id == user.tenant_id
         ).first()
 
         if existing:
             return {"status": "ok", "message": "Role already assigned", "user_id": user_id, "role_id": str(existing.role_id)}
 
-        # Create assignment
+        # Create assignment with tenant_id from user
         user_role = UserRole(
             id=uuid.uuid4(),
+            tenant_id=user.tenant_id,
             user_id=uuid.UUID(user_id),
             role_id=uuid.UUID(req.role_code)
         )
@@ -1701,12 +1703,12 @@ async def assign_role_to_user(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Assigned role {req.role_id} to user {user_id}")
+        logger.info(f"✅ Assigned role {req.role_code} to user {user_id}")
         invalidate_user_context(str(user.user_id), str(user.tenant_id))
 
         return {
             "user_id": user_id,
-            "role_id": req.role_id,
+            "role_id": req.role_code,
             "role_name": role.code,
             "assigned": True,
             "created_at": user_role.created_at.isoformat()
