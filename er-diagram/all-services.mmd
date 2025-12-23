@@ -1,0 +1,113 @@
+erDiagram
+  TENANTS ||--o{ SITE_TENANTS : manages
+  SITES ||--o{ SITE_TENANTS : linked_to
+  SITES ||--o{ STORES : contains
+  TENANTS ||--o{ STORES : owns
+  TENANTS ||--o{ USERS : employs
+  TENANTS ||--o{ VENDORS : contracts
+  TENANTS ||--o{ COST_CENTRES : budgets
+  TENANTS ||--o{ ORG_UNITS : structures
+  ORG_UNITS ||--o{ ORG_UNITS : parent_of
+  USERS ||--o{ USER_COST_CENTRES : allocated_to
+  COST_CENTRES ||--o{ USER_COST_CENTRES : includes
+  USERS ||--o{ USER_ORG_ASSIGNMENTS : assigned_to
+  ORG_UNITS ||--o{ USER_ORG_ASSIGNMENTS : filled_by
+  ROLES ||--o{ USER_ORG_ASSIGNMENTS : role_for
+  USERS ||--o{ USER_ROLES : has
+  ROLES ||--o{ USER_ROLES : assigned
+  ROLES ||--o{ ROLE_PERMISSIONS : grants
+  PERMISSIONS ||--o{ ROLE_PERMISSIONS : included
+  ROLES ||--o{ ROLE_SCOPES : scoped
+
+  USERS ||--o{ SPENDING_EVENTS : logs
+  COST_CENTRES ||--o{ SPENDING_EVENTS : funds
+  ORDERS ||--o{ SPENDING_EVENTS : may_reference
+  APPROVAL_REQUESTS ||--o{ SPENDING_EVENTS : may_reference
+
+  TENANTS ||--o{ APPROVAL_CHAINS : defines
+  APPROVAL_CHAINS ||--o{ APPROVAL_CHAIN_STEPS : has_step
+  TENANTS ||--o{ APPROVAL_REQUESTS : raises
+  APPROVAL_CHAINS ||--o{ APPROVAL_REQUESTS : uses
+  USERS ||--o{ APPROVAL_REQUESTS : requested_by
+  APPROVAL_REQUESTS ||--o{ APPROVAL_REQUEST_APPROVERS : routed_to
+  USERS ||--o{ APPROVAL_REQUEST_APPROVERS : acts_as
+
+  TENANTS ||--o{ SUBSCRIPTION_PLANS : catalogs
+  SUBSCRIPTION_PLANS ||--|| PLAN_PRICE : priced_by
+  SUBSCRIPTION_PLANS ||--o{ PLAN_FEATURES : bundles
+  FEATURES ||--o{ PLAN_FEATURES : included_in
+  TENANTS ||--|| TENANT_SUBSCRIPTIONS : subscribes
+  SUBSCRIPTION_PLANS ||--o{ TENANT_SUBSCRIPTIONS : selected_plan
+  TENANTS ||--o{ SUBSCRIPTION_USAGE : uses_features
+  FEATURES ||--o{ SUBSCRIPTION_USAGE : tracked_feature
+
+  TENANTS ||--o{ SITE_BILLING_ACCOUNTS : pays_for_sites
+  SITES ||--o{ SITE_BILLING_ACCOUNTS : billed_as
+
+  TENANTS ||--o{ PRODUCTS : owns_products
+  VENDORS ||--o{ PRODUCTS : supplied_by
+  CATEGORIES ||--o{ PRODUCTS : categorized_by
+  TENANTS ||--o{ CATEGORIES : defines_categories
+  PRODUCTS ||--o{ VARIANTS : has_variants
+  STORES ||--o{ STORE_PRODUCTS : stocks
+  TENANTS ||--o{ STORE_PRODUCTS : tenant_scope
+  PRODUCTS ||--o{ STORE_PRODUCTS : listed_as
+  STORE_PRODUCTS ||--o{ STORE_VARIANTS : variant_override
+  VARIANTS ||--o{ STORE_VARIANTS : specialized_from
+  STORES ||--o{ PRICEBOOKS : price_catalog
+  PRICEBOOKS ||--o{ PRICE_RULES : rules
+  PRODUCTS ||--o{ PRICE_RULES : rule_product
+  VARIANTS ||--o{ PRICE_RULES : rule_variant
+
+  TENANTS ||--o{ ORDERS : creates
+  SITES ||--o{ ORDERS : placed_at_site
+  STORES ||--o{ ORDERS : placed_at_store
+  CUSTOMERS ||--o{ ORDERS : by_customer
+  APPROVAL_REQUESTS ||--o{ ORDERS : may_require
+  ORDERS ||--o{ ORDER_ITEMS : contains
+
+  TENANTS ||--o{ PAYMENT_TRANSACTIONS : payments
+  VENDORS ||--o{ PAYMENT_TRANSACTIONS : to_vendor
+  TENANTS ||--o{ PAYMENT_REFUNDS : refunds
+  PAYMENT_TRANSACTIONS ||--o{ PAYMENT_REFUNDS : refund_of
+  TENANTS ||--o{ PAYMENT_ADJUSTMENTS : adjustments
+  PAYMENT_TRANSACTIONS ||--o{ PAYMENT_ADJUSTMENTS : adjusts
+  TENANTS ||--o{ CUSTOMERS : payment_profiles
+  TENANTS ||--o{ PAYMENT_INTENTS : intents
+  TRADE_ACCOUNTS ||--o{ PAYMENT_INTENTS : may_cover
+  TENANTS ||--o{ TRADE_ACCOUNTS : has_trade
+  TENANTS ||--o{ PAYMENT_WEBHOOKS : webhook_events
+
+  TENANTS ||--o{ VENDOR_SETTLEMENTS : settles
+  VENDORS ||--o{ VENDOR_SETTLEMENTS : payable_to
+  VENDOR_SETTLEMENTS ||--o{ VENDOR_SETTLEMENT_ITEMS : has_items
+  VENDOR_SETTLEMENT_ITEMS ||--o{ VENDOR_SETTLEMENT_ADJUSTMENTS : adjustments
+  VENDOR_SETTLEMENT_ITEMS ||--o{ VENDOR_DISPUTES : disputes
+  TENANTS ||--o{ VENDOR_SETTLEMENT_BATCHES : batches
+
+  TENANTS ||--o{ BUDGETS : budgets
+  COST_CENTRES ||--o{ BUDGETS : cost_centre_budget
+  BUDGETS ||--o{ BUDGET_TRANSACTIONS : tx
+  BUDGETS ||--o{ BUDGET_ALERTS : alerts
+
+  TENANTS ||--o{ APPROVER_LIMITS : approver_limits
+  USERS ||--o{ APPROVER_LIMITS : user_limits
+  COST_CENTRES ||--o{ APPROVER_LIMITS : scoped_limit
+  TENANTS ||--o{ INSTANT_BUDGET_REQUESTS : instant_requests
+  USERS ||--o{ INSTANT_BUDGET_REQUESTS : raised_by
+  COST_CENTRES ||--o{ INSTANT_BUDGET_REQUESTS : draws_from
+  STORES ||--o{ INSTANT_BUDGET_REQUESTS : optional_store
+
+  TENANTS ||--o{ TRADE_INVOICES : invoices
+  TRADE_INVOICES ||--o{ TRADE_INVOICE_LINES : lines
+  TENANTS ||--o{ BILLING_OUTBOX_EVENTS : billing_events
+
+  TENANTS ||--o{ LEDGER_ENTRIES_NEW : ledger_entries
+  TENANTS ||--o{ ACCOUNT_BALANCES_NEW : balances
+  TENANTS ||--o{ OUTBOX_EVENTS : outbox
+  TENANTS ||--o{ AUDIT_LOGS : audits
+  TENANTS ||--o{ IDEMPOTENCY_RECORDS : idempotency
+
+  USERS ||--o{ APPROVAL_DELEGATIONS : delegates_from
+  USERS ||--o{ APPROVAL_DELEGATIONS : delegates_to
+

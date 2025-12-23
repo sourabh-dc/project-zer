@@ -1,0 +1,17 @@
+erDiagram
+  TENANTS ||--o{ CATEGORIES : defines
+  CATEGORIES ||--o{ PRODUCTS : categorizes
+  TENANTS ||--o{ PRODUCTS : owns
+  VENDORS ||--o{ PRODUCTS : supplies
+  PRODUCTS ||--o{ VARIANTS : has_variants
+  STORES ||--o{ STORE_PRODUCTS : stocks
+  TENANTS ||--o{ STORE_PRODUCTS : tenant_scope
+  PRODUCTS ||--o{ STORE_PRODUCTS : listed_as
+  STORE_PRODUCTS ||--o{ STORE_VARIANTS : variant_override
+  VARIANTS ||--o{ STORE_VARIANTS : specialized_from
+  STORES ||--o{ PRICEBOOKS : price_catalog
+  PRICEBOOKS ||--o{ PRICE_RULES : rules
+  PRODUCTS ||--o{ PRICE_RULES : rule_product
+  VARIANTS ||--o{ PRICE_RULES : rule_variant
+
+

@@ -1,0 +1,11 @@
+erDiagram
+  TENANTS ||--o{ COST_CENTRES : budgets
+  COST_CENTRES ||--o{ BUDGETS : planned
+  BUDGETS ||--o{ BUDGET_TRANSACTIONS : tx
+  BUDGETS ||--o{ BUDGET_ALERTS : alerts
+  USERS ||--o{ SPENDING_EVENTS : logs
+  COST_CENTRES ||--o{ SPENDING_EVENTS : funds
+  ORDERS ||--o{ SPENDING_EVENTS : order_ref
+  APPROVAL_REQUESTS ||--o{ SPENDING_EVENTS : approval_ref
+
+

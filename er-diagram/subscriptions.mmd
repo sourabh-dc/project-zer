@@ -1,0 +1,9 @@
+erDiagram
+  TENANTS ||--|| TENANT_SUBSCRIPTIONS : subscribes
+  SUBSCRIPTION_PLANS ||--o{ TENANT_SUBSCRIPTIONS : selected_plan
+  TENANTS ||--o{ SUBSCRIPTION_USAGE : uses_features
+  FEATURES ||--o{ SUBSCRIPTION_USAGE : tracked_feature
+  TENANTS ||--o{ SITE_BILLING_ACCOUNTS : pays_for_sites
+  SITES ||--o{ SITE_BILLING_ACCOUNTS : billed_as
+
+
