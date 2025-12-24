@@ -6,12 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from Models import Tenant
-from Schemas import TenantRequest
+from Models import Tenant, User, UserRole, Role, Permission, RolePermission
+from Schemas import TenantRequest, LoginRequest, LoginResponse
 from core.helpers.auth_helper import issue_refresh_token
 from utils.metrics import req_total
-from Models import User, UserRole, Role
-from Schemas import LoginRequest, LoginResponse
 from core.db_config import get_db
 from core.config import SETTINGS
 from utils.logger import logger
@@ -19,7 +17,7 @@ import bcrypt
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding tenant"])
 
-@router.post("tenant-signup", status_code=201)
+@router.post("/tenant-signup", status_code=201)
 async def create_tenant(
         req: TenantRequest,
         db: Session = Depends(get_db)
@@ -54,16 +52,52 @@ async def create_tenant(
         db.commit()
         db.refresh(user)
 
-        # create user role
-        tenant_admin_role_id = db.query(Role.role_id).filter(Role.code == "tenant-admin").first()[0]
-        role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=tenant_admin_role_id)
-        db.add(role)
+        # ensure tenant_admin role exists
+        role = db.query(Role).filter(Role.code == "tenant_admin").first()
+        if not role:
+            role = Role(role_id=uuid.uuid4(), code="tenant_admin", description="Super admin for tenant")
+            db.add(role)
+            db.flush()
+
+        # ensure core permissions exist and assign to role
+        core_permissions = [
+            ("tenant.admin", "Full tenant administration"),
+            ("users.manage", "Create and manage users"),
+            ("sites.manage", "Create and manage sites"),
+            ("stores.manage", "Create and manage stores"),
+            ("vendors.manage", "Create and manage vendors"),
+            ("budgets.manage", "Manage budgets and cost centres"),
+            ("approvals.manage", "Manage approval chains and requests"),
+            ("catalog.manage", "Manage products and catalog"),
+        ]
+
+        for perm_code, perm_desc in core_permissions:
+            perm = db.query(Permission).filter(Permission.code == perm_code).first()
+            if not perm:
+                perm = Permission(permission_id=uuid.uuid4(), code=perm_code, description=perm_desc)
+                db.add(perm)
+                db.flush()
+
+            existing_rp = db.query(RolePermission).filter(
+                RolePermission.role_code == role.code,
+                RolePermission.permission_code == perm_code
+            ).first()
+            if not existing_rp:
+                db.add(RolePermission(id=uuid.uuid4(), role_code=role.code, permission_code=perm_code))
+
+        # assign role to user
+        user_role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=role.role_id)
+        db.add(user_role)
         db.commit()
+
+        logger.info(f"Signup complete: tenant={tenant.tenant_id}, user={user.user_id}")
 
         return {
             "tenant_id": str(tenant.tenant_id),
+            "user_id": str(user.user_id),
             "name": tenant.tenant_name,
             "type": tenant.tenant_type,
+            "role": role.code,
             "created_at": tenant.created_at.isoformat()
         }
     except HTTPException:
@@ -72,7 +106,7 @@ async def create_tenant(
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_tenant", status="error").inc()
-        logger.error(f"❌ Tenant creation failed: {e}")
+        logger.error(f"Tenant creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -109,7 +143,7 @@ async def tenant_login(
 
             # Lock account if max attempts reached
             if user.failed_login_attempts >= SETTINGS.MAX_FAILED_LOGIN_ATTEMPTS:
-                logger.warning(f"🔒 Account locked for user {user.email} due to failed login attempts")
+                logger.warning(f"Account locked for user {user.email} due to failed login attempts")
                 return "Account locked due to too many failed login attempts. Please try Forget Password."
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -146,20 +180,21 @@ async def tenant_login(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error")
 
         jwt_expires_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_exp_minutes)
+        now = datetime.now(timezone.utc)
         payload = {
             "sub": str(user.user_id),
             "email": user.email,
             "tenant_id": str(user.tenant_id),
             "roles": roles,
-            "exp": int(jwt_expires_at.timestamp())
+            "permissions": ["*"],  # Grant all permissions to tenant_admin
+            "iat": int(now.timestamp()),
+            "exp": int(jwt_expires_at.timestamp()),
+            "iss": getattr(SETTINGS, "JWT_ISSUER", "http://mock-idp"),
+            "aud": getattr(SETTINGS, "JWT_AUDIENCE", "zeroque-api"),
         }
         token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
 
-        logger.info(f"✅ User {user.email} logged in successfully")
-
-        # Return existing response plus jwt fields - ensure
-
-        logger.info(f"✅ User {user.email} logged in successfully")
+        logger.info(f"User {user.email} logged in successfully")
 
         refresh_token = issue_refresh_token(user, db)
 
@@ -178,7 +213,7 @@ async def tenant_login(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Login failed: {e}", exc_info=True)
+        logger.error(f"Login failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"

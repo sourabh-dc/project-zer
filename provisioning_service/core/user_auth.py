@@ -17,6 +17,7 @@ from starlette import status
 
 from Models import User, UserOrgAssignment, RoleScope, RolePermission, Permission, Tenant, Role, UserRole
 from Schemas import UserContext
+from core.entitlement_helpers import load_tenant_features
 from core.config import SETTINGS
 from core.db_config import SessionLocal
 from utils.logger import logger
@@ -324,6 +325,11 @@ def build_user_context(
         permission_map = build_permission_map(db, role_ids, user.tenant_id)
 
     manager_of = fetch_manager_relationships(db, user.user_id)
+    
+    # Load plan features and usage
+    subscription_active, plan_code, plan_name, features = load_tenant_features(
+        db, str(user.tenant_id)
+    )
 
     ctx = UserContext(
         user_id=str(user.user_id),
@@ -331,7 +337,11 @@ def build_user_context(
         roles=[role.code or str(role.role_id) for role in roles],
         permissions=permission_map,
         manager_of=manager_of,
-        raw_claims=claims
+        raw_claims=claims,
+        plan_code=plan_code,
+        plan_name=plan_name,
+        subscription_active=subscription_active,
+        features=features
     )
     return ctx
 

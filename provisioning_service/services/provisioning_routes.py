@@ -20,6 +20,7 @@ from core.config import SETTINGS
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission, check_tenant_access
 from core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
+from core.entitlement_helpers import check_feature_limit, record_feature_usage
 from utils.logger import logger
 from utils.metrics import req_total, req_duration
 from utils.redis_client import redis_client
@@ -49,8 +50,21 @@ class SignupRequest(BaseModel):
 
 @router.post("/signup", status_code=201)
 async def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    """Sign up: create tenant + super user with tenant_admin role."""
-    # Create tenant
+    """
+    Sign up: create tenant + super user with tenant_admin role.
+    The tenant_admin role gets full permissions to manage the tenant.
+    """
+    # check if tenant email already exists
+    existing = db.query(Tenant).filter(Tenant.email == req.tenant_email).first()
+    if existing:
+        raise HTTPException(409, "Tenant with this email already exists")
+
+    # check if user email already exists
+    existing_user = db.query(User).filter(User.email == req.user_email).first()
+    if existing_user:
+        raise HTTPException(409, "User with this email already exists")
+
+    # create tenant
     tenant = Tenant(
         tenant_id=uuid.uuid4(),
         tenant_name=req.tenant_name,
@@ -59,11 +73,10 @@ async def signup(req: SignupRequest, db: Session = Depends(get_db)):
         active=True,
     )
     db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
+    db.flush()
 
-    # Prepare user
-    raw_password = req.password or secrets.token_urlsafe(8)
+    # create user
+    raw_password = req.password or secrets.token_urlsafe(12)
     hashed = bcrypt.hashpw(raw_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     user = User(
         user_id=uuid.uuid4(),
@@ -77,41 +90,61 @@ async def signup(req: SignupRequest, db: Session = Depends(get_db)):
         display_name=f"{req.user_first_name} {req.user_last_name}",
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    db.flush()
 
-    # Ensure tenant_admin role exists
+    # ensure tenant_admin role exists
     role = db.query(Role).filter(Role.code == "tenant_admin").first()
     if not role:
-        role = Role(
-            role_id=uuid.uuid4(),
-            code="tenant_admin",
-            description="Super admin for tenant",
-        )
+        role = Role(role_id=uuid.uuid4(), code="tenant_admin", description="Super admin for tenant")
         db.add(role)
-        db.commit()
-        db.refresh(role)
-    # Ensure director role exists
+        db.flush()
+
+    # ensure director role exists (for escalation)
     director_role = db.query(Role).filter(Role.code == "director").first()
     if not director_role:
-        director_role = Role(
-            role_id=uuid.uuid4(),
-            code="director",
-            description="Director approver role",
-        )
+        director_role = Role(role_id=uuid.uuid4(), code="director", description="Director approver role")
         db.add(director_role)
-        db.commit()
-        db.refresh(director_role)
+        db.flush()
 
-    # Assign role
+    # ensure core permissions exist and assign to tenant_admin
+    core_permissions = [
+        ("tenant.admin", "Full tenant administration"),
+        ("users.manage", "Create and manage users"),
+        ("sites.manage", "Create and manage sites"),
+        ("stores.manage", "Create and manage stores"),
+        ("vendors.manage", "Create and manage vendors"),
+        ("budgets.manage", "Manage budgets and cost centres"),
+        ("approvals.manage", "Manage approval chains and requests"),
+        ("catalog.manage", "Manage products and catalog"),
+    ]
+
+    for perm_code, perm_desc in core_permissions:
+        perm = db.query(Permission).filter(Permission.code == perm_code).first()
+        if not perm:
+            perm = Permission(permission_id=uuid.uuid4(), code=perm_code, description=perm_desc)
+            db.add(perm)
+            db.flush()
+
+        # assign to tenant_admin role if not already assigned
+        existing_rp = db.query(RolePermission).filter(
+            RolePermission.role_code == role.code,
+            RolePermission.permission_code == perm_code
+        ).first()
+        if not existing_rp:
+            db.add(RolePermission(id=uuid.uuid4(), role_code=role.code, permission_code=perm_code))
+
+    # assign role to user
     db.add(UserRole(user_id=user.user_id, role_id=role.role_id, tenant_id=tenant.tenant_id))
     db.commit()
+
+    logger.info(f"Signup complete: tenant={tenant.tenant_id}, user={user.user_id}")
 
     return {
         "tenant_id": str(tenant.tenant_id),
         "user_id": str(user.user_id),
-        "role_id": str(role.role_id),
-        "password": raw_password if not req.password else "provided",
+        "role": role.code,
+        "permissions": [p[0] for p in core_permissions],
+        "password": raw_password if not req.password else "(provided)",
     }
 @router.get("/tenants")
 async def list_tenants(
@@ -237,10 +270,14 @@ async def update_tenant(
 @router.post("/sites", status_code=201)
 async def create_site(
         req: SiteRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("sites.manage"))
 ):
     """Create a new site and associate it with a tenant"""
     try:
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "sites.manage", count=1)
+        
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -265,8 +302,11 @@ async def create_site(
         db.add(site_tenant)
         db.commit()
         db.refresh(site)
+        
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "sites.manage", count=1)
 
-        logger.info(f"✅ Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
+        logger.info(f"Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
         return {
             "site_id": str(site.site_id),
@@ -283,12 +323,12 @@ async def create_site(
     except IntegrityError as e:
         db.rollback()
         req_total.labels(operation="create_site", status="error").inc()
-        logger.error(f"❌ Site creation IntegrityError: {e}")
+        logger.error(f"Site creation IntegrityError: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid tenant reference: {str(e)}")
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_site", status="error").inc()
-        logger.error(f"❌ Site creation failed: {e}")
+        logger.error(f"Site creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/sites/{site_id}/tenants/{tenant_id}", status_code=201)
@@ -473,12 +513,17 @@ async def list_sites(
 @router.post("/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("stores.manage"))
 ):
     """Create a new store under a site for the user's tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_store", status="start").inc()
+        
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "stores.manage", count=1)
+        
         # Verify site exists and is accessible by the user's tenant
         site_tenant = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(req.site_id),
@@ -503,13 +548,16 @@ async def create_store(
         db.add(store)
         db.commit()
         db.refresh(store)
+        
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "stores.manage", count=1)
 
         req_total.labels(operation="create_store", status="success").inc()
         req_duration.labels(operation="create_store").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created store: {store.store_id} ({store.name}) for tenant: {req.tenant_id}")
+        logger.info(f"Created store: {store.store_id} ({store.name}) for tenant: {req.tenant_id}")
 
         return {
             "store_id": str(store.store_id),
@@ -533,7 +581,7 @@ async def create_store(
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_store", status="error").inc()
-        logger.error(f"❌ Store creation failed: {e}")
+        logger.error(f"Store creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.put("/stores/{store_id}", status_code=200)
@@ -655,12 +703,16 @@ async def list_stores(
 @router.post("/users", status_code=201)
 async def create_user(
         req: UserRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("users.manage"))
 ):
     """Create a new user"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_user", status="start").inc()
+        
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "users.manage", count=1)
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -690,13 +742,16 @@ async def create_user(
         db.add(user)
         db.commit()
         db.refresh(user)
+        
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "users.manage", count=1)
 
         req_total.labels(operation="create_user", status="success").inc()
         req_duration.labels(operation="create_user").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created user: {user.user_id} ({user.email})")
+        logger.info(f"Created user: {user.user_id} ({user.email})")
 
         return {
             "user_id": str(user.user_id),
@@ -718,7 +773,7 @@ async def create_user(
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_user", status="error").inc()
-        logger.error(f"❌ User creation failed: {e}")
+        logger.error(f"User creation failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -858,12 +913,16 @@ async def bulk_import_users(
 @router.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("vendors.manage"))
 ):
     """Create a new vendor"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_vendor", status="start").inc()
+        
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "vendors.manage", count=1)
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -882,13 +941,16 @@ async def create_vendor(
         db.add(vendor)
         db.commit()
         db.refresh(vendor)
+        
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "vendors.manage", count=1)
 
         req_total.labels(operation="create_vendor", status="success").inc()
         req_duration.labels(operation="create_vendor").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created vendor: {vendor.vendor_id} ({vendor.name})")
+        logger.info(f"Created vendor: {vendor.vendor_id} ({vendor.name})")
 
         return {
             "vendor_id": str(vendor.vendor_id),
@@ -947,12 +1009,16 @@ async def list_vendors(
 @router.post("/cost-centres", status_code=201)
 async def create_cost_centre(
         req: CostCentreRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("costcentre.manage"))
 ):
     """Create a new cost centre"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
+        
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "cost_centres", count=1)
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -981,13 +1047,16 @@ async def create_cost_centre(
         db.add(cc)
         db.commit()
         db.refresh(cc)
+        
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
 
         req_total.labels(operation="create_cost_centre", status="success").inc()
         req_duration.labels(operation="create_cost_centre").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created cost centre: {cc.cost_centre_id} ({cc.name})")
+        logger.info(f"Created cost centre: {cc.cost_centre_id} ({cc.name})")
 
         return {
             "cost_centre_id": str(cc.cost_centre_id),
@@ -1217,10 +1286,14 @@ async def get_user_spending_history(
 @router.post("/departments", status_code=201)
 async def create_org_unit(
     req: OrgUnitRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("org_units.manage"))
 ):
     """Create an organizational unit"""
     try:
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "departments", count=1)
+        
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -1246,7 +1319,10 @@ async def create_org_unit(
         db.commit()
         db.refresh(org_unit)
         
-        logger.info(f"✅ Created org unit: {org_unit.org_unit_id} ({org_unit.name})")
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "departments", count=1)
+        
+        logger.info(f"Created org unit: {org_unit.org_unit_id} ({org_unit.name})")
         
         return {
             "org_unit_id": str(org_unit.org_unit_id),

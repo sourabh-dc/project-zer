@@ -15,6 +15,8 @@ from Schemas import (
 )
 from core.db_config import get_db
 from core.permission_check_helpers import require_permission
+from core.entitlement_helpers import check_feature_limit, record_feature_usage
+from utils.logger import logger
 
 
 router = APIRouter(prefix="/catalog", tags=["Catalog"])
@@ -29,14 +31,24 @@ async def create_category(
     db: Session = Depends(get_db),
     ctx: UserContext = Depends(require_permission("catalog.categories.manage"))
 ):
-    if str(ctx.tenant_id) != req.tenant_id:
-        raise HTTPException(403, "Tenant mismatch")
+    try:
+        tenant_id = ctx.tenant_id if hasattr(ctx, 'tenant_id') else ctx.get('tenant_id')
+        if str(tenant_id) != req.tenant_id:
+            raise HTTPException(403, "Tenant mismatch")
+        
+        # Check entitlement limit
+        check_feature_limit(db, req.tenant_id, "categories", count=1)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in create_category setup: {type(e).__name__}: {e}")
+        raise HTTPException(500, f"Setup error: {str(e)}")
 
     # Enforce tenant-scoped unique code
     exists = db.query(Category).filter(
         Category.tenant_id == ctx.tenant_id,
         Category.code == req.code,
-        Category.deleted_at.is_(None)
+        Category.active == True
     ).first()
     if exists:
         raise HTTPException(409, "Category code already exists")
@@ -51,7 +63,7 @@ async def create_category(
         parent = db.query(Category).filter(
             Category.category_id == parent_id,
             Category.tenant_id == ctx.tenant_id,
-            Category.deleted_at.is_(None)
+            Category.active == True
         ).first()
         if not parent:
             raise HTTPException(404, "Parent category not found")
@@ -69,6 +81,8 @@ async def create_category(
     try:
         db.commit()
         db.refresh(category)
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "categories", count=1)
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Category code conflict")
@@ -93,7 +107,7 @@ async def list_categories(
 ):
     q = db.query(Category).filter(
         Category.tenant_id == ctx.tenant_id,
-        Category.deleted_at.is_(None)
+        Category.active == True
     )
 
     if active is not None:
@@ -117,7 +131,7 @@ async def list_categories(
                 "active": c.active,
                 "has_children": db.query(Category).filter(
                     Category.parent_category_id == c.category_id,
-                    Category.deleted_at.is_(None)
+                    Category.active == True
                 ).count() > 0
             }
             for c in items
@@ -137,12 +151,15 @@ async def create_product(
 ):
     if str(ctx.tenant_id) != req.tenant_id:
         raise HTTPException(403, "Tenant mismatch")
+    
+    # Check entitlement limit
+    check_feature_limit(db, req.tenant_id, "products", count=1)
 
     # SKU must be unique per tenant
     if db.query(Product).filter(
         Product.tenant_id == ctx.tenant_id,
         Product.sku == req.sku,
-        Product.deleted_at.is_(None)
+        Product.active == True
     ).first():
         raise HTTPException(409, "SKU already exists in your catalog")
 
@@ -155,7 +172,7 @@ async def create_product(
         if not db.query(Category).filter(
             Category.category_id == category_id,
             Category.tenant_id == ctx.tenant_id,
-            Category.deleted_at.is_(None)
+            Category.active == True
         ).first():
             raise HTTPException(404, "Category not found")
 
@@ -192,6 +209,8 @@ async def create_product(
     try:
         db.commit()
         db.refresh(product)
+        # Record feature usage
+        record_feature_usage(db, req.tenant_id, "products", count=1)
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(409, "SKU or data conflict")
@@ -218,7 +237,7 @@ async def list_products(
 ):
     q = db.query(Product).filter(
         Product.tenant_id == ctx.tenant_id,
-        Product.deleted_at.is_(None)
+        Product.active == True
     )
 
     if category_id:
@@ -269,6 +288,9 @@ async def create_variant(
     db: Session = Depends(get_db),
     ctx: UserContext = Depends(require_permission("catalog.variants.manage"))
 ):
+    # Check entitlement limit
+    check_feature_limit(db, str(ctx.tenant_id), "variants", count=1)
+    
     try:
         product_id = UUID(req.product_id)
     except ValueError:
@@ -277,7 +299,7 @@ async def create_variant(
     product = db.query(Product).filter(
         Product.product_id == product_id,
         Product.tenant_id == ctx.tenant_id,
-        Product.deleted_at.is_(None)
+        Product.active == True
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
@@ -285,7 +307,7 @@ async def create_variant(
     if db.query(Variant).filter(
         Variant.tenant_id == ctx.tenant_id,
         Variant.sku == req.sku,
-        Variant.deleted_at.is_(None)
+        Variant.active == True
     ).first():
         raise HTTPException(409, "Variant SKU already exists")
 
@@ -304,6 +326,8 @@ async def create_variant(
     db.add(variant)
     try:
         db.commit()
+        # Record feature usage
+        record_feature_usage(db, str(ctx.tenant_id), "variants", count=1)
         return {"variant_id": str(variant.variant_id), "sku": variant.sku}
     except IntegrityError:
         db.rollback()
@@ -320,6 +344,9 @@ async def add_product_to_store(
     db: Session = Depends(get_db),
     ctx: UserContext = Depends(require_permission("stores.products.manage"))
 ):
+    # Check entitlement limit
+    check_feature_limit(db, str(ctx.tenant_id), "store_products", count=1)
+    
     try:
         store_id = UUID(req.store_id)
         product_id = UUID(req.product_id)
@@ -336,7 +363,7 @@ async def add_product_to_store(
     product = db.query(Product).filter(
         Product.product_id == product_id,
         Product.tenant_id == ctx.tenant_id,
-        Product.deleted_at.is_(None)
+        Product.active == True
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
@@ -360,6 +387,9 @@ async def add_product_to_store(
     )
     db.add(sp)
     db.commit()
+    
+    # Record feature usage
+    record_feature_usage(db, str(ctx.tenant_id), "store_products", count=1)
 
     return {
         "store_product_id": str(sp.id),

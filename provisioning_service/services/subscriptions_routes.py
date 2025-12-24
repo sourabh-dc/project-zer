@@ -1,19 +1,270 @@
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List
+import uuid
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from Models import SubscriptionPlan, TenantSubscription
+from Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserRole, Role, \
+    PlanPrice, Feature, PlanFeature, RolePermission, Permission
 from Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
-    CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse
+    CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext
 from core.db_config import get_db
+from core.user_auth import check_user_authorization
 from utils.logger import logger
 
 router = APIRouter(prefix="/subscriptions", tags=["Subscription Plans"])
 
-# ============================================================================
-# Tenant Subscription Management
-# ============================================================================
+TRIAL_DAYS = 7
+
+
+class SubscribeRequest(BaseModel):
+    """Request to subscribe to a plan"""
+    plan_code: str = Field(description="Plan code to subscribe to")
+    billing_cycle: str = Field(default="monthly", description="monthly, quarterly, or yearly")
+    start_trial: bool = Field(default=True, description="Start with 7-day free trial")
+
+
+class WhoAmIResponse(BaseModel):
+    """Current user context with tenant and subscription info"""
+    user_id: str
+    email: str
+    display_name: Optional[str]
+    tenant_id: str
+    tenant_name: str
+    roles: List[str]
+    permissions: List[str]
+    subscription: Optional[dict] = None
+    plan: Optional[dict] = None
+    features: List[dict] = []
+    trial_info: Optional[dict] = None
+
+
+@router.get("/whoami")
+async def whoami(
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("tenant.admin"))
+):
+    """
+    Get current user's complete context including:
+    - User details
+    - Tenant details
+    - Active subscription
+    - Plan details with pricing
+    - Enabled features
+    - Trial status
+    """
+    user_id = uuid.UUID(ctx["user_id"]) if isinstance(ctx, dict) else uuid.UUID(ctx.user_id)
+    tenant_id = uuid.UUID(ctx["tenant_id"]) if isinstance(ctx, dict) else uuid.UUID(ctx.tenant_id)
+
+    # Get user
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    # Get tenant
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    # Get roles
+    user_roles = db.query(Role.code).join(
+        UserRole, UserRole.role_id == Role.role_id
+    ).filter(UserRole.user_id == user_id).all()
+    roles = [r[0] for r in user_roles]
+
+    # Get permissions from roles
+    permissions = []
+    for role_code in roles:
+        role_perms = db.query(Permission.code).join(
+            RolePermission, RolePermission.permission_code == Permission.code
+        ).filter(RolePermission.role_code == role_code).all()
+        permissions.extend([p[0] for p in role_perms])
+    permissions = list(set(permissions))
+
+    # Get active subscription
+    now = datetime.now(timezone.utc)
+    sub = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id,
+        TenantSubscription.is_active == True,
+        TenantSubscription.current_period_end > now
+    ).first()
+
+    subscription_data = None
+    plan_data = None
+    features_data = []
+    trial_info = None
+
+    if sub:
+        # Get plan
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == sub.plan_code).first()
+        pricing = db.query(PlanPrice).filter(PlanPrice.plan_code == sub.plan_code).first()
+
+        days_remaining = max(0, (sub.current_period_end - now).days) if sub.current_period_end else 0
+
+        subscription_data = {
+            "id": sub.id,
+            "plan_code": sub.plan_code,
+            "billing_cycle": sub.billing_cycle,
+            "is_active": sub.is_active,
+            "is_trial": sub.is_trial,
+            "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
+            "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+            "days_remaining": days_remaining,
+            "payment_method": sub.payment_method,
+        }
+
+        if plan:
+            plan_data = {
+                "code": plan.code,
+                "name": plan.name,
+                "description": plan.description,
+            }
+            if pricing:
+                plan_data["pricing"] = {
+                    "currency": pricing.currency,
+                    "monthly": int(pricing.price_monthly_minor),
+                    "quarterly": int(pricing.price_quarterly_minor),
+                    "yearly": int(pricing.price_yearly_minor),
+                }
+
+        # Get features
+        plan_features = db.query(Feature, PlanFeature).join(
+            PlanFeature, PlanFeature.feature_code == Feature.code
+        ).filter(
+            PlanFeature.plan_code == sub.plan_code,
+            PlanFeature.enabled == True,
+            Feature.active == True
+        ).all()
+
+        features_data = [
+            {
+                "code": f.code,
+                "name": f.name,
+                "description": f.description,
+                "usage_type": f.usage_type,
+                "max_unit": f.max_unit,
+                "reset_period": f.reset_period,
+            }
+            for f, pf in plan_features
+        ]
+
+        if sub.is_trial:
+            trial_info = {
+                "is_trial": True,
+                "trial_ends": sub.current_period_end.isoformat() if sub.current_period_end else None,
+                "days_left": days_remaining,
+            }
+
+    return {
+        "user_id": str(user.user_id),
+        "email": user.email,
+        "display_name": user.display_name,
+        "tenant_id": str(tenant.tenant_id),
+        "tenant_name": tenant.tenant_name,
+        "roles": roles,
+        "permissions": permissions,
+        "subscription": subscription_data,
+        "plan": plan_data,
+        "features": features_data,
+        "trial_info": trial_info,
+    }
+
+
+@router.post("/subscribe", status_code=201)
+async def subscribe_to_plan(
+    req: SubscribeRequest,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("tenant.admin"))
+):
+    """
+    Subscribe tenant to a plan. Includes 7-day free trial by default.
+    After trial, subscription continues with the selected billing cycle.
+    """
+    tenant_id = uuid.UUID(ctx["tenant_id"]) if isinstance(ctx, dict) else uuid.UUID(ctx.tenant_id)
+
+    # Check plan exists
+    plan = db.query(SubscriptionPlan).filter(
+        SubscriptionPlan.code == req.plan_code,
+        SubscriptionPlan.is_active == True
+    ).first()
+    if not plan:
+        raise HTTPException(404, "Plan not found or inactive")
+
+    # Check for existing active subscription
+    now = datetime.now(timezone.utc)
+    existing = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id,
+        TenantSubscription.is_active == True,
+        TenantSubscription.current_period_end > now
+    ).first()
+
+    if existing:
+        raise HTTPException(400, f"Active subscription exists (plan: {existing.plan_code}). Cancel or upgrade instead.")
+
+    # Deactivate any old subscriptions
+    db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id
+    ).update({"is_active": False})
+
+    # Calculate period
+    if req.start_trial:
+        period_start = now
+        period_end = now + timedelta(days=TRIAL_DAYS)
+        is_trial = True
+    else:
+        period_start = now
+        if req.billing_cycle == "yearly":
+            period_end = now + timedelta(days=365)
+        elif req.billing_cycle == "quarterly":
+            period_end = now + timedelta(days=90)
+        else:
+            period_end = now + timedelta(days=30)
+        is_trial = False
+
+    # Create subscription
+    subscription = TenantSubscription(
+        tenant_id=tenant_id,
+        plan_code=req.plan_code,
+        billing_cycle=req.billing_cycle,
+        payment_method="pending",
+        current_period_start=period_start,
+        current_period_end=period_end,
+        is_active=True,
+        is_trial=is_trial,
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+
+    # Get pricing
+    pricing = db.query(PlanPrice).filter(PlanPrice.plan_code == req.plan_code).first()
+    price = 0
+    if pricing:
+        if req.billing_cycle == "yearly":
+            price = int(pricing.price_yearly_minor)
+        elif req.billing_cycle == "quarterly":
+            price = int(pricing.price_quarterly_minor)
+        else:
+            price = int(pricing.price_monthly_minor)
+
+    logger.info(f"Subscription created: tenant={tenant_id}, plan={req.plan_code}, trial={is_trial}")
+
+    return {
+        "subscription_id": subscription.id,
+        "tenant_id": str(tenant_id),
+        "plan_code": req.plan_code,
+        "plan_name": plan.name,
+        "billing_cycle": req.billing_cycle,
+        "is_trial": is_trial,
+        "trial_days": TRIAL_DAYS if is_trial else 0,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "price_minor": 0 if is_trial else price,
+        "currency": pricing.currency if pricing else "GBP",
+        "message": f"{'7-day free trial started!' if is_trial else 'Subscription active.'} Ends {period_end.strftime('%Y-%m-%d')}",
+    }
+
 
 @router.post("/create", status_code=201)
 async def create_subscription(
@@ -223,7 +474,7 @@ async def cancel_subscription(
         message = f"Subscription will end on {sub.current_period_end.isoformat() if sub.current_period_end else 'period end'}"
     
     db.commit()
-    logger.info(f"✅ Canceled subscription for tenant {req.tenant_id}")
+    logger.info(f"Canceled subscription for tenant {req.tenant_id}")
     
     return {
         "tenant_id": str(req.tenant_id),

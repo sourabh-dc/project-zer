@@ -480,6 +480,20 @@ class ResourceContext(BaseModel):
     parent_chain: List[Tuple[str, str]] = Field(default_factory=list)
 
 
+class FeatureUsage(BaseModel):
+    """Feature usage tracking for entitlement enforcement"""
+    code: str
+    name: str
+    limit: Optional[int] = None  # None = unlimited
+    used: int = 0
+    remaining: Optional[int] = None  # None = unlimited
+    reset_period: str = "none"  # daily, weekly, monthly, yearly, none
+    resets_at: Optional[datetime] = None
+    usage_type: str = "count"  # count, boolean
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class UserContext(BaseModel):
     user_id: str
     tenant_id: str
@@ -487,8 +501,31 @@ class UserContext(BaseModel):
     permissions: Dict[str, List[Dict[str, Optional[str]]]]
     manager_of: List[str] = Field(default_factory=list)
     raw_claims: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Plan and feature entitlements
+    plan_code: Optional[str] = None
+    plan_name: Optional[str] = None
+    subscription_active: bool = False
+    features: Dict[str, FeatureUsage] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    def can_use_feature(self, feature_code: str, count: int = 1) -> bool:
+        """Quick check if tenant can use a feature"""
+        if not self.subscription_active:
+            return False
+        if feature_code not in self.features:
+            return False
+        feature = self.features[feature_code]
+        if feature.limit is None:
+            return True  # Unlimited
+        return (feature.remaining or 0) >= count
+    
+    def get_feature_limit(self, feature_code: str) -> Optional[int]:
+        """Get the limit for a feature, None if unlimited or not available"""
+        if feature_code not in self.features:
+            return 0  # Not in plan
+        return self.features[feature_code].limit
 
 # New Code- Sebin
 
