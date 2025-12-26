@@ -6,13 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from Models import Tenant, User, UserRole, Role, Permission, RolePermission
-from Schemas import TenantRequest, LoginRequest, LoginResponse
-from core.helpers.auth_helper import issue_refresh_token
-from utils.metrics import req_total
-from core.db_config import get_db
-from core.config import SETTINGS
-from utils.logger import logger
+from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission
+from provisioning_service.Schemas import TenantRequest, LoginRequest, LoginResponse
+from provisioning_service.core.helpers.auth_helper import issue_refresh_token
+from provisioning_service.utils.metrics import req_total
+from provisioning_service.core.db_config import get_db
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.utils.logger import logger
 import bcrypt
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding tenant"])

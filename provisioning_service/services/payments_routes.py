@@ -6,11 +6,11 @@ from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from sqlalchemy.orm import Session
 
-from Models import TenantSubscription, SubscriptionPlan
-from Schemas import CheckoutRequest
-from core.config import SETTINGS
-from core.db_config import get_db
-from utils.logger import logger
+from provisioning_service.Models import TenantSubscription, SubscriptionPlan
+from provisioning_service.Schemas import CheckoutRequest
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.core.db_config import get_db
+from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 

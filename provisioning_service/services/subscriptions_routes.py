@@ -5,13 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserRole, Role, \
+from provisioning_service.Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserRole, Role, \
     PlanPrice, Feature, PlanFeature, RolePermission, Permission
-from Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
+from provisioning_service.Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
     CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext
-from core.db_config import get_db
-from core.user_auth import check_user_authorization
-from utils.logger import logger
+from provisioning_service.core.db_config import get_db
+from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/subscriptions", tags=["Subscription Plans"])
 

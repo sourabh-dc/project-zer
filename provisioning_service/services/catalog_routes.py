@@ -6,17 +6,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import and_, or_
 from uuid import UUID
 
-from Models import (
+from provisioning_service.Models import (
     Tenant, Category, Product, Variant, StoreProduct, Store, Vendor
 )
-from Schemas import (
+from provisioning_service.Schemas import (
     CategoryRequest, ProductRequest, VariantRequest, StoreProductRequest,
     UserContext
 )
-from core.db_config import get_db
-from core.permission_check_helpers import require_permission
-from core.entitlement_helpers import check_feature_limit, record_feature_usage
-from utils.logger import logger
+from provisioning_service.core.db_config import get_db
+from provisioning_service.core.permission_check_helpers import require_permission
+from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.utils.logger import logger
 
 
 router = APIRouter(prefix="/catalog", tags=["Catalog"])

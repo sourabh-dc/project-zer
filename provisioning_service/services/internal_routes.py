@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
-from Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
-from core.db_config import get_db
-from utils.logger import logger
-from utils.metrics import req_total
+from provisioning_service.Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
+from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
+from provisioning_service.core.db_config import get_db
+from provisioning_service.utils.logger import logger
+from provisioning_service.utils.metrics import req_total
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 

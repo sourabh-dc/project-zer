@@ -39,14 +39,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router, tags=["authentication"])
-app.include_router(provisioning_router, tags=["provisioning"])
-app.include_router(catalog_router, tags=["catalog"])
-app.include_router(approval_router, tags=["approvals"])
-app.include_router(internal_router, tags=["internal"])
-app.include_router(plan_router, tags=["plans"])
-app.include_router(subscriptions_router, tags=["subscriptions"])
-app.include_router(onboarding_router, tags=["onboarding"])
+app.include_router(auth_router)
+app.include_router(provisioning_router)
+app.include_router(catalog_router)
+app.include_router(approval_router)
+app.include_router(internal_router)
+app.include_router(plan_router)
+app.include_router(subscriptions_router)
+app.include_router(onboarding_router)
 
 
 @app.get("/health")

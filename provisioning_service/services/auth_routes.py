@@ -10,14 +10,14 @@ import smtplib
 from email.message import EmailMessage
 from urllib.parse import quote_plus
 
-from Models import User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice
-from Schemas import RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest, ForgotPasswordRequest, \
+from provisioning_service.Models import User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice
+from provisioning_service.Schemas import RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest, ForgotPasswordRequest, \
     PasswordResetConfirmRequest
-from core.db_config import get_db
-from core.config import SETTINGS
-from core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
-from core.user_auth import check_user_authorization
-from utils.logger import logger
+from provisioning_service.core.db_config import get_db
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
+from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.utils.logger import logger
 import bcrypt
 
 router = APIRouter(prefix="/authentication", tags=["authentication"])

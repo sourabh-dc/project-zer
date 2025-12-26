@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from Models import SubscriptionPlan, PlanFeature, Feature, PlanPrice
-from core.db_config import get_db
-from utils.logger import logger
+from provisioning_service.Models import SubscriptionPlan, PlanFeature, Feature, PlanPrice
+from provisioning_service.core.db_config import get_db
+from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/plans", tags=["Plan Management"])
 

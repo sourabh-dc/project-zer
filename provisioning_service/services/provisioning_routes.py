@@ -11,19 +11,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
+from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission
-from Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
+from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest
-from core.config import SETTINGS
-from core.db_config import get_db
-from core.permission_check_helpers import require_permission, check_tenant_access
-from core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
-from core.entitlement_helpers import check_feature_limit, record_feature_usage
-from utils.logger import logger
-from utils.metrics import req_total, req_duration
-from utils.redis_client import redis_client
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.core.db_config import get_db
+from provisioning_service.core.permission_check_helpers import require_permission, check_tenant_access
+from provisioning_service.core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
+from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.utils.logger import logger
+from provisioning_service.utils.metrics import req_total, req_duration
+from provisioning_service.utils.redis_client import redis_client
 
 router = APIRouter(prefix="/provisioning", tags=["Provisioning Service"])
 
