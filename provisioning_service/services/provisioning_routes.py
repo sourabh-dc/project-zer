@@ -18,6 +18,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
     RoleRequest, TenantUpdateRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
+from provisioning_service.core.helpers.aifi_services import cv_create_customer
 from provisioning_service.core.permission_check_helpers import require_permission, check_tenant_access
 from provisioning_service.core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
@@ -742,7 +743,11 @@ async def create_user(
         db.add(user)
         db.commit()
         db.refresh(user)
-        
+        aifi_customer = await cv_create_customer(
+            {"externalId": user.user_id, "email": user.email, "firstName": user.first_name,
+             "lastName": user.last_name})
+        user.aifi_customer_id = aifi_customer.get("id")
+        db.commit()
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "users.manage", count=1)
 

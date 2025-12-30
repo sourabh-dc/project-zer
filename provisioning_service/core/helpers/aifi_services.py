@@ -386,3 +386,29 @@ async def generate_entry_code(customer_id: str) -> Dict:
         url = f"{AIFI_BASE_URL}{PATH_ENTRY_CODES_CREATE.format(customerId=customer_id)}"
         resp = await client.post(url, headers=_headers(), params={"displayable": "true"})
         return {"status_code": resp.status_code, "body": resp.text}
+
+async def cv_create_product(product_dict):
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        payload = {
+            "externalId": product_dict["externalId"],
+            "name": product_dict["name"],
+            "barcode": product_dict["barcode"],
+            "price": product_dict["price"],
+            "weight": product_dict["weight"],
+            "thumbnail": product_dict["thumbnail"]
+        }
+        url = f"{AIFI_BASE_URL}{PATH_PRODUCTS}"
+        r = await client.post(url, headers=_headers(), json=payload)
+        return r.json()
+
+async def cv_create_customer(customer_dict):
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        payload = {
+            "externalId": customer_dict["externalId"],
+            "firstName": customer_dict["firstname"],
+            "lastName": customer_dict["lastname"],
+            "email": customer_dict["email"]
+        }
+        url = f"{AIFI_BASE_URL}{PATH_CUSTOMERS}"
+        r = await client.post(url, headers=_headers(), json=payload)
+        return r.json()

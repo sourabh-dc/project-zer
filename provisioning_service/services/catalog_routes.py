@@ -14,6 +14,7 @@ from provisioning_service.Schemas import (
     UserContext
 )
 from provisioning_service.core.db_config import get_db
+from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.permission_check_helpers import require_permission
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.utils.logger import logger
@@ -201,6 +202,7 @@ async def create_product(
         base_price_minor=req.base_price_minor,
         currency=req.currency or "GBP",
         tax_rate=req.tax_rate or 0.0,
+        weight=req.weight or 0.0,
         product_type=req.product_type or "physical",
         product_metadata=req.product_metadata or {},
         active=True
@@ -209,6 +211,16 @@ async def create_product(
     try:
         db.commit()
         db.refresh(product)
+        aifi_product = await cv_create_product({
+            "externalId": product.product_id,
+            "name": product.name,
+            "barcode": product.barcode,
+            "price": product.base_price_minor,
+            "weight": str(product.weight),
+            "thumbnail": ""
+        })
+        product.aifi_product_id = aifi_product.get("id")
+        db.commit()
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "products", count=1)
     except IntegrityError as e:

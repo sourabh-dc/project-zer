@@ -377,6 +377,7 @@ class ProductRequest(BaseModel):
     manufacturer: Optional[str] = Field(None, max_length=255, description="Manufacturer (optional)")
     base_price_minor: int = Field(ge=0, description="Base price in minor units")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    weight: Optional[float] = Field(None, description="Weight (optional)")
     tax_rate: int = Field(default=0, ge=0, description="Tax rate in basis points")
     product_type: Optional[str] = Field(None, description="Product type (optional)")
     product_metadata: Optional[Dict[str, Any]] = Field(None, description="Product metadata (optional)")
