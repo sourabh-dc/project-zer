@@ -1,13 +1,10 @@
 import httpx
 from typing import Dict, List, Tuple
 
-from integrations.config import INTEGRATION_SETTINGS
-from utils.logger import logger
-
-AIFI_BASE_URL = (INTEGRATION_SETTINGS.AIFI_BASE_URL or "").rstrip("/")
-AIFI_API_KEY = INTEGRATION_SETTINGS.AIFI_API_KEY
-AIFI_STORE_ID = INTEGRATION_SETTINGS.AIFI_STORE_ID
-AIFI_LOCATION_ID = INTEGRATION_SETTINGS.AIFI_LOCATION_ID
+AIFI_BASE_URL="https://oasis-api.27-12.oasis.aifi.com"
+AIFI_API_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzaG9wIjoiY29uc3VtYWJsZXMtZ2IiLCJ0b2tlblR5cGUiOiJBRE1JTiIsImlhdCI6MTc0ODQ1MTk4Nn0.aR81DfOnjtCOIq0spJiGGj0jmj_BTUQcz3jlQy37SMc"
+AIFI_STORE_ID="consumables-gb"
+AIFI_LOCATION_ID="1"
 
 # Admin API endpoints
 PATH_CUSTOMERS = "/api/admin/v2/customers"
