@@ -13,11 +13,11 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from Models import (
+from provisioning_service.Models import (
     TenantSubscription, PlanFeature, Feature, SubscriptionUsage, SubscriptionPlan
 )
-from Schemas import FeatureUsage
-from utils.logger import logger
+from provisioning_service.Schemas import FeatureUsage
+from provisioning_service.utils.logger import logger
 
 
 def get_reset_period_delta(reset_period: str) -> timedelta:

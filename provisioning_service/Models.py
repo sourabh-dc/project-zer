@@ -5,8 +5,8 @@ from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
 
-from core.db_config import engine
-from utils.logger import logger
+from provisioning_service.core.db_config import engine
+from provisioning_service.utils.logger import logger
 
 # ==================================================================================
 # DATABASE MODELS
@@ -1124,12 +1124,3 @@ class InstantBudgetRequest(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# Create tables
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("✅ Database tables initialized")
-except Exception as e:
-    logger.error(f"❌ Table initialization failed: {e}")
-

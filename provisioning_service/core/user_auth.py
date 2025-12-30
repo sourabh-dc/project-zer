@@ -15,13 +15,13 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from starlette import status
 
-from Models import User, UserOrgAssignment, RoleScope, RolePermission, Permission, Tenant, Role, UserRole
-from Schemas import UserContext
-from core.entitlement_helpers import load_tenant_features
-from core.config import SETTINGS
-from core.db_config import SessionLocal
-from utils.logger import logger
-from utils.redis_client import redis_client
+from provisioning_service.Models import User, UserOrgAssignment, RoleScope, RolePermission, Permission, Tenant, Role, UserRole
+from provisioning_service.Schemas import UserContext
+from provisioning_service.core.entitlement_helpers import load_tenant_features
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.core.db_config import SessionLocal
+from provisioning_service.utils.logger import logger
+from provisioning_service.utils.redis_client import redis_client
 
 DEFAULT_PERMISSIONS: List[Tuple[str, str]] = [
     ("tenants.create", "Create and manage tenants"),

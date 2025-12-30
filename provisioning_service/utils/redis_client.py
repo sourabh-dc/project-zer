@@ -1,8 +1,8 @@
 # Redis setup
 import redis
 
-from core.config import SETTINGS
-from utils.logger import logger
+from provisioning_service.core.config import SETTINGS
+from provisioning_service.utils.logger import logger
 
 try:
     redis_client = redis.Redis.from_url(SETTINGS.REDIS_URL, decode_responses=True)

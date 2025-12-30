@@ -2,8 +2,8 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 import secrets
 
-from Models import User
-from core.config import SETTINGS
+from provisioning_service.Models import User
+from provisioning_service.core.config import SETTINGS
 import bcrypt
 
 

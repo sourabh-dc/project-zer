@@ -1,0 +1,9 @@
+code,description
+tenant.admin,Full tenant administration
+users.manage,Create and manage users
+sites.manage,Create and manage sites
+stores.manage,Create and manage stores
+vendors.manage,Create and manage vendors
+budgets.manage,Manage budgets and cost centres
+approvals.manage,Manage approval chains and requests
+catalog.manage,Manage products and catalog
