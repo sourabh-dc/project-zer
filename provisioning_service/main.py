@@ -15,6 +15,7 @@ from provisioning_service.services.internal_routes import router as internal_rou
 from provisioning_service.services.plan_routes import router as plan_router
 from provisioning_service.services.subscriptions_routes import router as subscriptions_router
 from provisioning_service.services.tenant_onboarding import router as onboarding_router
+from provisioning_service.services.payments_routes import router as payments_router
 from provisioning_service.utils.logger import logger
 
 app = FastAPI(title="Provisioning Service", version="1.0.0")
@@ -48,6 +49,7 @@ app.add_middleware(
 app.include_router(onboarding_router)
 app.include_router(auth_router)
 app.include_router(internal_router)
+app.include_router(payments_router)
 app.include_router(provisioning_router)
 app.include_router(catalog_router)
 app.include_router(approval_router)

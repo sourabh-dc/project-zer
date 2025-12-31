@@ -338,36 +338,6 @@ async def add_feature_to_plan(
     return {"plan_code": plan_code, "feature_code": feature_code, "enabled": True}
 
 
-# keep the old endpoint for backwards compat
-@router.put("/map-feature")
-async def upsert_plan_feature(req: PlanFeatureRequest, db: Session = Depends(get_db)):
-    """Add or update a feature in a plan (legacy endpoint)."""
-    if not db.query(SubscriptionPlan).filter_by(code=req.plan_code).first():
-        raise HTTPException(404, "Plan not found")
-    if not db.query(Feature).filter_by(code=req.feature_code).first():
-        raise HTTPException(404, "Feature not found")
-
-    pf = db.query(PlanFeature).filter_by(
-        plan_code=req.plan_code,
-        feature_code=req.feature_code
-    ).first()
-
-    if pf:
-        pf.enabled = True
-    else:
-        pf = PlanFeature(
-            id=uuid.uuid4(),
-            plan_code=req.plan_code,
-            feature_code=req.feature_code,
-            enabled=True
-        )
-        db.add(pf)
-
-    db.commit()
-    logger.info(f"Mapped feature {req.feature_code} to plan {req.plan_code}")
-    return {"plan_code": req.plan_code, "feature_code": req.feature_code, "enabled": True}
-
-
 @router.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
 async def remove_feature_from_plan(plan_code: str, feature_code: str, db: Session = Depends(get_db)):
     """Remove (disable) a feature from a plan."""
