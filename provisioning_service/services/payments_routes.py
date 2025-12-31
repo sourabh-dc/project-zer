@@ -1,6 +1,6 @@
 from datetime import timezone, datetime, timedelta
 import stripe
-from fastapi.responses import JSONResponse
+import webbrowser
 from fastapi import HTTPException, APIRouter, Request, Depends
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
@@ -39,27 +39,38 @@ async def create_checkout_session(data: CheckoutRequest):
             "plan_code": data.plan_code,
             "billing_cycle": data.billing_cycle
         }
+        stripe_customer_id = getattr(data, "stripe_customer_id", None)
+        if not stripe_customer_id and getattr(data, "email", None):
+            customer = stripe.Customer.create(email=data.email, metadata={"tenant_id": data.tenant_id})
+            stripe_customer_id = customer.id
 
         session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
             payment_method_types=["card"],  # could extend to ["card", "upi", "PayPal"] if supported
-            mode=data.mode,
+            mode="subscription",
             line_items=line_items,
-            customer_email=data.customer_email,
-            success_url="https://yourdomain.com/success?session_id={CHECKOUT_SESSION_ID}", #replace it with actual success page
-            cancel_url="https://yourdomain.com/cancel",
+            success_url="http://127.0.0.1:8000/docs", #replace it with actual success page
+            cancel_url="http://127.0.0.1:8000",
             metadata=metadata
         )
 
-        return JSONResponse({"checkout_url": session.url})
+        webbrowser.open_new(session.url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@router.post("/create-portal-session")
+async def create_portal_session(cust_id: str):
+    session = stripe.billing_portal.Session.create(
+        customer=cust_id,
+        return_url="http://localhost:8000"
+    )
+    webbrowser.open_new(session.url)
+
 @router.post("/webhook")
-async def stripe_webhook(request: Request, db=get_db()):
+async def stripe_webhook(request: Request, db=Depends(get_db)):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     endpoint_secret = SETTINGS.STRIPE_WEBHOOK_SECRET
-
     try:
         event = stripe.Webhook.construct_event(
             payload, sig_header, endpoint_secret
@@ -87,9 +98,8 @@ async def stripe_webhook(request: Request, db=get_db()):
         db.commit()
         return tenant_subscription
     elif event["type"] == "invoice.payment_failed":
-        # ❌ Handle failed payments
-        pass
-
+        print("Payment failed")
+        raise HTTPException(status_code=400, detail="Payment failed")
     return {"status": "success"}
 
 @router.websocket("/ws/subscription-status/{tenant_id}")
@@ -149,3 +159,4 @@ async def subscription_status_websocket(
     except Exception as e:
         logger.error(f"WebSocket error for tenant {tenant_id}: {e}", exc_info=True)
         await websocket.close(code=1011, reason="Internal server error")
+
