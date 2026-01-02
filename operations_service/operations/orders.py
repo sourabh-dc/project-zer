@@ -208,6 +208,10 @@ def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
         try:
             user_cc = db.query(UserCostCentre).filter(UserCostCentre.user_id == user.user_id).first()
             if user_cc:
+                available = (user_cc.allocated_budget_minor or 0) - (user_cc.spent_minor or 0)
+                if available <= 0:
+                    db.rollback()
+                    return {"status": "error", "reason": "budget_exhausted", "available_minor": available}
                 budget_delta = computed_total
                 user_cc.spent_minor = (user_cc.spent_minor or 0) + budget_delta
                 cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
@@ -223,7 +227,7 @@ def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
                         approval_request_id=None,
                         amount_minor=budget_delta,
                         currency_code=getattr(user_cc, "currency_code", "GBP"),
-                        metadata={"order_number": order.order_number, "source": "aifi"},
+                        event_metadata={"order_number": order.order_number, "source": "aifi"},
                     )
                 )
         except Exception as exc:

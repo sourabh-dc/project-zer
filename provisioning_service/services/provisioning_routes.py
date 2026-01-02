@@ -1,6 +1,6 @@
 import secrets
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 import secrets
 import bcrypt
@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
 from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
-    OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission
+    OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
-    RoleRequest, TenantUpdateRequest
+    RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_customer
@@ -27,6 +27,21 @@ from provisioning_service.utils.metrics import req_total, req_duration
 from provisioning_service.utils.redis_client import redis_client
 
 router = APIRouter(prefix="/provisioning", tags=["Provisioning Service"])
+
+def compute_next_reset(period: str, from_date: Optional[date] = None) -> Optional[date]:
+    """Compute the next reset date based on a recurring period."""
+    if not from_date:
+        from_date = date.today()
+    period = (period or "none").lower()
+    if period == "daily":
+        return from_date + timedelta(days=1)
+    if period == "weekly":
+        return from_date + timedelta(days=7)
+    if period == "monthly":
+        return from_date + timedelta(days=30)
+    if period == "yearly":
+        return from_date + timedelta(days=365)
+    return None
 
 """
 ZeroQue Provisioning Service - Simplified Production Version
@@ -614,6 +629,14 @@ async def create_user(
         if existing:
             raise HTTPException(status_code=409, detail="Email already exists")
 
+        # Verify cost centre exists (mandatory)
+        cc = db.query(CostCentre).filter(
+            CostCentre.cost_centre_id == uuid.UUID(req.cost_centre_id),
+            CostCentre.tenant_id == uuid.UUID(req.tenant_id)
+        ).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
         # Hash password
         password_hash = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -632,11 +655,29 @@ async def create_user(
         db.add(user)
         db.commit()
         db.refresh(user)
-        aifi_customer = await cv_create_customer(
-            {"externalId": user.user_id, "email": user.email, "firstName": user.first_name,
-             "lastName": user.last_name})
-        user.aifi_customer_id = aifi_customer.get("id")
+
+        # Map user to cost centre (mandatory mapping at creation time)
+        uc = UserCostCentre(
+            id=uuid.uuid4(),
+            user_id=user.user_id,
+            cost_centre_id=cc.cost_centre_id,
+            allocated_budget_minor=0,
+            spent_minor=0,
+            currency_code=cc.currency_code
+        )
+        db.add(uc)
         db.commit()
+        db.refresh(uc)
+
+        try:
+            aifi_customer = await cv_create_customer(
+                {"externalId": user.user_id, "email": user.email, "firstName": user.first_name,
+                 "lastName": user.last_name})
+            user.aifi_customer_id = aifi_customer.get("id")
+            db.commit()
+        except Exception as e:
+            logger.warning(f"❌ AiFi customer sync failed, continuing: {e}")
+            db.rollback()
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "users.manage", count=1)
 
@@ -911,8 +952,11 @@ async def create_cost_centre(
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
         
-        # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "cost_centres", count=1)
+        # Check entitlement limit (feature). If feature not in plan, this will raise.
+        try:
+            check_feature_limit(db, req.tenant_id, "cost_centres", count=1)
+        except HTTPException:
+            raise
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -936,7 +980,11 @@ async def create_cost_centre(
             budget_minor=req.budget_minor,
             spent_minor=0,
             currency_code=req.currency,
-            status="active"
+            status="active",
+            recurring_budget_minor=req.recurring_budget_minor or req.budget_minor,
+            recurring_period=(req.recurring_period or "none").lower(),
+            last_reset_date=None,
+            next_reset_date=compute_next_reset(req.recurring_period)
         )
         db.add(cc)
         db.commit()
@@ -1020,9 +1068,11 @@ async def assign_user_to_cost_centre(
     user_id: str,
     cost_centre_id: str = Query(..., description="Cost centre ID"),
     allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
+    recurring_budget_minor: int = Query(0, description="Recurring budget amount for resets"),
+    recurring_period: str = Query("none", description="Recurring period: none/daily/weekly/monthly/yearly"),
     db: Session = Depends(get_db)
 ):
-    """Assign a user to a cost centre with optional budget allocation"""
+    """Assign a user to a cost centre with optional budget allocation (enforces remaining CC budget)"""
     try:
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
@@ -1040,8 +1090,61 @@ async def assign_user_to_cost_centre(
             UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
         ).first()
         
+        # If already mapped, allow increasing allocation (idempotent update with remaining-budget check)
         if existing:
-            raise HTTPException(status_code=409, detail="User already assigned to this cost centre")
+            current_alloc = existing.allocated_budget_minor or 0
+            current_recurring = existing.recurring_budget_minor or 0
+            # Update recurring config if provided
+            if recurring_budget_minor:
+                existing.recurring_budget_minor = recurring_budget_minor
+            if recurring_period:
+                existing.recurring_period = recurring_period.lower()
+                existing.next_reset_date = compute_next_reset(recurring_period)
+            if allocated_budget_minor <= current_alloc:
+                db.commit()
+                db.refresh(existing)
+                return {
+                    "id": str(existing.id),
+                    "user_id": user_id,
+                    "cost_centre_id": cost_centre_id,
+                    "allocated_budget_minor": existing.allocated_budget_minor,
+                    "spent_minor": existing.spent_minor,
+                    "available_minor": existing.allocated_budget_minor - existing.spent_minor,
+                    "currency_code": existing.currency_code,
+                    "recurring_budget_minor": existing.recurring_budget_minor,
+                    "recurring_period": existing.recurring_period,
+                    "next_reset_date": str(existing.next_reset_date) if existing.next_reset_date else None
+                }
+            delta = allocated_budget_minor - current_alloc
+            remaining_cc = (cc.budget_minor or 0) - (cc.spent_minor or 0)
+            if delta > remaining_cc:
+                raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
+            cc.spent_minor = (cc.spent_minor or 0) + delta
+            existing.allocated_budget_minor = allocated_budget_minor
+            if not existing.next_reset_date:
+                existing.next_reset_date = compute_next_reset(existing.recurring_period)
+            db.commit()
+            db.refresh(existing)
+            logger.info(f"✅ Updated allocation for user {user_id} in cost centre {cost_centre_id} by {delta}")
+            return {
+                "id": str(existing.id),
+                "user_id": user_id,
+                "cost_centre_id": cost_centre_id,
+                "allocated_budget_minor": existing.allocated_budget_minor,
+                "spent_minor": existing.spent_minor,
+                "available_minor": existing.allocated_budget_minor - existing.spent_minor,
+                "currency_code": existing.currency_code,
+                "recurring_budget_minor": existing.recurring_budget_minor,
+                "recurring_period": existing.recurring_period,
+                "next_reset_date": str(existing.next_reset_date) if existing.next_reset_date else None
+            }
+        
+        # Enforce remaining budget if allocating
+        if allocated_budget_minor and allocated_budget_minor > 0:
+            remaining_cc = (cc.budget_minor or 0) - (cc.spent_minor or 0)
+            if allocated_budget_minor > remaining_cc:
+                raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
+            cc.spent_minor = (cc.spent_minor or 0) + allocated_budget_minor
         
         # Create assignment
         user_cc = UserCostCentre(
@@ -1050,7 +1153,10 @@ async def assign_user_to_cost_centre(
             cost_centre_id=uuid.UUID(cost_centre_id),
             allocated_budget_minor=allocated_budget_minor,
             spent_minor=0,
-            currency_code=cc.currency_code
+            currency_code=cc.currency_code,
+            recurring_budget_minor=recurring_budget_minor or allocated_budget_minor,
+            recurring_period=recurring_period.lower() if recurring_period else "none",
+            next_reset_date=compute_next_reset(recurring_period)
         )
         db.add(user_cc)
         db.commit()
@@ -1121,6 +1227,73 @@ async def get_user_budget(
         raise
     except Exception as e:
         logger.error(f"Failed to get user budget: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/budgets/renew", status_code=200)
+async def renew_budgets(
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("budgets.manage"))
+):
+    """Renew cost centre and user budgets that are due based on recurring settings."""
+    today = date.today()
+    renewed_cc = 0
+    renewed_users = 0
+    try:
+        # Cost centres
+        ccs = db.query(CostCentre).filter(
+            CostCentre.recurring_period != "none",
+            ((CostCentre.next_reset_date == None) | (CostCentre.next_reset_date <= today))
+        ).all()
+        for cc in ccs:
+            base = cc.recurring_budget_minor or cc.budget_minor or 0
+            cc.budget_minor = base
+            cc.spent_minor = 0
+            cc.last_reset_date = today
+            cc.next_reset_date = compute_next_reset(cc.recurring_period, today)
+            renewed_cc += 1
+            if cc.manager_user_id:
+                db.add(SpendingEvent(
+                    event_id=uuid.uuid4(),
+                    event_type="budget_renewal_cc",
+                    user_id=cc.manager_user_id,
+                    cost_centre_id=cc.cost_centre_id,
+                    order_id=None,
+                    approval_request_id=None,
+                    amount_minor=base,
+                    currency_code=cc.currency_code,
+                    event_metadata={"recurring_period": cc.recurring_period}
+                ))
+
+        # User budgets
+        ucs = db.query(UserCostCentre).filter(
+            UserCostCentre.recurring_period != "none",
+            ((UserCostCentre.next_reset_date == None) | (UserCostCentre.next_reset_date <= today))
+        ).all()
+        for uc in ucs:
+            base = uc.recurring_budget_minor or uc.allocated_budget_minor or 0
+            uc.allocated_budget_minor = base
+            uc.spent_minor = 0
+            uc.last_reset_date = today
+            uc.next_reset_date = compute_next_reset(uc.recurring_period, today)
+            db.add(SpendingEvent(
+                event_id=uuid.uuid4(),
+                event_type="budget_renewal",
+                user_id=uc.user_id,
+                cost_centre_id=uc.cost_centre_id,
+                order_id=None,
+                approval_request_id=None,
+                amount_minor=base,
+                currency_code=uc.currency_code,
+                event_metadata={"recurring_period": uc.recurring_period}
+            ))
+            renewed_users += 1
+
+        db.commit()
+        return {"renewed_cost_centres": renewed_cc, "renewed_users": renewed_users, "date": str(today)}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Budget renewal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -1404,6 +1577,116 @@ async def get_role_permissions(
         ]
     }
 
+
+# Tenant-scoped roles (custom per tenant; permissions remain global)
+@router.post("/tenant-roles", status_code=201)
+async def create_tenant_role(
+    req: TenantRoleRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing tenant context")
+    existing = db.query(TenantRole).filter(
+        TenantRole.tenant_id == uuid.UUID(str(tenant_id)),
+        TenantRole.code == req.code
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Role code already exists for this tenant")
+    role = TenantRole(
+        role_id=uuid.uuid4(),
+        tenant_id=uuid.UUID(str(tenant_id)),
+        code=req.code,
+        description=req.description
+    )
+    db.add(role)
+    db.commit()
+    db.refresh(role)
+    return {"role_id": str(role.role_id), "code": role.code, "description": role.description}
+
+
+@router.post("/tenant-roles/{role_id}/permissions", status_code=201)
+async def add_permission_to_tenant_role(
+    role_id: str,
+    req: TenantRolePermissionRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    role = db.query(TenantRole).filter(
+        TenantRole.role_id == uuid.UUID(role_id),
+        TenantRole.tenant_id == uuid.UUID(str(tenant_id))
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Tenant role not found")
+    perm = db.query(Permission).filter(Permission.code == req.permission_code).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    existing = db.query(TenantRolePermission).filter(
+        TenantRolePermission.tenant_role_id == role.role_id,
+        TenantRolePermission.permission_code == req.permission_code
+    ).first()
+    if existing:
+        return {"role_id": str(role.role_id), "permission_code": req.permission_code, "assigned": True}
+    trp = TenantRolePermission(
+        id=uuid.uuid4(),
+        tenant_role_id=role.role_id,
+        permission_code=req.permission_code
+    )
+    db.add(trp)
+    db.commit()
+    return {"role_id": str(role.role_id), "permission_code": req.permission_code, "assigned": True}
+
+
+@router.post("/users/{user_id}/tenant-roles", status_code=201)
+async def assign_tenant_role_to_user(
+    user_id: str,
+    req: TenantRoleAssignRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("users.manage"))
+):
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    role = db.query(TenantRole).filter(
+        TenantRole.role_id == uuid.UUID(req.role_id),
+        TenantRole.tenant_id == uuid.UUID(str(tenant_id))
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Tenant role not found")
+    user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+    if not user or str(user.tenant_id) != str(tenant_id):
+        raise HTTPException(status_code=404, detail="User not found in tenant")
+    existing = db.query(TenantUserRole).filter(
+        TenantUserRole.user_id == user.user_id,
+        TenantUserRole.tenant_role_id == role.role_id
+    ).first()
+    if existing:
+        return {"status": "ok", "message": "Role already assigned", "user_id": str(user.user_id), "role_id": str(role.role_id)}
+    tur = TenantUserRole(
+        id=uuid.uuid4(),
+        tenant_id=uuid.UUID(str(tenant_id)),
+        user_id=user.user_id,
+        tenant_role_id=role.role_id
+    )
+    db.add(tur)
+    db.commit()
+    return {"status": "ok", "user_id": str(user.user_id), "role_id": str(role.role_id)}
+
+
+@router.get("/tenant-roles")
+async def list_tenant_roles(
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    roles = db.query(TenantRole).filter(TenantRole.tenant_id == uuid.UUID(str(tenant_id))).all()
+    return {
+        "roles": [
+            {"role_id": str(r.role_id), "code": r.code, "description": r.description}
+            for r in roles
+        ]
+    }
+
 @router.post("/users/{user_id}/roles", status_code=201)
 async def assign_role_to_user(
         user_id: str,
@@ -1421,14 +1704,14 @@ async def assign_role_to_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Verify role exists
-        role = db.query(Role).filter(Role.role_id == req.role_code).first()
+        role = db.query(Role).filter(Role.role_id == uuid.UUID(req.role_id)).first()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
 
         # Check if the assignment already exists (idempotent)
         existing = db.query(UserRole).filter(
             UserRole.user_id == uuid.UUID(user_id),
-            UserRole.role_id == uuid.UUID(req.role_code),
+            UserRole.role_id == uuid.UUID(req.role_id),
             UserRole.tenant_id == user.tenant_id
         ).first()
 
@@ -1440,7 +1723,7 @@ async def assign_role_to_user(
             id=uuid.uuid4(),
             tenant_id=user.tenant_id,
             user_id=uuid.UUID(user_id),
-            role_id=uuid.UUID(req.role_code)
+            role_id=uuid.UUID(req.role_id)
         )
         db.add(user_role)
         db.commit()
@@ -1451,12 +1734,12 @@ async def assign_role_to_user(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Assigned role {req.role_code} to user {user_id}")
+        logger.info(f"✅ Assigned role {req.role_id} to user {user_id}")
         invalidate_user_context(str(user.user_id), str(user.tenant_id))
 
         return {
             "user_id": user_id,
-            "role_id": req.role_code,
+            "role_id": req.role_id,
             "role_name": role.code,
             "assigned": True,
             "created_at": user_role.created_at.isoformat()

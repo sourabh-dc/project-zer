@@ -37,13 +37,25 @@ async def get_plans(db: Session = Depends(get_db)):
             # Format features
             features_list = []
             for feature, plan_feature in plan_features:
+                # limit precedence: plan_feature.limits.max_value > feature.max_unit
+                limit = None
+                if plan_feature.limits and isinstance(plan_feature.limits, dict):
+                    mv = plan_feature.limits.get("max_value")
+                    if mv is not None:
+                        try:
+                            limit = int(mv)
+                        except ValueError:
+                            limit = None
+                if limit is None and feature.max_unit:
+                    limit = feature.max_unit
+
                 features_list.append({
                     "code": feature.code,
                     "name": feature.name,
                     "description": feature.description,
                     "cluster": feature.cluster,
                     "usage_type": feature.usage_type,
-                    "max_unit": feature.max_unit,
+                    "max_unit": limit,
                     "reset_period": feature.reset_period,
                     "enabled": plan_feature.enabled
                 })

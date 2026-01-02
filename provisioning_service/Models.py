@@ -117,6 +117,36 @@ class RolePermission(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class TenantRole(Base):
+    """Tenant-scoped custom roles"""
+    __tablename__ = "tenant_roles"
+    role_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    code = Column(String(100), nullable=False)
+    description = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index('ix_tenant_role_unique', 'tenant_id', 'code', unique=True),)
+
+
+class TenantRolePermission(Base):
+    """Permission mapping for tenant roles"""
+    __tablename__ = "tenant_role_permissions"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_role_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+    permission_code = Column(String, ForeignKey("permissions.code", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantUserRole(Base):
+    """User to tenant-role assignment"""
+    __tablename__ = "tenant_user_roles"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_role_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class RoleScope(Base):
     """Role scope mapping for fine-grained access control"""
     __tablename__ = "role_scopes"
@@ -188,6 +218,10 @@ class CostCentre(Base):
     spent_minor = Column(BigInteger, default=0)
     currency_code = Column(String(3), default="GBP")
     status = Column(String(50), default="active", index=True)
+    recurring_budget_minor = Column(BigInteger, default=0)
+    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
+    last_reset_date = Column(Date, nullable=True)
+    next_reset_date = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -258,6 +292,8 @@ class PlanFeature(Base):
     plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), nullable=False, index=True)
     feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
+    # Optional limits per plan/feature (e.g., {"max_value": 5, "warn_at": 4})
+    limits = Column(JSON, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

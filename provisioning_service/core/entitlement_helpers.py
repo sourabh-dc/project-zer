@@ -121,13 +121,20 @@ def load_tenant_features(db: Session, tenant_id: str) -> tuple[bool, Optional[st
         
         used = usage.usage_count if usage else 0
         
-        # Parse limit from max_unit (stored as string)
+        # Limit precedence: plan_feature.limits.max_value > feature.max_unit
         limit = None
-        if feature.max_unit:
+        if pf.limits and isinstance(pf.limits, dict):
+            mv = pf.limits.get("max_value")
+            if mv is not None:
+                try:
+                    limit = int(mv)
+                except ValueError:
+                    limit = None
+        if limit is None and feature.max_unit:
             try:
                 limit = int(feature.max_unit)
             except ValueError:
-                pass  # Not a number, treat as unlimited
+                limit = None  # Not a number, treat as unlimited
         
         remaining = None
         if limit is not None:

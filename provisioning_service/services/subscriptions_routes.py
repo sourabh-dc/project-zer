@@ -137,17 +137,28 @@ async def whoami(
             Feature.active == True
         ).all()
 
-        features_data = [
-            {
+        features_data = []
+        for f, pf in plan_features:
+            limit = None
+            if pf.limits and isinstance(pf.limits, dict):
+                mv = pf.limits.get("max_value")
+                if mv is not None:
+                    try:
+                        limit = int(mv)
+                    except ValueError:
+                        limit = None
+            if limit is None and f.max_unit:
+                limit = f.max_unit
+
+            features_data.append({
                 "code": f.code,
                 "name": f.name,
                 "description": f.description,
                 "usage_type": f.usage_type,
-                "max_unit": f.max_unit,
+                "max_unit": limit,
                 "reset_period": f.reset_period,
-            }
-            for f, pf in plan_features
-        ]
+                "limits": pf.limits
+            })
 
         if sub.is_trial:
             trial_info = {

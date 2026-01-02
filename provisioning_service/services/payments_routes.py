@@ -1,70 +1,157 @@
 from datetime import timezone, datetime, timedelta
 import stripe
-import webbrowser
 from fastapi import HTTPException, APIRouter, Request, Depends
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from sqlalchemy.orm import Session
+from sqlalchemy import text
+import uuid
 
-from provisioning_service.Models import TenantSubscription, SubscriptionPlan
+import httpx
+
+from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, SpendingEvent, User
 from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
+from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
-stripe.api_key=SETTINGS.STRIPE_SECRET_KEY
+stripe.api_key = SETTINGS.STRIPE_SECRET_KEY
+
+
+def _plan_pricing(db: Session, plan_code: str, billing_cycle: str):
+    price = db.query(PlanPrice).filter(PlanPrice.plan_code == plan_code).first()
+    if not price:
+        return None
+    cycle = (billing_cycle or "monthly").lower()
+    if cycle == "monthly":
+        return int(price.price_monthly_minor), price.currency
+    if cycle == "quarterly":
+        return int(price.price_quarterly_minor), price.currency
+    if cycle == "yearly":
+        return int(price.price_yearly_minor), price.currency
+    return None
+
+
+def _period_end(start: datetime, cycle: str) -> datetime:
+    cycle = (cycle or "monthly").lower()
+    if cycle == "monthly":
+        return start + timedelta(days=30)
+    if cycle == "quarterly":
+        return start + timedelta(days=90)
+    if cycle == "yearly":
+        return start + timedelta(days=365)
+    return start + timedelta(days=30)
+
+
+def _record_payment_ledger(db: Session, tenant_id, amount_minor: int, currency: str):
+    # Best-effort: post to operations ledger (subscription payment) and audit via SpendingEvent if possible.
+    ops_url = os.environ.get("OPERATIONS_URL", "http://localhost:8002")
+    payment_id = f"subpay-{uuid.uuid4()}"
+    try:
+        client = httpx.Client(timeout=5.0)
+        resp = client.post(
+            f"{ops_url}/operations/ledger/subscription-payment",
+            json={
+                "tenant_id": str(tenant_id),
+                "amount_minor": amount_minor,
+                "currency": currency or "GBP",
+                "payment_id": payment_id,
+                "description": "Subscription payment",
+            },
+        )
+        if resp.status_code >= 300:
+            logger.warning(f"Ledger post failed: {resp.status_code} {resp.text}")
+    except Exception as exc:
+        logger.warning(f"Ledger post failed: {exc}")
+
+    # Fallback/audit SpendingEvent
+    admin_user = db.query(User).filter(User.tenant_id == tenant_id).order_by(User.created_at.asc()).first()
+    cc = db.execute(
+        text("select cost_centre_id from cost_centres where tenant_id=:tid limit 1"),
+        {"tid": tenant_id},
+    ).scalar()
+    if admin_user and cc:
+        db.add(SpendingEvent(
+            event_id=uuid.uuid4(),
+            event_type="payment_received",
+            user_id=admin_user.user_id,
+            cost_centre_id=cc,
+            order_id=None,
+            approval_request_id=None,
+            amount_minor=amount_minor,
+            currency_code=currency or "GBP",
+            event_metadata={"source": "stripe", "payment_id": payment_id}
+        ))
+
 
 @router.post("/create-checkout-session")
-async def create_checkout_session(data: CheckoutRequest):
+async def create_checkout_session(
+    data: CheckoutRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
     try:
-        # If using predefined Stripe Price IDs (recommended for subscriptions)
-        if data.price_id:
-            line_items = [{
-                "price": data.price_id,
-                "quantity": data.quantity,
-            }]
-        else:
-            # If you want to accept a raw amount from frontend (one-time payments)
-            line_items = [{
-                "price_data": {
-                    "currency": data.currency,
-                    "product_data": {"name": "Custom Payment"},
-                    "unit_amount": data.amount,  # amount in cents
-                }
-            }]
+        if not SETTINGS.STRIPE_SECRET_KEY:
+            raise HTTPException(status_code=400, detail="Stripe not configured")
+
+        price_amount, currency = _plan_pricing(db, data.plan_code, data.billing_cycle)
+        if not price_amount:
+            raise HTTPException(status_code=404, detail="Plan price not found")
+
         metadata = {
             "tenant_id": data.tenant_id,
             "plan_code": data.plan_code,
-            "billing_cycle": data.billing_cycle
+            "billing_cycle": data.billing_cycle or "monthly"
         }
         stripe_customer_id = getattr(data, "stripe_customer_id", None)
         if not stripe_customer_id and getattr(data, "email", None):
             customer = stripe.Customer.create(email=data.email, metadata={"tenant_id": data.tenant_id})
             stripe_customer_id = customer.id
 
+        line_items = [{
+            "price_data": {
+                "currency": currency,
+                "product_data": {"name": f"Plan {data.plan_code} ({metadata['billing_cycle']})"},
+                "unit_amount": price_amount,
+                "recurring": {"interval": metadata["billing_cycle"] if metadata["billing_cycle"] in ["month", "year"] else "month"}
+            },
+            "quantity": 1,
+        }]
+
         session = stripe.checkout.Session.create(
             customer=stripe_customer_id,
-            payment_method_types=["card"],  # could extend to ["card", "upi", "PayPal"] if supported
+            payment_method_types=["card"],
             mode="subscription",
             line_items=line_items,
-            success_url="http://127.0.0.1:8000/docs", #replace it with actual success page
-            cancel_url="http://127.0.0.1:8000",
+            success_url="http://127.0.0.1:8000/payments/success",
+            cancel_url="http://127.0.0.1:8000/payments/cancel",
             metadata=metadata
         )
+        return {"checkout_url": session.url, "session_id": session.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Checkout session failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
-        webbrowser.open_new(session.url)
+
+@router.post("/create-portal-session")
+async def create_portal_session(
+    cust_id: str,
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=cust_id,
+            return_url="http://localhost:8000"
+        )
+        return {"portal_url": session.url}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/create-portal-session")
-async def create_portal_session(cust_id: str):
-    session = stripe.billing_portal.Session.create(
-        customer=cust_id,
-        return_url="http://localhost:8000"
-    )
-    webbrowser.open_new(session.url)
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db=Depends(get_db)):
@@ -78,29 +165,82 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Handle events
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        tenant_id = session["metadata"]["tenant_id"]
-        plan_code = session["metadata"]["plan_code"]
-        billing_cycle = session["metadata"]["billing_cycle"]
-        current_period_start = datetime.now(timezone.utc)
-        current_period_end = current_period_start + timedelta(days=30 if billing_cycle == "monthly" else 365)
+    event_type = event.get("type")
+    data = event.get("data", {}).get("object", {})
 
-        """Create a new subscription"""
-        tenant_subscription = TenantSubscription(tenant_id=tenant_id, plan_code=plan_code,
-                                                 current_period_start=current_period_start, is_trial=False,
-                                                 current_period_end=current_period_end,
-                                                 payment_method=session["mode"],
-                                                 is_active=True, external_id=session["id"])
-
-        db.add(tenant_subscription)
+    def upsert_subscription(tenant_id, plan_code, billing_cycle, external_id, status, is_active, payment_method, amount_minor=None, currency=None):
+        now = datetime.now(timezone.utc)
+        sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id, TenantSubscription.plan_code == plan_code).first()
+        if not sub:
+            sub = TenantSubscription(
+                tenant_id=tenant_id,
+                plan_code=plan_code,
+            )
+            db.add(sub)
+        sub.external_id = external_id
+        sub.billing_cycle = billing_cycle
+        sub.current_period_start = now
+        sub.current_period_end = _period_end(now, billing_cycle)
+        sub.is_trial = False
+        sub.is_active = is_active
+        sub.payment_method = payment_method
+        sub.status = status
+        if amount_minor and currency:
+            _record_payment_ledger(db, uuid.UUID(str(tenant_id)), amount_minor, currency)
         db.commit()
-        return tenant_subscription
-    elif event["type"] == "invoice.payment_failed":
-        print("Payment failed")
-        raise HTTPException(status_code=400, detail="Payment failed")
-    return {"status": "success"}
+        return {"status": "ok"}
+
+    if event_type == "checkout.session.completed":
+        tenant_id = data.get("metadata", {}).get("tenant_id")
+        plan_code = data.get("metadata", {}).get("plan_code")
+        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "active", True, data.get("mode"))
+        return {"status": "ok"}
+
+    if event_type == "invoice.payment_succeeded":
+        tenant_id = data.get("metadata", {}).get("tenant_id")
+        plan_code = data.get("metadata", {}).get("plan_code")
+        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+        amount_paid = data.get("amount_paid") or data.get("amount_due")
+        currency = data.get("currency", "gbp").upper()
+        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("subscription"), "active", True, "card", amount_minor=amount_paid, currency=currency)
+        return {"status": "ok"}
+
+    if event_type == "invoice.payment_failed":
+        tenant_id = data.get("metadata", {}).get("tenant_id")
+        plan_code = data.get("metadata", {}).get("plan_code")
+        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("subscription"), "payment_failed", False, "card")
+        return {"status": "failed"}
+
+    if event_type == "payment_intent.succeeded":
+        tenant_id = data.get("metadata", {}).get("tenant_id")
+        plan_code = data.get("metadata", {}).get("plan_code")
+        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+        amount = data.get("amount_received") or data.get("amount") or 0
+        currency = data.get("currency", "GBP").upper()
+        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "active", True, "card", amount_minor=amount, currency=currency)
+        return {"status": "ok"}
+
+    if event_type == "payment_intent.payment_failed":
+        tenant_id = data.get("metadata", {}).get("tenant_id")
+        plan_code = data.get("metadata", {}).get("plan_code")
+        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "payment_failed", False, "card")
+        return {"status": "failed"}
+
+    if event_type in ["customer.subscription.deleted", "customer.subscription.updated"]:
+        sub = data
+        tenant_id = sub.get("metadata", {}).get("tenant_id")
+        plan_code = sub.get("metadata", {}).get("plan_code")
+        billing_cycle = sub.get("metadata", {}).get("billing_cycle", "monthly")
+        status = sub.get("status")
+        is_active = status in ["active", "trialing"]
+        upsert_subscription(tenant_id, plan_code, billing_cycle, sub.get("id"), status, is_active, "card")
+        return {"status": "ok"}
+
+    return {"status": "ignored"}
+
 
 @router.websocket("/ws/subscription-status/{tenant_id}")
 async def subscription_status_websocket(

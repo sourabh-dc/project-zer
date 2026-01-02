@@ -309,13 +309,33 @@ async def delete_feature(feature_code: str, db: Session = Depends(get_db)):
 async def add_feature_to_plan(
     plan_code: str,
     feature_code: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    req: FeatureRequest = None
 ):
-    """Add or enable a feature in a plan."""
-    if not db.query(SubscriptionPlan).filter_by(code=plan_code).first():
+    """
+    Add or enable a feature in a plan.
+    If body is provided, updates feature metadata and allows per-plan limits (limits.max_value).
+    """
+    plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
+    if not plan:
         raise HTTPException(404, "Plan not found")
-    if not db.query(Feature).filter_by(code=feature_code).first():
+    feature = db.query(Feature).filter_by(code=feature_code).first()
+    if not feature:
         raise HTTPException(404, "Feature not found")
+
+    limits = None
+    if req:
+        feature.name = req.name or feature.name
+        feature.description = req.description or feature.description
+        feature.cluster = req.cluster or feature.cluster
+        feature.usage_type = req.usage_type or feature.usage_type
+        feature.max_unit = req.max_unit or feature.max_unit
+        feature.reset_period = req.reset_period or feature.reset_period
+        if req.max_unit:
+            try:
+                limits = {"max_value": int(req.max_unit)}
+            except ValueError:
+                limits = None
 
     pf = db.query(PlanFeature).filter_by(
         plan_code=plan_code,
@@ -324,18 +344,21 @@ async def add_feature_to_plan(
 
     if pf:
         pf.enabled = True
+        if limits is not None:
+            pf.limits = limits
     else:
         pf = PlanFeature(
             id=uuid.uuid4(),
             plan_code=plan_code,
             feature_code=feature_code,
-            enabled=True
+            enabled=True,
+            limits=limits
         )
         db.add(pf)
 
     db.commit()
-    logger.info(f"Added feature {feature_code} to plan {plan_code}")
-    return {"plan_code": plan_code, "feature_code": feature_code, "enabled": True}
+    logger.info(f"Added feature {feature_code} to plan {plan_code} with limits {pf.limits}")
+    return {"plan_code": plan_code, "feature_code": feature_code, "enabled": True, "limits": pf.limits}
 
 
 @router.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
@@ -370,7 +393,17 @@ async def list_plan_features(plan_code: str, db: Session = Depends(get_db)):
     return {
         "plan_code": plan_code,
         "features": [
-            {"code": f.code, "name": f.name, "cluster": f.cluster}
+            {
+                "code": f.code,
+                "name": f.name,
+                "description": f.description,
+                "cluster": f.cluster,
+                "usage_type": f.usage_type,
+                "max_unit": f.max_unit,
+                "reset_period": f.reset_period,
+                "limits": pf.limits,
+                "enabled": pf.enabled
+            }
             for pf, f in features
         ],
         "total": len(features)

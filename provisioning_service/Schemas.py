@@ -97,6 +97,7 @@ class UserRequest(BaseModel):
     tenant_id: str = Field(description="Tenant ID")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
     password: str = Field(min_length=8, max_length=128, description="Password (min 8 chars)")
+    cost_centre_id: str = Field(description="Cost centre ID")
 
     @field_validator('password')
     @classmethod
@@ -153,6 +154,22 @@ class RoleRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=500, description="Role description (optional)")
 
 
+class TenantRoleRequest(BaseModel):
+    """Tenant-scoped role creation"""
+    code: str = Field(min_length=1, max_length=100, description="Role code (required)")
+    description: Optional[str] = Field(None, max_length=500, description="Role description (optional)")
+
+
+class TenantRolePermissionRequest(BaseModel):
+    """Assign permission to tenant role"""
+    permission_code: str = Field(min_length=1, max_length=150, description="Existing permission code")
+
+
+class TenantRoleAssignRequest(BaseModel):
+    """Assign tenant role to user"""
+    role_id: str = Field(description="Tenant role ID")
+
+
 class VendorRequest(BaseModel):
     tenant_id: str = Field(description="Tenant ID")
     """Vendor creation request"""
@@ -168,6 +185,8 @@ class CostCentreRequest(BaseModel):
     manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
     tenant_id: str = Field(description="Tenant ID")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
+    recurring_budget_minor: Optional[int] = Field(default=0, ge=0, description="Recurring budget amount for resets")
+    recurring_period: Optional[str] = Field(default="none", description="Recurring period: none/daily/weekly/monthly/yearly")
 
 
 class OrgUnitRequest(BaseModel):
@@ -352,7 +371,7 @@ class ShoppingResponse(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     """Assign role to user request"""
-    role_code: str = Field(description="Role ID to assign")
+    role_id: str = Field(description="Role ID to assign")
 
 
 class CategoryRequest(BaseModel):

@@ -121,6 +121,38 @@ async def create_entry_pair(payload: dict = Body(...), db: Session = Depends(get
     return res
 
 
+@router.post("/subscription-payment")
+async def post_subscription_payment(
+    tenant_id: str = Body(...),
+    amount_minor: int = Body(..., ge=1),
+    currency: str = Body(...),
+    payment_id: str = Body(..., description="Stripe payment/intent/invoice id for idempotency"),
+    description: str = Body("Subscription payment"),
+    db: Session = Depends(get_db),
+):
+    """
+    Post double-entry for a subscription payment:
+      - Debit: Cash
+      - Credit: SubscriptionRevenue
+    Idempotent on payment_id.
+    """
+    res = record_entry_pair(
+        tenant_id=tenant_id,
+        amount_minor=amount_minor,
+        currency=currency,
+        account_debit="Cash",
+        account_credit="SubscriptionRevenue",
+        reference_type="subscription_payment",
+        reference_id=payment_id,
+        description=description,
+        metadata={"source": "stripe", "payment_id": payment_id},
+        idempotency_key=payment_id,
+        db=db,
+    )
+    if res.get("status") == "error":
+        raise HTTPException(status_code=500, detail=res.get("reason"))
+    return res
+
 @router.get("/reports")
 async def ledger_report(
     tenant_id: str = Query(...),

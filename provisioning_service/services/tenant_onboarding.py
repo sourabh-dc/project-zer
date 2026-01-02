@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission
+from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission
 from provisioning_service.Schemas import TenantRequest, LoginRequest, LoginResponse
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token
 from provisioning_service.utils.metrics import req_total
@@ -162,14 +162,20 @@ async def tenant_login(
         user.last_login_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
-        # load roles from user_roles table
+        # load roles from user_roles table (global) and tenant roles
         roles_query = db.query(Role.code) \
             .join(UserRole, Role.role_id == UserRole.role_id) \
             .filter(UserRole.user_id == user.user_id) \
             .all()
+        tenant_roles_query = db.query(TenantRole.code) \
+            .join(TenantUserRole, TenantRole.role_id == TenantUserRole.tenant_role_id) \
+            .filter(TenantUserRole.user_id == user.user_id) \
+            .all()
 
         # each row is a single-column tuple; extract codes and filter out falsy values
         roles: List[str] = [r[0] for r in roles_query if r and r[0]]
+        tenant_roles: List[str] = [r[0] for r in tenant_roles_query if r and r[0]]
+        all_roles: List[str] = roles + tenant_roles
 
         # prepare JWT
         jwt_exp_minutes = getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60)
@@ -181,12 +187,29 @@ async def tenant_login(
 
         jwt_expires_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_exp_minutes)
         now = datetime.now(timezone.utc)
+        # Resolve permissions from roles; tenant_admin gets wildcard
+        role_perms = db.query(Permission.code).join(
+            RolePermission, RolePermission.permission_code == Permission.code
+        ).filter(RolePermission.role_code.in_(roles)).all()
+        tenant_role_perms = db.query(Permission.code).join(
+            TenantRolePermission, TenantRolePermission.permission_code == Permission.code
+        ).join(
+            TenantRole, TenantRolePermission.tenant_role_id == TenantRole.role_id
+        ).join(
+            TenantUserRole, TenantUserRole.tenant_role_id == TenantRole.role_id
+        ).filter(TenantUserRole.user_id == user.user_id).all()
+
+        perm_list = list({p[0] for p in role_perms + tenant_role_perms})
+        if "tenant_admin" in roles:
+            perm_list = ["*"]
+        elif not perm_list:
+            perm_list = []
         payload = {
             "sub": str(user.user_id),
             "email": user.email,
             "tenant_id": str(user.tenant_id),
-            "roles": roles,
-            "permissions": ["*"],  # Grant all permissions to tenant_admin
+            "roles": all_roles,
+            "permissions": perm_list,
             "iat": int(now.timestamp()),
             "exp": int(jwt_expires_at.timestamp()),
             "iss": getattr(SETTINGS, "JWT_ISSUER", "http://mock-idp"),

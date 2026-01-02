@@ -211,16 +211,20 @@ async def create_product(
     try:
         db.commit()
         db.refresh(product)
-        aifi_product = await cv_create_product({
-            "externalId": product.product_id,
-            "name": product.name,
-            "barcode": product.barcode,
-            "price": product.base_price_minor,
-            "weight": str(product.weight),
-            "thumbnail": ""
-        })
-        product.aifi_product_id = aifi_product.get("id")
-        db.commit()
+        try:
+            aifi_product = await cv_create_product({
+                "externalId": product.product_id,
+                "name": product.name,
+                "barcode": product.barcode,
+                "price": product.base_price_minor,
+                "weight": str(product.weight),
+                "thumbnail": ""
+            })
+            product.aifi_product_id = aifi_product.get("id")
+            db.commit()
+        except Exception as e:
+            logger.warning(f"❌ AiFi product sync failed, continuing: {e}")
+            db.rollback()
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "products", count=1)
     except IntegrityError as e:
