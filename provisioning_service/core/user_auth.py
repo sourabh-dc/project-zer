@@ -1,6 +1,7 @@
 # ==================================================================================
 # AUTHENTICATION & AUTHORIZATION
 # ==================================================================================
+import inspect
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -9,7 +10,8 @@ from typing import Dict, Optional, List, Tuple, Any
 import bcrypt
 import httpx
 import jwt
-from fastapi import HTTPException, Depends, Header
+from fastapi import HTTPException, Depends, Header, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -415,37 +417,17 @@ def get_db_with_rls(uctx: UserContext = Depends(get_user_context)):
     finally:
         db.close()
 
-async def decode_jwt_with_settings(authorization:str = Header(alias="Authorization")) -> Dict[str, Any]:
+bearer = HTTPBearer(auto_error=True)
+
+async def decode_jwt_with_settings(creds: HTTPAuthorizationCredentials = Security(bearer)) -> Dict[str, Any]:
     """
-    Extract token from the Authorization header (accepts "Bearer <token>" or raw token),
-    decode via existing decode_jwt_token(), and enforce JWT_EXPIRY_MINUTES (default 60).
-    Raises HTTPException on any failure so it can be used directly as a FastAPI dependency.
+    Uses HTTPBearer via Security so Swagger/Redoc shows the Authorize dialog.
+    Decodes the raw token with decode_jwt_token() and enforces iat/exp checks.
     """
-    jwt_secret = SETTINGS.JWT_SECRET
-    jwt_algorithm = SETTINGS.JWT_ALGORITHM
-    if not authorization:
+    if not creds or not creds.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
-
-    # accept "Bearer <token>" or raw token
-    raw = authorization
-    if isinstance(raw, str) and raw.lower().startswith("bearer "):
-        raw = raw.split(" ", 1)[1]
-
-    if not isinstance(raw, str) or not raw:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token")
-
-    # try:
-    claims = jwt.decode(
-        raw,
-        jwt_secret,
-        algorithms=[jwt_algorithm],
-        options={"verify_aud": False}  # adjust if you want audience/issuer checks
-    )
-    # except HTTPException:
-    #     raise
-    # except Exception as exc:
-    #     logger.debug(f"JWT decode error: {exc}")
-    #     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT verification failed")
+    raw = creds.credentials  # raw token string (no "Bearer ")
+    claims = await decode_jwt_token(raw)
 
     jwt_exp_minutes = int(getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60))
     now_ts = int(datetime.now(timezone.utc).timestamp())
@@ -468,26 +450,18 @@ async def decode_jwt_with_settings(authorization:str = Header(alias="Authorizati
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT expired")
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT missing iat/exp claims")
-    print(claims)
+
     return claims
 
-
-# python
 def check_user_authorization(permission: str):
-    """
-    Dependency factory usable as Depends(check_user_authorization("some.permission"))
-    """
-    def dependency(claims: Dict[str, Any] = Depends(decode_jwt_with_settings)):
+    async def dependency(claims: Dict[str, Any] = Security(decode_jwt_with_settings)):
         try:
-            # prefer explicit permissions in token
             claim_perms = claims.get("permissions")
-            logger.debug(f"token permissions: {claim_perms}")
             if isinstance(claim_perms, list):
                 if "*" in claim_perms or permission in claim_perms:
                     claims['user_id'] = claims.pop('sub')
                     return claims
 
-            # extract role codes from token (accept string, list, or iterable)
             roles = claims.get("roles") or claims.get("role") or []
             if isinstance(roles, str):
                 roles = [roles]
@@ -500,7 +474,6 @@ def check_user_authorization(permission: str):
             if not roles:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No roles available in token")
 
-            # DB check: does any role have the requested permission?
             try:
                 with SessionLocal() as db:
                     match_count = db.query(RolePermission) \
@@ -522,5 +495,4 @@ def check_user_authorization(permission: str):
         except Exception as exc:
             logger.error(f"Authorization error: {exc}")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token")
-
     return dependency

@@ -6,8 +6,7 @@ from typing import List
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-import smtplib
-from email.message import EmailMessage
+from azure.communication.email import EmailClient
 from urllib.parse import quote_plus
 
 from provisioning_service.Models import User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice
@@ -178,7 +177,7 @@ async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_
         reset_url = f"{frontend_base.rstrip('/')}{reset_path}?token={quote_plus(token)}"
 
         # Compose email
-        mail_from = getattr(SETTINGS, "MAIL_FROM", "no-reply@example.com")
+        mail_from = "DoNotReply@32c276cf-0d14-43a7-8e89-2e45988729a8.azurecomm.net"
         subject = getattr(SETTINGS, "PASSWORD_RESET_SUBJECT", "Reset your password")
         body = (
             f"Hello,\n\n"
@@ -187,45 +186,40 @@ async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_
             f"{reset_url}\n\n"
             f"If you did not request this, you can safely ignore this email.\n"
         )
-
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = mail_from
-        msg["To"] = user.email
-        msg.set_content(body)
-
-        # Send email using SMTP settings in SETTINGS
-        smtp_host = getattr(SETTINGS, "SMTP_HOST", None)
-        smtp_port = getattr(SETTINGS, "SMTP_PORT", None)
-        smtp_user = getattr(SETTINGS, "SMTP_USERNAME", None)
-        smtp_pass = getattr(SETTINGS, "SMTP_PASSWORD", None)
-        use_ssl = getattr(SETTINGS, "SMTP_USE_SSL", False)
-        use_tls = getattr(SETTINGS, "SMTP_USE_TLS", True)
-
-        if not smtp_host or not smtp_port:
-            logger.error("SMTP not configured properly in SETTINGS")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Mail server not configured")
-
         try:
-            if use_ssl:
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
-            server.ehlo()
-            if use_tls and not use_ssl:
-                server.starttls()
-                server.ehlo()
-            if smtp_user and smtp_pass:
-                server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-            server.quit()
-            logger.info(f"Password reset email sent to {user.email}")
-        except Exception as e:
-            logger.error(f"Failed to send password reset email to {user.email}: {e}", exc_info=True)
-            # Do not expose email errors to caller; return a generic message
-            return response
+            connection_string = SETTINGS.EMAIL_CONNECTION_STRING
+            client = EmailClient.from_connection_string(connection_string)
 
-        return response
+            message = {
+                "senderAddress": mail_from,
+                "recipients": {
+                    "to": [{"address": req.email}]
+                },
+                "content": {
+                    "subject": subject,
+                    "plainText": body,
+                    "html": f"""
+                    <html>
+                        <body>
+                            <p>Hello,</p>
+                            <p>You (or someone else) requested a password reset for your account. 
+                            Click the link below to reset your password. This link will expire in {expiry_minutes} minutes.</p>
+                            <p><a href="{reset_url}">{reset_url}</a></p>
+                            <p>If you did not request this, you can safely ignore this email.</p>
+                        </body>
+                    </html>
+                    """
+                },
+
+            }
+
+            poller = client.begin_send(message)
+            result = poller.result()
+            print("Message sent: ", result)
+            return result
+
+        except Exception as ex:
+            print(ex)
 
     except HTTPException:
         raise

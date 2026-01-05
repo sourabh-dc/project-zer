@@ -17,6 +17,7 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.permission_check_helpers import require_permission
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.utils.logger import logger
 
 
@@ -30,7 +31,7 @@ router = APIRouter(prefix="/catalog", tags=["Catalog"])
 async def create_category(
     req: CategoryRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.categories.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
     try:
         tenant_id = ctx.tenant_id if hasattr(ctx, 'tenant_id') else ctx.get('tenant_id')
@@ -47,7 +48,7 @@ async def create_category(
 
     # Enforce tenant-scoped unique code
     exists = db.query(Category).filter(
-        Category.tenant_id == ctx.tenant_id,
+        Category.tenant_id == req.tenant_id,
         Category.code == req.code,
         Category.active == True
     ).first()
@@ -71,7 +72,7 @@ async def create_category(
 
     category = Category(
         category_id=uuid.uuid4(),
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         name=req.name.strip(),
         code=req.code.strip(),
         description=req.description,
@@ -104,10 +105,10 @@ async def list_categories(
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.categories.view"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
     q = db.query(Category).filter(
-        Category.tenant_id == ctx.tenant_id,
+        Category.tenant_id == ctx["tenant_id"],
         Category.active == True
     )
 
@@ -148,9 +149,9 @@ async def list_categories(
 async def create_product(
     req: ProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.products.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
-    if str(ctx.tenant_id) != req.tenant_id:
+    if str(ctx["tenant_id"]) != req.tenant_id:
         raise HTTPException(403, "Tenant mismatch")
     
     # Check entitlement limit
@@ -158,7 +159,7 @@ async def create_product(
 
     # SKU must be unique per tenant
     if db.query(Product).filter(
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == req.tenant_id,
         Product.sku == req.sku,
         Product.active == True
     ).first():
@@ -172,7 +173,7 @@ async def create_product(
             raise HTTPException(400, "Invalid category_id")
         if not db.query(Category).filter(
             Category.category_id == category_id,
-            Category.tenant_id == ctx.tenant_id,
+            Category.tenant_id == req.tenant_id,
             Category.active == True
         ).first():
             raise HTTPException(404, "Category not found")
@@ -185,13 +186,13 @@ async def create_product(
             raise HTTPException(400, "Invalid vendor_id")
         if not db.query(Vendor).filter(
             Vendor.vendor_id == vendor_id,
-            Vendor.tenant_id == ctx.tenant_id
+            Vendor.tenant_id == req.tenant_id
         ).first():
             raise HTTPException(404, "Vendor not found")
 
     product = Product(
         product_id=uuid.uuid4(),
-        tenant_id=ctx.tenant_id,
+        tenant_id=req.tenant_id,
         vendor_id=vendor_id,
         category_id=category_id,
         sku=req.sku.strip(),
@@ -249,10 +250,10 @@ async def list_products(
     limit: int = Query(100, le=500),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.products.view"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
     q = db.query(Product).filter(
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == ctx["tenant_id"],
         Product.active == True
     )
 
@@ -302,7 +303,7 @@ async def list_products(
 async def create_variant(
     req: VariantRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("catalog.variants.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
     # Check entitlement limit
     check_feature_limit(db, str(ctx.tenant_id), "variants", count=1)
@@ -354,14 +355,14 @@ async def create_variant(
 # STORE PRODUCT ENDPOINTS
 # =============================================================================
 
-@router.post("/v1/store-products", status_code=201)
+@router.post("/store-products", status_code=201)
 async def add_product_to_store(
     req: StoreProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("stores.products.manage"))
+    ctx: UserContext = Depends(check_user_authorization("stores.manage"))
 ):
     # Check entitlement limit
-    check_feature_limit(db, str(ctx.tenant_id), "store_products", count=1)
+    check_feature_limit(db, str(ctx["tenant_id"]), "store_products", count=1)
     
     try:
         store_id = UUID(req.store_id)
@@ -371,14 +372,14 @@ async def add_product_to_store(
 
     store = db.query(Store).filter(
         Store.store_id == store_id,
-        Store.tenant_id == ctx.tenant_id
+        Store.tenant_id == ctx["tenant_id"]
     ).first()
     if not store:
         raise HTTPException(404, "Store not found")
 
     product = db.query(Product).filter(
         Product.product_id == product_id,
-        Product.tenant_id == ctx.tenant_id,
+        Product.tenant_id == ctx["tenant_id"],
         Product.active == True
     ).first()
     if not product:
@@ -394,7 +395,7 @@ async def add_product_to_store(
     sp = StoreProduct(
         id=uuid.uuid4(),
         store_id=store_id,
-        tenant_id=ctx.tenant_id,
+        tenant_id=ctx["tenant_id"],
         product_id=product_id,
         price_minor=req.price_minor or product.base_price_minor,
         currency=req.currency or "GBP",
@@ -405,7 +406,7 @@ async def add_product_to_store(
     db.commit()
     
     # Record feature usage
-    record_feature_usage(db, str(ctx.tenant_id), "store_products", count=1)
+    record_feature_usage(db, str(ctx["tenant_id"]), "store_products", count=1)
 
     return {
         "store_product_id": str(sp.id),
@@ -416,14 +417,14 @@ async def add_product_to_store(
     }
 
 
-@router.get("/v1/store-products")
+@router.get("/store-products")
 async def list_store_products_all(
     store_id: Optional[str] = Query(None),
     product_id: Optional[str] = Query(None),
     limit: int = Query(100, le=1000, ge=1),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("stores.products.view"))
+    ctx: UserContext = Depends(check_user_authorization("stores.manage"))
 ):
     """List store products for the caller's tenant, optionally filtering by store_id or product_id."""
     ctx_tenant = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -459,7 +460,7 @@ async def list_store_products_all(
         "offset": offset,
     }
 
-@router.get("/v1/stores/{store_id}/products")
+@router.get("/stores/{store_id}/products")
 async def list_store_products(
     store_id: str,
     limit: int = Query(100, le=500),

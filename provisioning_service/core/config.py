@@ -26,6 +26,7 @@ if environment == "Development":
     db_username = client.get_secret("dbUsername").value
     stripe_secret_key = client.get_secret("stripeSecretKey").value
     stripe_webhook_secret = client.get_secret("stripeWebhookSecret").value
+    email_conn_string = client.get_secret("azure-email").value
 else:
     db_name = os.getenv("POSTGRES_DB")
     db_password = os.getenv("POSTGRES_PASSWORD")
@@ -33,6 +34,7 @@ else:
     db_username = os.getenv("POSTGRES_USER")
     stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
     stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    email_conn_string = os.getenv("AZURE_EMAIL_CONNECTION_STRING")
 
 
 class Settings(BaseSettings):
@@ -77,6 +79,8 @@ class Settings(BaseSettings):
     AIFI_API_KEY: str = Field(default=os.getenv("AIFI_API_KEY", ""))
     AIFI_STORE_ID: str = Field(default=os.getenv("AIFI_STORE_ID", ""))
     AIFI_LOCATION_ID: str = Field(default=os.getenv("AIFI_LOCATION_ID", ""))
+
+    EMAIL_CONNECTION_STRING: str = email_conn_string
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
