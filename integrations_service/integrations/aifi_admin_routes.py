@@ -1,13 +1,12 @@
-from typing import Optional, List
-
-from fastapi import APIRouter, HTTPException, Query, Depends
+from typing import List
+from fastapi import APIRouter, Query, Depends
 from sqlalchemy.orm import Session
 
-from core.db_config import get_db
-from Models import AifiStoreMap
-from operations.orders import upsert_aifi_order
-from core.helpers import aifi_services as aifi
-from Models import User, Product
+from integrations_service.core.db_config import get_db
+from integrations_service.Models import AifiStoreMap
+from operations_service.operations.orders import upsert_aifi_order
+from integrations_service.core.helpers import aifi_services as aifi
+from integrations_service.Models import User, Product
 
 router = APIRouter(prefix="/integrations/vendors/aifi/admin", tags=["integrations"])
 

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from core.helpers import aifi_services as aifi
+from integrations_service.core.helpers import aifi_services as aifi
 
 router = APIRouter(prefix="/integrations/vendors/aifi", tags=["integrations"])
 

@@ -4,7 +4,7 @@ from typing import Dict, Optional, List
 
 from sqlalchemy.orm import Session
 
-from Models import (
+from operations_service.Models import (
     Order,
     OrderItem,
     User,
@@ -15,9 +15,9 @@ from Models import (
     CostCentre,
     SpendingEvent,
 )
-from core.db_config import SessionLocal
-from utils.logger import logger
-from operations.ledger import record_order_ledger
+from operations_service.core.db_config import SessionLocal
+from operations_service.utils.logger import logger
+from operations_service.operations.ledger import record_order_ledger
 
 
 def _to_minor(amount: Optional[str | float | int]) -> int:
@@ -64,7 +64,7 @@ def _price_for_product(db: Session, product_id, store_id=None) -> int:
     Resolve price in minor units for a product, preferring store price when store_id is known.
     """
     if store_id:
-        from Models import StoreProduct
+        from operations_service.Models import StoreProduct
 
         sp = (
             db.query(StoreProduct)

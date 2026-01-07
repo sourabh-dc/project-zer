@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.orm import Session
 
-from Models import Product, User
-from core.db_config import get_db
-from core.helpers import aifi_services as aifi
+from integrations_service.Models import Product, User
+from integrations_service.core.db_config import get_db
+from integrations_service.core.helpers import aifi_services as aifi
 
 router = APIRouter(prefix="/integrations/vendors", tags=["integrations"])
 
