@@ -4,7 +4,8 @@ cost_centres,Cost Centre Management,Budget allocation,budget,count,10,never,core
 budgets.spending,Spending Tracking,Track spending,budget,boolean,,,core_01
 budgets.user,User Budget Management,User-level budgets,budget,boolean,,,core_01
 categories,Category Management,Product categories,catalog,count,50,never,core_01
-productsProduct Catalog,Product management,catalog,count,500,never,core_01
+products,Product Catalog,Product management,catalog,count,500,never,core_01
 sites.manage,Site Management,Create and manage sites,core,count,10,never,core_01
 stores.manage,Store Management,Create and manage stores,core,count,25,never,core_01
 users.manage,User Management,Create and manage users,core,count,50,never,core_01
+vendors.manage,Vendor Management,Create and manage vendors,core,count,10,never,core_01

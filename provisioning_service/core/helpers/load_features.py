@@ -18,13 +18,14 @@ def insert_features_from_csv(csv_file: str):
                         code=row["code"],
                         name=row["name"],
                         description=row["description"] or "",
-                        cluster=row["cluster"] or "general",
+                        cluster=row["category"] or "general",
                         usage_type=row["usage_type"] or "count",
                         max_unit=row["max_unit"] or None,
                         reset_period=row["reset_period"] or "monthly",
                         active=True
                     )
                     session.add(feature)
+                    print(row["plan"])
                     plan=session.query(SubscriptionPlan).filter_by(code=row["plan"]).first()
                     if not plan:
                         plan=SubscriptionPlan(plan_id=uuid.uuid4(),code=row["plan"],name="Core Plan",description="The core plan",

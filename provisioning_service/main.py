@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from provisioning_service.Models import Base
 from provisioning_service.core.db_config import engine
 from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv
+from provisioning_service.core.helpers.load_features import insert_features_from_csv
 from provisioning_service.services.provisioning_routes import router as provisioning_router
 from provisioning_service.services.catalog_routes import router as catalog_router
 from provisioning_service.services.auth_routes import router as auth_router
@@ -28,6 +29,7 @@ except Exception as e:
     logger.error(f"❌ Table initialization failed: {e}")
 
 insert_permissions_from_csv(r'provisioning_service/permissions.csv')
+insert_features_from_csv(r'provisioning_service/features.csv')
 
 
 @app.exception_handler(Exception)
