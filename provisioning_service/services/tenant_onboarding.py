@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List
 import jwt
+from azure.communication.email import EmailClient
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +17,175 @@ from provisioning_service.utils.logger import logger
 import bcrypt
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding tenant"])
+
+# python
+from fastapi import BackgroundTasks
+from pydantic import BaseModel, EmailStr
+import secrets
+import hmac
+import hashlib
+from typing import Dict
+
+
+# OTP configuration (tunable via SETTINGS)
+OTP_EXPIRY_MINUTES = getattr(SETTINGS, "OTP_EXPIRY_MINUTES", 5)
+OTP_MAX_ATTEMPTS = getattr(SETTINGS, "OTP_MAX_ATTEMPTS", 3)
+OTP_SECRET = getattr(SETTINGS, "OTP_SECRET", getattr(SETTINGS, "JWT_SECRET", "otp_fallback_secret"))
+
+# In-memory store: { email: { "hash": ..., "expires_at": datetime, "attempts_left": int } }
+OTP_STORE: Dict[str, Dict] = {}
+
+class OtpGenerateRequest(BaseModel):
+    email: EmailStr
+
+class OtpGenerateResponse(BaseModel):
+    detail: str
+
+class OtpValidateRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+class OtpValidateResponse(BaseModel):
+    detail: str
+
+def _hash_otp(otp: str) -> str:
+    return hmac.new(OTP_SECRET.encode("utf-8"), otp.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def _send_email_smtp(to_email: str, otp, expiry_minutes, support_contact):
+    # Simple SMTP sender using SETTINGS if configured; logs on error or if not configured.
+    try:
+        mail_from = "DoNotReply@32c276cf-0d14-43a7-8e89-2e45988729a8.azurecomm.net"
+        subject = "Zeroque - One time password"
+        body = (
+        f"Dear Customer,\n\n"
+        f"Thank you for your interest. Please find your One Time Password (OTP) below:\n\n"
+        f"OTP: {otp}\n\n"
+        f"This OTP will expire in {expiry_minutes} minutes and is valid for a single use only. "
+        f"For your security, do not share this code with anyone.\n\n"
+        f"If you did not request this OTP or believe your account may be compromised, please contact "
+        f"our support team at {support_contact} immediately.\n\n"
+        f"Kind regards,\n"
+        f"The Support Team\n"
+    )
+        try:
+            connection_string = SETTINGS.EMAIL_CONNECTION_STRING
+            client = EmailClient.from_connection_string(connection_string)
+
+            message = {
+                "senderAddress": mail_from,
+                "recipients": {
+                    "to": [{"address": to_email}]
+                },
+                "content": {
+                    "subject": subject,
+                    "plainText": body,
+                    "html": f"""<html>
+                  <body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height:1.5;">
+                    <p>Dear Customer,</p>
+                    <p>Thank you for your interest. Please find your One-Time Password (OTP) below:</p>
+                    <div style="margin:16px 0; padding:12px 16px; display:inline-block; background:#f6f8fa; border-radius:6px; font-size:1.25rem; font-weight:600; letter-spacing:2px;">
+                      {otp}
+                    </div>
+                    <p>This OTP will expire in {expiry_minutes} minutes and is valid for a single use only. For your security, do not share this code with anyone.</p>
+                    <p>If you did not request this OTP or believe your account may be compromised, please contact our support team at <a href="mailto:{support_contact}">{support_contact}</a> immediately.</p>
+                    <p>Kind regards,<br/>The Support Team</p>
+                  </body>
+                </html>"""
+                },
+
+            }
+
+            poller = client.begin_send(message)
+            result = poller.result()
+            print("Message sent: ", result)
+            return result
+
+        except Exception as ex:
+            print(ex)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Otp generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+@router.post("/otp/generate", response_model=OtpGenerateResponse, status_code=202)
+async def generate_otp(
+    req: OtpGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate an OTP for the provided email, send it by email, and store a hashed copy with expiry.
+    """
+    try:
+        # Optional: ensure user exists (else still generate? here we require user)
+        user = db.query(User).filter(func.lower(User.email) == req.email.lower()).first()
+        if user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="A Tenant Already Exists with this Email ID")
+
+        # generate 6-digit OTP
+        otp = f"{secrets.randbelow(10**6):06d}"
+        hashed = _hash_otp(otp)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
+
+        # store hashed otp
+        OTP_STORE[req.email.lower()] = {
+            "hash": hashed,
+            "expires_at": expires_at,
+            "attempts_left": OTP_MAX_ATTEMPTS
+        }
+
+        # send email in background
+        background_tasks.add_task(_send_email_smtp, req.email, otp, OTP_EXPIRY_MINUTES, "zeroque.support@consumables.com")
+
+        return OtpGenerateResponse(detail="OTP generated and being sent if email configured")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to generate OTP for {req.email}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate OTP")
+
+@router.post("/otp/validate", response_model=OtpValidateResponse, status_code=200)
+async def validate_otp(
+    req: OtpValidateRequest,
+):
+    """
+    Validate provided OTP for email. On success, removes stored OTP.
+    """
+    try:
+        key = req.email.lower()
+        entry = OTP_STORE.get(key)
+        if not entry:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No OTP requested for this email")
+
+        # check expiry
+        if datetime.now(timezone.utc) > entry["expires_at"]:
+            OTP_STORE.pop(key, None)
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="OTP expired")
+
+        # check attempts
+        if entry["attempts_left"] <= 0:
+            OTP_STORE.pop(key, None)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Too many invalid attempts")
+
+        # verify OTP
+        provided_hash = _hash_otp(req.otp)
+        if hmac.compare_digest(provided_hash, entry["hash"]):
+            # success: remove stored otp and return success
+            OTP_STORE.pop(key, None)
+            return OtpValidateResponse(detail="OTP validated successfully")
+        else:
+            # decrement attempts
+            entry["attempts_left"] -= 1
+            if entry["attempts_left"] <= 0:
+                OTP_STORE.pop(key, None)
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Too many invalid attempts")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OTP")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"OTP validation error for {req.email}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OTP validation failed")
 
 @router.post("/tenant-signup", status_code=201)
 async def create_tenant(
