@@ -214,13 +214,24 @@ class RoleScope(Base):
 class OrgUnit(Base):
     """Organisational hierarchy unit"""
     __tablename__ = "org_units"
+
     org_unit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    type = Column(String(50), nullable=False, index=True)  # directorate, business_unit, cost_centre, etc.
+
     name = Column(String(255), nullable=False)
+    type = Column(String(50), nullable=False, index=True)  # department/division/team
+    status = Column(String(50), nullable=False, default="active", index=True)
+
     parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    code = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
+    manager_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    external_id = Column(String(100), nullable=True)
+    path = Column(String(500), nullable=True)
+    depth = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class UserOrgAssignment(Base):
@@ -263,20 +274,39 @@ class Vendor(Base):
 class CostCentre(Base):
     """Cost Centre model - budget tracking"""
     __tablename__ = "cost_centres"
+
     cost_centre_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+
     name = Column(String(200), nullable=False)
-    manager_user_id = Column(SQLUUID(as_uuid=True), nullable=True)  # Optional manager
-    budget_minor = Column(BigInteger, default=0)  # Amount in minor units (pence/cents)
-    spent_minor = Column(BigInteger, default=0)
-    currency_code = Column(String(3), default="GBP")
-    status = Column(String(50), default="active", index=True)
-    recurring_budget_minor = Column(BigInteger, default=0)
-    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
+    code = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
+    manager_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    currency_code = Column(String(3), nullable=True)
+    status = Column(String(50), nullable=False, default="active", index=True)
+
+    budget_minor = Column(BigInteger, nullable=False, default=0)
+    spent_minor = Column(BigInteger, nullable=False, default=0)
+    committed_minor = Column(BigInteger, nullable=True, default=0)
+    available_minor = Column(BigInteger, nullable=True)
+
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    recurring_budget_minor = Column(BigInteger, nullable=True)
+    recurring_period = Column(String(20), nullable=True, default="none")  # none/daily/weekly/monthly/quarterly/yearly
+
     last_reset_date = Column(Date, nullable=True)
     next_reset_date = Column(Date, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    rollover_policy = Column(String(20), nullable=True, default="none")  # none/cap/carryover
+    external_id = Column(String(100), nullable=True)
+
+    locked = Column(Boolean, nullable=True, default=False)
+    lock_reason = Column(String(255), nullable=True)
+    last_reconciled_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class UserCostCentre(Base):
     __tablename__ = "user_cost_centres"
