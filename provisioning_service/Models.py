@@ -14,43 +14,86 @@ from provisioning_service.utils.logger import logger
 Base = declarative_base()
 
 class Tenant(Base):
-    """Tenant organization model"""
     __tablename__ = "tenants"
 
     tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
-    tenant_name = Column(String(200), nullable=False, unique=True, index=True)
-    tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
-    registration_number = Column(String(100), nullable=True)
-    email = Column(String(255), nullable=False, unique=True, index=True)
+    tenant_name = Column(String(200), nullable=False, index=True)
+    tenant_type = Column(String(50), nullable=False)  # end-user/retailer/distributor
+    email = Column(String(255), nullable=False, index=True)
     phone = Column(String(50), nullable=True)
-    active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    registration_number = Column(String(100), nullable=True)
+    default_currency = Column(String(3), nullable=True)
+    timezone = Column(String(100), nullable=True)
+    locale = Column(String(20), nullable=True)
+    billing_email = Column(String(255), nullable=True)
+    billing_address = Column(JSONB, nullable=True)
+    primary_domain = Column(String(255), nullable=True)
+    logo_url = Column(String(255), nullable=True)
+    owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    industry = Column(String(100), nullable=True)
+    tech_contact_email = Column(String(255), nullable=True)
+    support_contact_email = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
 
 class Site(Base):
-    """Site model - physical locations that can be managed by multiple tenants"""
     __tablename__ = "sites"
+
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
     site_type = Column(String(50), nullable=False)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    currency = Column(String(3), nullable=True)
+    timezone = Column(String(100), nullable=True)
+    language = Column(String(20), nullable=True)
+    phone = Column(String(50), nullable=True)
+    fax = Column(String(50), nullable=True)
+    email = Column(String(255), nullable=True)
+    url = Column(String(255), nullable=True)
+    logo_url = Column(String(255), nullable=True)
+    primary_billing_address = Column(JSONB, nullable=True)
+    primary_shipping_address = Column(JSONB, nullable=True)
+    shipping_addresses = Column(JSONB, nullable=True)
     geo = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
+    external_id = Column(String(100), nullable=True)
+    is_headquarter = Column(Boolean, nullable=True, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
     tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
 
 class Store(Base):
-    """Store model - retail locations under a site"""
     __tablename__ = "stores"
+
     store_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=True, index=True)
+
     name = Column(String(255), nullable=False)
     store_type = Column(String(50), nullable=False)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    currency = Column(String(3), nullable=True)
+    timezone = Column(String(100), nullable=True)
+    phone = Column(String(50), nullable=True)
+    email = Column(String(255), nullable=True)
+    url = Column(String(255), nullable=True)
+    logo_url = Column(String(255), nullable=True)
+    primary_shipping_address = Column(JSONB, nullable=True)
+    pickup_address = Column(JSONB, nullable=True)
     geo = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    external_id = Column(String(100), nullable=True)
+    fulfillment_mode = Column(String(50), nullable=True)
+    inventory_policy = Column(String(50), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class User(Base):
@@ -58,22 +101,32 @@ class User(Base):
 
     user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    aifi_customer_id = Column(String(64), nullable=True, index=True)
+
     email = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)  # nullable only if SSO
     first_name = Column(String(255), nullable=False)
     last_name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
-    user_metadata = Column(JSONB, nullable=True)
-    password = Column(String(255), nullable=True)
-    active = Column(Boolean, nullable=False, default=True, index=True)
-    failed_login_attempts = Column(Integer, nullable=False, default=0)
+    position = Column(String(100), nullable=True)
+    profile_image = Column(String(255), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    is_sso_enabled = Column(Boolean, nullable=True, default=False)
+    all_locations = Column(Boolean, nullable=True, default=False)
+
+    home_site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id"), nullable=True)
+    home_store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=True)
+    home_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id"), nullable=True)
+
+    failed_login_attempts = Column(Integer, nullable=True, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     refresh_token = Column(String(255), nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
-    display_name = Column(String(255), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
         Index("ix_users_tenant_email_unique", "tenant_id", "email", unique=True),
