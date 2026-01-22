@@ -7,16 +7,29 @@ import re
 # ==================================================================================
 # REQUEST/RESPONSE MODELS
 # ==================================================================================
+# python
 class TenantRequest(BaseModel):
     """Tenant creation request"""
-    name: str = Field(min_length=1, max_length=200, description="Company name")
+    tenant_name: Optional[str] = Field(None, max_length=200, description="tenant name")
     type: str = Field(description="Tenant type: customer, retailer, or distributor")
     registration_number: Optional[str] = Field(None, max_length=100, description="Registration number (optional)")
-    email: EmailStr = Field(..., description="Administrative contact email")
+    email: EmailStr = Field(..., description="Tenant primary contact email")
+    billing_email: Optional[EmailStr] = Field(None, description="Billing contact email")
+    admin_email: EmailStr = Field(..., description="Admin contact email")
     admin_firstname: str = Field(min_length=1, max_length=150, description="Admin first name")
     admin_lastname: str = Field(min_length=1, max_length=150, description="Admin last name")
     password: str = Field(min_length=8, max_length=128, description="Admin password (min 8 chars)")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
+    active: Optional[bool] = Field(True, description="Is tenant active?")
+    default_currency: Optional[str] = Field("GBP", max_length=3, description="Default currency code")
+    timezone: Optional[str] = Field("UTC", description="Timezone")
+    locale: Optional[str] = Field("en_GB", description="Locale")
+    billing_address: Optional[str] = Field(None, description="Billing address")
+    primary_domain: Optional[str] = Field(None, description="Primary domain")
+    logo: Optional[bytes] = Field(None, description="Logo binary data (raw bytes). Max size 2MB")
+    industry: Optional[str] = Field(None, description="Industry")
+    tech_contact_email: Optional[EmailStr] = Field(None, description="Technical contact email")
+    support_contact_email: Optional[EmailStr] = Field(None, description="Support contact email")
 
     @field_validator('type')
     @classmethod
@@ -45,6 +58,7 @@ class TenantRequest(BaseModel):
         if not re.match(r'^\+?\d{7,15}$', v):
             raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
         return v
+
 
 class TenantUpdateRequest(BaseModel):
     tenant_id: str = Field(description="Tenant ID")
@@ -76,28 +90,84 @@ class SiteRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255, description="Site name")
     type: str = Field(description="Site type")
     geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
+    active: bool = Field(True, description="Is site active?")
+    currency: Optional[constr(min_length=3, max_length=3)] = Field(None, description="Currency code (ISO 3-letter)")
+    timezone: Optional[str] = Field(None, description="Timezone")
+    language: Optional[str] = Field(None, description="Language / locale")
+    phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
+    fax: Optional[str] = Field(None, description="Fax number (optional)")
+    email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
+    url: Optional[str] = Field(None, description="Site URL (optional)")
+    logo_url: Optional[str] = Field(None, description="Logo URL (optional)")  # change to HttpUrl if you import it
+    primary_billing_address: Optional[Dict[str, Any]] = Field(None,
+                                                              description="Primary billing address (structured JSON)")
+    primary_shipping_address: Optional[Dict[str, Any]] = Field(None,
+                                                               description="Primary shipping address (structured JSON)")
+    shipping_addresses: Optional[List[Dict[str, Any]]] = Field(None,
+                                                               description="Additional shipping addresses (array of structured JSON)")
+    external_id: Optional[str] = Field(None, description="External reference ID (optional)")
+    is_headquarter: Optional[bool] = Field(False, description="Is this site the headquarter?")
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\+?\d{7,15}$', v):
+            raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
+        return v
 
 
 class StoreRequest(BaseModel):
     """Store creation request"""
-    name: str = Field(min_length=1, max_length=255, description="Store name")
-    type: str = Field(description="Store type")
-    site_id: str = Field(description="Site ID")
-    tenant_id: str = Field(description="Tenant ID")
-    geo: Optional[Dict] = Field(None, description="Geographic metadata (optional)")
+    tenant_id: str = Field(..., description="Tenant ID (UUID)")
+    name: str = Field(..., min_length=1, max_length=255, description="Store name")
+    store_type: str = Field(..., description="Store type")
+    active: bool = Field(..., description="Is store active?")
+    created_at: datetime = Field(..., description="Creation timestamp (timestamptz)")
+    updated_at: datetime = Field(..., description="Last updated timestamp (timestamptz)")
+    site_id: Optional[str] = Field(None, description="Site ID (UUID)")
+    currency: Optional[constr(min_length=3, max_length=3)] = Field(None, description="Currency code (ISO 3-letter)")
+    timezone: Optional[str] = Field(None, description="Timezone")
+    phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
+    email: Optional[EmailStr] = Field(None, description="Contact email (optional)")
+    url: Optional[str] = Field(None, description="Store URL (optional)")
+    logo_url: Optional[str] = Field(None, description="Logo URL (optional)")
+    primary_shipping_address: Optional[Dict[str, Any]] = Field(None,
+                                                               description="Primary shipping address (structured JSON)")
+    pickup_address: Optional[Dict[str, Any]] = Field(None, description="Pickup address (structured JSON)")
+    geo: Optional[Dict[str, Any]] = Field(None, description="Geographic metadata (jsonb)")
+    external_id: Optional[str] = Field(None, description="External reference ID (optional)")
+    fulfillment_mode: Optional[str] = Field(None, description="Fulfillment mode (optional)")
+    inventory_policy: Optional[str] = Field(None, description="Inventory policy (optional)")
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\+?\d{7,15}$', v):
+            raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
+        return v
 
 
-# Add to Schemas.py
 
 class UserRequest(BaseModel):
     """User creation request"""
-    email: EmailStr = Field(description="Valid email address")
-    first_name: str = Field(min_length=1, max_length=255, description="Display name")
-    last_name: str = Field(min_length=1, max_length=255, description="Display name")
-    tenant_id: str = Field(description="Tenant ID")
+    tenant_id: str = Field(..., description="Tenant ID (UUID)")
+    email: EmailStr = Field(..., description="Valid email address")
+    password: str = Field(..., description="Password hash")
+    first_name: str = Field(..., min_length=1, max_length=255, description="First name")
+    last_name: str = Field(..., min_length=1, max_length=255, description="Last name")
+    is_active: bool = Field(..., description="Is user active?")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
-    password: str = Field(min_length=8, max_length=128, description="Password (min 8 chars)")
-    cost_centre_id: str = Field(description="Cost centre ID")
+    position: Optional[str] = Field(None, description="Position / job title (optional)")
+    profile_image: Optional[str] = Field(None, description="Profile image URL (optional)")
+    is_sso_enabled: Optional[bool] = Field(False, description="Is SSO enabled (optional)")
+    home_site_id: Optional[str] = Field(None, description="Home site ID (UUID, optional)")
+    home_store_id: Optional[str] = Field(None, description="Home store ID (UUID, optional)")
+    home_org_unit_id: Optional[str] = Field(None, description="Home org unit ID (UUID, optional)")
+    all_locations: Optional[bool] = Field(False, description="Access to all locations (optional)")
 
     @field_validator('password')
     @classmethod
@@ -119,28 +189,6 @@ class UserRequest(BaseModel):
         if not re.match(r'^\+?\d{7,15}$', v):
             raise ValueError('Phone must be digits, optionally starting with + and 7-15 characters long')
         return v
-
-
-class SuperUserRequest(BaseModel):
-    """Super user creation request for a tenant"""
-    email: EmailStr = Field(description="Valid email address for super user")
-    display_name: str = Field(min_length=1, max_length=255, description="Display name")
-    password: Optional[str] = Field(None, min_length=8, max_length=128, description="Password (optional, auto-generated if not provided)")
-    
-    @field_validator('password')
-    @classmethod
-    def validate_password_strength(cls, v):
-        """Validate password strength if provided"""
-        if v is None:
-            return v
-        if not re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not re.search(r'\d', v):
-            raise ValueError('Password must contain at least one digit')
-        return v
-
 
 class BulkUserRequest(BaseModel):
     """Bulk user import request"""

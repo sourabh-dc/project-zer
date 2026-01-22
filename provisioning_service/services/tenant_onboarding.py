@@ -201,23 +201,38 @@ async def create_tenant(
 
         password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
         # Create tenant
+        # python
+        now = datetime.now(timezone.utc)
         tenant = Tenant(
             tenant_id=uuid.uuid4(),
-            tenant_name=req.name,
+            tenant_name=getattr(req, "tenant_name", getattr(req, "name", None)),
             tenant_type=req.type,
             registration_number=req.registration_number,
             email=req.email,
+            billing_email=getattr(req, "billing_email", None),
+            billing_address=getattr(req, "billing_address", None),
+            primary_domain=getattr(req, "primary_domain", None),
             phone=req.phone,
-            active=True
+            default_currency=getattr(req, "default_currency", None),
+            timezone=getattr(req, "timezone", None),
+            locale=getattr(req, "locale", "en_GB"),
+            owner_user_id=getattr(req, "owner_user_id", None),
+            industry=getattr(req, "industry", None),
+            tech_contact_email=getattr(req, "tech_contact_email", None),
+            support_contact_email=getattr(req, "support_contact_email", None),
+            # store raw logo bytes (schema/DB must have a matching binary column)
+            logo=getattr(req, "logo", None),
+            active=True if getattr(req, "active", None) is None else req.active,
         )
+
         db.add(tenant)
         db.commit()
         db.refresh(tenant)
 
         # create user
         user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, first_name=req.admin_firstname,
-                    last_name=req.admin_lastname, display_name=req.admin_firstname+" "+req.admin_lastname, email=tenant.email,
-                    password=password_hash, active=True)
+                    last_name=req.admin_lastname, display_name=req.admin_firstname+" "+req.admin_lastname, email=req.admin_email,
+                    password_hash=password_hash)
         db.add(user)
         db.commit()
         db.refresh(user)
