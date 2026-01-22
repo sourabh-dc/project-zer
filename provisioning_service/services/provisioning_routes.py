@@ -189,12 +189,28 @@ async def create_site(
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # Create a site (no tenant_id here)
+
         site = Site(
             site_id=uuid.uuid4(),
             name=req.name,
             site_type=req.type,
-            geo=req.geo
+            active=bool(getattr(req, "active", True)),
+            currency=getattr(req, "currency", None),
+            timezone=getattr(req, "timezone", None),
+            language=getattr(req, "language", None),
+            phone=getattr(req, "phone", None),
+            fax=getattr(req, "fax", None),
+            email=getattr(req, "email", None),
+            url=getattr(req, "url", None),
+            logo_url=getattr(req, "logo_url", None),
+            primary_billing_address=getattr(req, "primary_billing_address", None),
+            primary_shipping_address=getattr(req, "primary_shipping_address", None),
+            shipping_addresses=getattr(req, "shipping_addresses", None),
+            geo=getattr(req, "geo", None),
+            external_id=getattr(req, "external_id", None),
+            is_headquarter=bool(getattr(req, "is_headquarter", False))
         )
+
         db.add(site)
         db.flush()  # Get site_id
         
@@ -444,11 +460,23 @@ async def create_store(
         # Create store
         store = Store(
             store_id=uuid.uuid4(),
-            site_id=uuid.UUID(req.site_id),
-            tenant_id=req.tenant_id,  # Use user's tenant
+            site_id=uuid.UUID(req.site_id) if getattr(req, "site_id", None) else None,
+            tenant_id=uuid.UUID(req.tenant_id),
             name=req.name,
             store_type=req.type,
-            geo=req.geo
+            active=bool(getattr(req, "active", True)),
+            currency=getattr(req, "currency", None),
+            timezone=getattr(req, "timezone", None),
+            phone=getattr(req, "phone", None),
+            email=getattr(req, "email", None),
+            url=getattr(req, "url", None),
+            logo_url=getattr(req, "logo_url", None),
+            primary_shipping_address=getattr(req, "primary_shipping_address", None),
+            pickup_address=getattr(req, "pickup_address", None),
+            geo=getattr(req, "geo", None),
+            external_id=getattr(req, "external_id", None),
+            fulfillment_mode=getattr(req, "fulfillment_mode", None),
+            inventory_policy=getattr(req, "inventory_policy", None)
         )
         db.add(store)
         db.commit()
@@ -629,14 +657,6 @@ async def create_user(
         if existing:
             raise HTTPException(status_code=409, detail="Email already exists")
 
-        # Verify cost centre exists (mandatory)
-        cc = db.query(CostCentre).filter(
-            CostCentre.cost_centre_id == uuid.UUID(req.cost_centre_id),
-            CostCentre.tenant_id == uuid.UUID(req.tenant_id)
-        ).first()
-        if not cc:
-            raise HTTPException(status_code=404, detail="Cost centre not found")
-
         # Hash password
         password_hash = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -644,30 +664,25 @@ async def create_user(
         user = User(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
-            email=req.email.lower(),
+            email=req.email,
+            password_hash=password_hash,
             first_name=req.first_name,
             last_name=req.last_name,
-            display_name=req.first_name + " " + req.last_name,
-            password=password_hash,
-            phone=req.phone,
-            active=True
+            display_name=f"{req.first_name} {req.last_name}",
+            phone=getattr(req, "phone", None),
+            is_active=True,
+            position=getattr(req, "position", None),
+            profile_image=getattr(req, "profile_image", None),
+            is_sso_enabled=bool(getattr(req, "is_sso_enabled", False)),
+            home_site_id=uuid.UUID(req.home_site_id) if getattr(req, "home_site_id", None) else None,
+            home_store_id=uuid.UUID(req.home_store_id) if getattr(req, "home_store_id", None) else None,
+            home_org_unit_id=uuid.UUID(req.home_org_unit_id) if getattr(req, "home_org_unit_id", None) else None,
+            all_locations=bool(getattr(req, "all_locations", False))
         )
+
         db.add(user)
         db.commit()
         db.refresh(user)
-
-        # Map user to cost centre (mandatory mapping at creation time)
-        uc = UserCostCentre(
-            id=uuid.uuid4(),
-            user_id=user.user_id,
-            cost_centre_id=cc.cost_centre_id,
-            allocated_budget_minor=0,
-            spent_minor=0,
-            currency_code=cc.currency_code
-        )
-        db.add(uc)
-        db.commit()
-        db.refresh(uc)
 
         try:
             aifi_customer = await cv_create_customer(
