@@ -228,26 +228,37 @@ class VendorRequest(BaseModel):
 
 class CostCentreRequest(BaseModel):
     """Cost centre creation request"""
-    name: str = Field(min_length=1, max_length=200, description="Cost centre name")
-    budget_minor: int = Field(ge=0, description="Budget in minor units (required)")
-    manager_user_id: Optional[str] = Field(None, description="Manager user ID (optional)")
-    tenant_id: str = Field(description="Tenant ID")
-    currency: str = Field(default="GBP", max_length=3, description="Currency code")
-    recurring_budget_minor: Optional[int] = Field(default=0, ge=0, description="Recurring budget amount for resets")
-    recurring_period: Optional[str] = Field(default="none", description="Recurring period: none/daily/weekly/monthly/yearly")
+    tenant_id: str = Field(..., description="Tenant ID (UUID, FK->tenants.tenant_id)")
+    code: str = Field(..., min_length=1, max_length=50, description="Cost centre code (varchar(50))")
+    name: str = Field(..., min_length=1, max_length=255, description="Cost centre name (varchar(255))")
+    description: Optional[str] = Field(None, max_length=500, description="Description (varchar(500), optional)")
+    owner_user_id: Optional[str] = Field(None, description="Owner user ID (UUID, FK->users.user_id, optional)")
+    is_active: Optional[bool] = Field(True, description="Is cost centre active?")
 
 
 class OrgUnitRequest(BaseModel):
     """Organizational unit creation request"""
+    tenant_id: str = Field(..., description="Tenant ID (UUID)")
     name: str = Field(min_length=1, max_length=255, description="Org unit name")
-    type: str = Field(min_length=1, max_length=50, description="Type: directorate, business_unit, department, team, etc.")
-    tenant_id: str = Field(description="Tenant ID")
-    parent_org_unit_id: Optional[str] = Field(None, description="Parent org unit ID (optional)")
+    type: str = Field(min_length=1, max_length=50,
+                      description="Type: directorate, business_unit, department, team, etc.")
+    status: Optional[str] = Field("active", description="Status (e.g. active/inactive)")
+    parent_org_unit_id: Optional[str] = Field(None, description="Parent org unit ID (UUID, optional)")
+    code: Optional[str] = Field(None, max_length=100, description="Org unit code (optional)")
+    description: Optional[str] = Field(None, max_length=1000, description="Description (optional)")
+    manager_user_id: Optional[str] = Field(None, description="Manager user ID (UUID, optional)")
+    external_id: Optional[str] = Field(None, description="External reference ID (optional)")
+    path: Optional[str] = Field(None, description="Hierarchical path (e.g. /Company/Division/Team)")
+    depth: Optional[int] = Field(None, ge=0, description="Depth in hierarchy (root = 0)")
 
 
 class OrgUnitAssignmentRequest(BaseModel):
     """User to org unit assignment request"""
-    role_id: str = Field(description="Role ID for this assignment")
+    """User to org unit assignment request"""
+    user_id: str = Field(..., description="User ID (UUID)")
+    org_unit_id: str = Field(..., description="Org unit ID (UUID)")
+    role_id: str = Field(..., description="Role ID (UUID)")
+    assigned_by: Optional[str] = Field(None, description="Assigned by user ID (UUID, optional)")
 
 
 class PasswordResetRequest(BaseModel):
