@@ -293,24 +293,75 @@ class CostCentre(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
+class CostCenterBudget(Base):
+    __tablename__ = "cost_center_budget"
+
+    # Primary key
+    budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Foreign keys
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("org_costcentres.cost_centre_id"), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("prov_tenant.tenant_id"), nullable=False)
+
+    # Period info
+    fiscal_year = Column(Integer, nullable=False)
+    period_type = Column(String(20), nullable=False)  # annual, quarterly, monthly, custom
+    period_number = Column(Integer, nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+
+    # Budget amounts (minor units = cents/paise)
+    budget_amount_minor = Column(BigInteger, nullable=False)
+    allocated_to_users_minor = Column(BigInteger, nullable=False)
+    remaining_to_allocate_minor = Column(BigInteger, nullable=False)
+    total_spent_minor = Column(BigInteger, nullable=False)
+    lapsed_amount_minor = Column(BigInteger, nullable=False)
+
+    # Status
+    status = Column(String(20), nullable=False)  # draft, active, closed
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    closed_by = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=True)
+
+    # Audit
+    created_by = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Relationships
+    user_allocations = relationship("CCUserBudget", back_populates="budget")
+
 
 class UserCostCentre(Base):
     __tablename__ = "user_cost_centres"
+    # Primary key
+    user_budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
-    allocated_budget_minor = Column(BigInteger, nullable=False, default=0)
-    spent_minor = Column(BigInteger, nullable=False, default=0)
-    currency_code = Column(String(3), default="GBP")
-    recurring_budget_minor = Column(BigInteger, default=0)  # Auto-allocated amount
-    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
-    last_reset_date = Column(Date, nullable=True)
-    next_reset_date = Column(Date, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    user = relationship("User", back_populates="cost_centres")
-    cost_centre = relationship("CostCentre", back_populates="members")
+    # Foreign keys
+    user_id = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=False)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("org_costcentres.cost_centre_id"), nullable=False)
+    cc_budget_id = Column(UUID(as_uuid=True), ForeignKey("cost_center_budget.budget_id"), nullable=False)
+    clearance_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True)
+
+    # Budget allocations
+    max_budget_minor = Column(BigInteger, nullable=False)  # admin-set cap
+    allocated_minor = Column(BigInteger, nullable=False)  # allocated from CC
+    spent_minor = Column(BigInteger, nullable=False)  # amount spent
+    available_minor = Column(BigInteger, nullable=False)  # allocated - spent
+    recurring_amount_minor = Column(BigInteger, nullable=False)  # recurring allocation amount
+
+    # Recurring info
+    recurring_period = Column(String(20), nullable=True)  # weekly, monthly, etc.
+    next_recurring_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Blocking info
+    is_blocked = Column(Boolean, nullable=False, default=False)
+    blocked_reason = Column(String(255), nullable=True)
+    blocked_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Audit
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
 
 class SubscriptionPlan(Base):
     """Subscription plan - TODO: migrate to UUID for consistency"""

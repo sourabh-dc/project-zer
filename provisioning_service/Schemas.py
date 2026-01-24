@@ -235,6 +235,14 @@ class CostCentreRequest(BaseModel):
     owner_user_id: Optional[str] = Field(None, description="Owner user ID (UUID, FK->users.user_id, optional)")
     is_active: Optional[bool] = Field(True, description="Is cost centre active?")
 
+    fiscal_year: Optional[int] = Field(None, ge=2000, le=2100, description="Fiscal year (e.g. 2025)")
+    period_type: Optional[str] = Field("annual", description="Period type: annual, quarterly, monthly, weekly")
+    period_number: Optional[int] = Field(None, ge=1, description="Period number within the fiscal year (e.g. month or quarter number)")
+    period_start: Optional[date] = Field(None, description="Period start date")
+    period_end: Optional[date] = Field(None, description="Period end date")
+    budget_amount_minor: Optional[int] = Field(None, ge=0, description="Budget amount in minor units for the period")
+
+
 
 class OrgUnitRequest(BaseModel):
     """Organizational unit creation request"""

@@ -11,8 +11,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
 
-from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, SpendingEvent, SiteTenant, \
-    OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole
+from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
+    SpendingEvent, SiteTenant, \
+    OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
+    CostCenterBudget
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest
@@ -990,21 +992,22 @@ async def create_cost_centre(
         cc = CostCentre(
             cost_centre_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
+            code=req.code,
             name=req.name,
-            manager_user_id=manager_user_uuid,
-            budget_minor=req.budget_minor,
-            spent_minor=0,
-            currency_code=req.currency,
-            status="active",
-            recurring_budget_minor=req.recurring_budget_minor or req.budget_minor,
-            recurring_period=(req.recurring_period or "none").lower(),
-            last_reset_date=None,
-            next_reset_date=compute_next_reset(req.recurring_period)
+            description=getattr(req, "description", None),
+            owner_user_id=uuid.UUID(req.manager_user_id) if getattr(req, "manager_user_id", None) else None,
+            is_active=bool(getattr(req, "is_active", getattr(req, "active", True)))
         )
         db.add(cc)
         db.commit()
         db.refresh(cc)
-        
+
+        cc_budget = CostCenterBudget(budget_id=uuid.uuid4(), cost_centre_id=cc.cost_centre_id,
+                                     tenant_id=req.tenant_id, budget_amount_minor=req.budget_amount_minor,
+                                     fiscal_year=req.fiscal_year, period_start=req.period_start,
+                                     period_end=req.period_end, period_type=req.period_type, period_number=req.period_number)
+        db.add(cc_budget)
+        db.commit()
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
 
@@ -1019,10 +1022,9 @@ async def create_cost_centre(
             "cost_centre_id": str(cc.cost_centre_id),
             "tenant_id": str(cc.tenant_id),
             "name": cc.name,
-            "budget_minor": cc.budget_minor,
-            "spent_minor": cc.spent_minor,
-            "manager_user_id": str(cc.manager_user_id) if cc.manager_user_id else None,
-            "status": cc.status,
+            "budget_minor": cc_budget.budget_amount_minor,
+            "manager_user_id": str(cc.owner_user_id) if cc.owner_user_id else None,
+            "status": "Active" if cc.is_active else "Inactive",
             "created_at": cc.created_at.isoformat()
         }
     except HTTPException:
@@ -1047,7 +1049,7 @@ async def list_cost_centres(
         offset: int = Query(0, ge=0)
 ):
     """List cost centres with optional tenant filtering"""
-    q = db.query(CostCentre).filter(CostCentre.status == "active")
+    q = db.query(CostCentre).filter(CostCentre.is_active == "active")
     
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
@@ -1096,6 +1098,8 @@ async def assign_user_to_cost_centre(
         
         # Verify cost centre exists
         cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+
+        cc_budget = db.query(CostCenterBudget).filter(CostCenterBudget.cost_centre_id == uuid.UUID(cost_centre_id)).first()
         if not cc:
             raise HTTPException(status_code=404, detail="Cost centre not found")
         
@@ -1119,19 +1123,18 @@ async def assign_user_to_cost_centre(
                 db.commit()
                 db.refresh(existing)
                 return {
-                    "id": str(existing.id),
+                    "id": str(existing.user_budget_id),
                     "user_id": user_id,
                     "cost_centre_id": cost_centre_id,
                     "allocated_budget_minor": existing.allocated_budget_minor,
                     "spent_minor": existing.spent_minor,
                     "available_minor": existing.allocated_budget_minor - existing.spent_minor,
-                    "currency_code": existing.currency_code,
                     "recurring_budget_minor": existing.recurring_budget_minor,
                     "recurring_period": existing.recurring_period,
                     "next_reset_date": str(existing.next_reset_date) if existing.next_reset_date else None
                 }
             delta = allocated_budget_minor - current_alloc
-            remaining_cc = (cc.budget_minor or 0) - (cc.spent_minor or 0)
+            remaining_cc = (cc_budget.budget_amount_minor or 0) - (cc.spent_minor or 0)
             if delta > remaining_cc:
                 raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
             cc.spent_minor = (cc.spent_minor or 0) + delta
@@ -1142,13 +1145,12 @@ async def assign_user_to_cost_centre(
             db.refresh(existing)
             logger.info(f"✅ Updated allocation for user {user_id} in cost centre {cost_centre_id} by {delta}")
             return {
-                "id": str(existing.id),
+                "id": str(existing.user_budget_id),
                 "user_id": user_id,
                 "cost_centre_id": cost_centre_id,
                 "allocated_budget_minor": existing.allocated_budget_minor,
                 "spent_minor": existing.spent_minor,
                 "available_minor": existing.allocated_budget_minor - existing.spent_minor,
-                "currency_code": existing.currency_code,
                 "recurring_budget_minor": existing.recurring_budget_minor,
                 "recurring_period": existing.recurring_period,
                 "next_reset_date": str(existing.next_reset_date) if existing.next_reset_date else None
@@ -1156,22 +1158,21 @@ async def assign_user_to_cost_centre(
         
         # Enforce remaining budget if allocating
         if allocated_budget_minor and allocated_budget_minor > 0:
-            remaining_cc = (cc.budget_minor or 0) - (cc.spent_minor or 0)
+            remaining_cc = (cc_budget.budget_amount_minor or 0) - (cc.spent_minor or 0)
             if allocated_budget_minor > remaining_cc:
                 raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
             cc.spent_minor = (cc.spent_minor or 0) + allocated_budget_minor
         
         # Create assignment
         user_cc = UserCostCentre(
-            id=uuid.uuid4(),
+            user_budget_id=uuid.uuid4(),
             user_id=uuid.UUID(user_id),
             cost_centre_id=uuid.UUID(cost_centre_id),
-            allocated_budget_minor=allocated_budget_minor,
+            allocated_minor=allocated_budget_minor,
             spent_minor=0,
-            currency_code=cc.currency_code,
-            recurring_budget_minor=recurring_budget_minor or allocated_budget_minor,
+            recurring_amount_minor=recurring_budget_minor or allocated_budget_minor,
             recurring_period=recurring_period.lower() if recurring_period else "none",
-            next_reset_date=compute_next_reset(recurring_period)
+            next_recurring_at=compute_next_reset(recurring_period)
         )
         db.add(user_cc)
         db.commit()
