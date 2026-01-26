@@ -124,8 +124,6 @@ class StoreRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Store name")
     store_type: str = Field(..., description="Store type")
     active: bool = Field(..., description="Is store active?")
-    created_at: datetime = Field(..., description="Creation timestamp (timestamptz)")
-    updated_at: datetime = Field(..., description="Last updated timestamp (timestamptz)")
     site_id: Optional[str] = Field(None, description="Site ID (UUID)")
     currency: Optional[constr(min_length=3, max_length=3)] = Field(None, description="Currency code (ISO 3-letter)")
     timezone: Optional[str] = Field(None, description="Timezone")
@@ -159,7 +157,6 @@ class UserRequest(BaseModel):
     password: str = Field(..., description="Password hash")
     first_name: str = Field(..., min_length=1, max_length=255, description="First name")
     last_name: str = Field(..., min_length=1, max_length=255, description="Last name")
-    is_active: bool = Field(..., description="Is user active?")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
     position: Optional[str] = Field(None, description="Position / job title (optional)")
     profile_image: Optional[str] = Field(None, description="Profile image URL (optional)")
@@ -1163,3 +1160,18 @@ class CheckoutRequest(BaseModel):
     billing_cycle: str = "monthly"
     plan_code: str
 
+class VendorUserUpdate(BaseModel):
+    email: Optional[str] = None
+    password_hash: Optional[str] = None
+    first_name: Optional[str] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    vendor_id: Optional[uuid.UUID] = None
+
+class VendorUserCreate(BaseModel):
+    vendor_id: uuid.UUID
+    password_hash: str
+    email: EmailStr
+    first_name: str
+    role: str = "vendor_staff"
+    active: bool = True

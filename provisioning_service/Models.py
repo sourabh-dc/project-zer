@@ -324,8 +324,8 @@ class CostCenterBudget(Base):
 
     # Audit
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class UserCostCentre(Base):
@@ -356,8 +356,8 @@ class UserCostCentre(Base):
     blocked_at = Column(DateTime(timezone=True), nullable=True)
 
     # Audit
-    created_at = Column(DateTime(timezone=True), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="cost_centres", foreign_keys=[user_id])
     cost_centre = relationship("CostCentre", back_populates="members", foreign_keys=[cost_centre_id])
@@ -1281,3 +1281,24 @@ class InstantBudgetRequest(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VendorUser(Base):
+    """Vendor-specific user accounts"""
+    __tablename__ = "vendor_users"
+
+    user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    email = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    first_name = Column(String(255), nullable=False)
+    role = Column(String(50), nullable=False, default="vendor_staff")  # vendor_admin / vendor_staff
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_vendor_users_vendor_email_unique', 'vendor_id', 'email', unique=True),
+    )

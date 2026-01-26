@@ -1,11 +1,9 @@
-import secrets
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 import secrets
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
-from pydantic import BaseModel, EmailStr
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -14,14 +12,15 @@ from starlette.responses import  Response
 from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
     SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
-    CostCenterBudget
+    CostCenterBudget, VendorUser
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
-    RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest
+    RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
+    VendorUserCreate, VendorUserUpdate
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_customer
-from provisioning_service.core.permission_check_helpers import require_permission, check_tenant_access
+from provisioning_service.core.permission_check_helpers import check_tenant_access
 from provisioning_service.core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.utils.logger import logger
@@ -315,7 +314,7 @@ async def list_site_tenants(
         # Verify site exists and is accessible by the user's tenant
         site_access = db.query(SiteTenant).filter(
             SiteTenant.site_id == uuid.UUID(site_id),
-            SiteTenant.tenant_id == user.tenant_id
+            SiteTenant.tenant_id == user["tenant_id"]
         ).first()
         
         if not site_access:
@@ -927,6 +926,65 @@ async def create_vendor(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/vendor-user")
+def create_vendor_user(payload: VendorUserCreate, db: Session = Depends(get_db)):
+    # uniqueness check (vendor + email)
+    existing = (
+        db.query(VendorUser)
+        .filter(VendorUser.vendor_id == payload.vendor_id, VendorUser.email == payload.email)
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="vendor user with this email already exists")
+
+    obj = VendorUser(
+        vendor_id=payload.vendor_id,
+        email=payload.email,
+        password_hash=payload.password_hash,
+        first_name=payload.first_name,
+        role=payload.role,
+        active=payload.active,
+    )
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+
+@router.get("/vendor-user")
+def list_vendor_users(
+    vendor_id: Optional[uuid.UUID] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    q = db.query(VendorUser)
+    if vendor_id:
+        q = q.filter(VendorUser.vendor_id == vendor_id)
+    items = q.order_by(VendorUser.created_at.desc()).limit(limit).offset(offset).all()
+    return items
+
+@router.put("/{user_id}")
+def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Session = Depends(get_db)):
+    obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="vendor user not found")
+
+    update_data = payload.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(obj, key, value)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+@router.delete("/{user_id}")
+def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="vendor user not found")
+    db.delete(obj)
+    db.commit()
+    return True
+
 @router.get("/vendors")
 async def list_vendors(
         tenant_id: Optional[str] = Query(None),
@@ -969,7 +1027,7 @@ async def create_cost_centre(
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
-        
+
         # Check entitlement limit (feature). If feature not in plan, this will raise.
         try:
             check_feature_limit(db, req.tenant_id, "cost_centres", count=1)
@@ -1009,7 +1067,10 @@ async def create_cost_centre(
                                      period_end=req.period_end, period_type=req.period_type, period_number=req.period_number,
                                      remaining_to_allocate_minor=req.budget_amount_minor,status="active",
                                      created_by=req.created_by)
+        db.add(cc_budget)
         db.commit()
+        db.refresh(cc_budget)
+
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
 
@@ -1091,20 +1152,22 @@ async def assign_user_to_cost_centre(
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Verify cost centre exists
         cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
 
         cc_budget = db.query(CostCenterBudget).filter(CostCenterBudget.cost_centre_id == uuid.UUID(cost_centre_id)).first()
         if not cc:
             raise HTTPException(status_code=404, detail="Cost centre not found")
-        
+        if not cc_budget:
+            raise HTTPException(status_code=404, detail="Cost centre budget not found; create budget first")
+
         # Check if the assignment already exists
         existing = db.query(UserCostCentre).filter(
             UserCostCentre.user_id == uuid.UUID(user_id),
             UserCostCentre.cost_centre_id == uuid.UUID(cost_centre_id)
         ).first()
-        
+
         # If already mapped, allow increasing allocation (idempotent update with remaining-budget check)
         if existing:
             current_alloc = existing.allocated_minor or 0
@@ -1130,10 +1193,13 @@ async def assign_user_to_cost_centre(
                     "next_recurring_at": str(existing.next_recurring_at) if existing.next_recurring_at else None
                 }
             delta = allocated_budget_minor - current_alloc
-            remaining_cc = (cc_budget.budget_amount_minor or 0) - (cc_budget.total_spent_minor or 0)
+            # Remaining = total budget - already allocated to users - total spent
+            remaining_cc = (cc_budget.budget_amount_minor or 0) - ((cc_budget.allocated_to_users_minor or 0) + (cc_budget.total_spent_minor or 0))
             if delta > remaining_cc:
                 raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
-            cc_budget.total_spent_minor = (cc_budget.total_spent_minor or 0) + delta
+            # Update budget allocations
+            cc_budget.allocated_to_users_minor = (cc_budget.allocated_to_users_minor or 0) + delta
+            cc_budget.remaining_to_allocate_minor = (cc_budget.budget_amount_minor or 0) - ((cc_budget.allocated_to_users_minor or 0) + (cc_budget.total_spent_minor or 0))
             existing.allocated_minor = allocated_budget_minor
             if not existing.next_recurring_at:
                 existing.next_recurring_at = compute_next_reset(existing.recurring_period)
@@ -1151,39 +1217,49 @@ async def assign_user_to_cost_centre(
                 "recurring_period": existing.recurring_period,
                 "next_recurring_at": str(existing.next_recurring_at) if existing.next_recurring_at else None
             }
-        
+
         # Enforce remaining budget if allocating
         if allocated_budget_minor and allocated_budget_minor > 0:
-            remaining_cc = (cc_budget.budget_amount_minor or 0) - (cc_budget.total_spent_minor or 0)
+            # Remaining = total budget - already allocated - total spent
+            remaining_cc = (cc_budget.budget_amount_minor or 0) - ((cc_budget.allocated_to_users_minor or 0) + (cc_budget.total_spent_minor or 0))
             if allocated_budget_minor > remaining_cc:
                 raise HTTPException(status_code=400, detail="Insufficient cost centre remaining budget")
-            cc_budget.total_spent_minor = (cc_budget.total_spent_minor or 0) + allocated_budget_minor
+            # Increase allocated_to_users (not total_spent) when assigning to a user
+            cc_budget.allocated_to_users_minor = (cc_budget.allocated_to_users_minor or 0) + allocated_budget_minor
+            cc_budget.remaining_to_allocate_minor = (cc_budget.budget_amount_minor or 0) - ((cc_budget.allocated_to_users_minor or 0) + (cc_budget.total_spent_minor or 0))
 
         # Create assignment
         user_cc = UserCostCentre(
+            cc_budget_id=cc_budget.budget_id,
             user_budget_id=uuid.uuid4(),
             user_id=uuid.UUID(user_id),
             cost_centre_id=uuid.UUID(cost_centre_id),
             allocated_minor=allocated_budget_minor,
             spent_minor=0,
             available_minor=allocated_budget_minor,
+            max_budget_minor=allocated_budget_minor,
             recurring_amount_minor=recurring_budget_minor or allocated_budget_minor,
             recurring_period=recurring_period.lower() if recurring_period else "none",
             next_recurring_at=compute_next_reset(recurring_period)
         )
         db.add(user_cc)
+        # Persist both the user assignment and the updated budget
+        db.add(cc_budget)
         db.commit()
         db.refresh(user_cc)
-        
+        db.refresh(cc_budget)
+
         logger.info(f"✅ Assigned user {user_id} to cost centre {cost_centre_id} with budget {allocated_budget_minor}")
-        
+
         return {
             "user_budget_id": str(user_cc.user_budget_id),
             "user_id": user_id,
             "cost_centre_id": cost_centre_id,
             "allocated_minor": allocated_budget_minor,
             "spent_minor": 0,
-            "available_minor": allocated_budget_minor
+            "available_minor": allocated_budget_minor,
+            "cost_centre_allocated_to_users_minor": cc_budget.allocated_to_users_minor,
+            "cost_centre_remaining_to_allocate_minor": cc_budget.remaining_to_allocate_minor
         }
     except HTTPException:
         raise
@@ -1204,19 +1280,19 @@ async def get_user_budget(
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get cost centre assignment
         user_cc = db.query(UserCostCentre).filter(
             UserCostCentre.user_id == uuid.UUID(user_id)
         ).first()
-        
+
         if not user_cc:
             return {
                 "user_id": user_id,
                 "has_budget": False,
                 "message": "User not assigned to any cost centre"
             }
-        
+
         # Get cost centre info and budget summary
         cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
         cc_budget = db.query(CostCenterBudget).filter(CostCenterBudget.cost_centre_id == user_cc.cost_centre_id).first()
@@ -1315,16 +1391,16 @@ async def get_user_spending_history(
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get spending events
         events = db.query(SpendingEvent).filter(
             SpendingEvent.user_id == uuid.UUID(user_id)
         ).order_by(SpendingEvent.created_at.desc()).limit(limit).offset(offset).all()
-        
+
         total = db.query(func.count(SpendingEvent.event_id)).filter(
             SpendingEvent.user_id == uuid.UUID(user_id)
         ).scalar()
-        
+
         return {
             "user_id": user_id,
             "events": [
@@ -1363,36 +1439,35 @@ async def get_user_subordinates(
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get manager's org unit assignments
         manager_assignments = db.query(UserOrgAssignment).filter(
             UserOrgAssignment.user_id == uuid.UUID(user_id)
         ).all()
-        
+
         if not manager_assignments:
             return {
                 "user_id": user_id,
                 "subordinates": [],
                 "total": 0
             }
-        
+
         # Get org unit IDs where this user is assigned
         org_unit_ids = [assignment.org_unit_id for assignment in manager_assignments]
-        
+
         # Get all users assigned to these org units (excluding the manager)
         subordinate_assignments = db.query(UserOrgAssignment, User).join(
              User, UserOrgAssignment.user_id == User.user_id
          ).filter(
              UserOrgAssignment.org_unit_id.in_(org_unit_ids),
              UserOrgAssignment.user_id != uuid.UUID(user_id),
--            User.active == True
-+            User.is_active == True
+             User.is_active == True
          ).all()
 
         # Deduplicate subordinates
         seen_users = set()
         subordinates = []
-        
+
         for assignment, subordinate in subordinate_assignments:
             if subordinate.user_id not in seen_users:
                 seen_users.add(subordinate.user_id)
@@ -1402,7 +1477,7 @@ async def get_user_subordinates(
                     "display_name": subordinate.display_name,
                     "org_unit_id": str(assignment.org_unit_id)
                 })
-        
+
         return {
             "user_id": user_id,
             "subordinates": subordinates,
