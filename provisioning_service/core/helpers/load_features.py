@@ -25,7 +25,6 @@ def insert_features_from_csv(csv_file: str):
                         active=True
                     )
                     session.add(feature)
-                    print(row["plan"])
                     plan=session.query(SubscriptionPlan).filter_by(code=row["plan"]).first()
                     if not plan:
                         plan=SubscriptionPlan(plan_id=uuid.uuid4(),code=row["plan"],name="Core Plan",description="The core plan",

@@ -300,8 +300,8 @@ class CostCenterBudget(Base):
     budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Foreign keys
-    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("org_costcentres.cost_centre_id"), nullable=False)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("prov_tenant.tenant_id"), nullable=False)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False)
 
     # Period info
     fiscal_year = Column(Integer, nullable=False)
@@ -312,23 +312,20 @@ class CostCenterBudget(Base):
 
     # Budget amounts (minor units = cents/paise)
     budget_amount_minor = Column(BigInteger, nullable=False)
-    allocated_to_users_minor = Column(BigInteger, nullable=False)
-    remaining_to_allocate_minor = Column(BigInteger, nullable=False)
-    total_spent_minor = Column(BigInteger, nullable=False)
-    lapsed_amount_minor = Column(BigInteger, nullable=False)
+    allocated_to_users_minor = Column(BigInteger, nullable=False, default=0)
+    remaining_to_allocate_minor = Column(BigInteger, nullable=True)
+    total_spent_minor = Column(BigInteger, nullable=False, default=0)
+    lapsed_amount_minor = Column(BigInteger, nullable=True)
 
     # Status
     status = Column(String(20), nullable=False)  # draft, active, closed
     closed_at = Column(DateTime(timezone=True), nullable=True)
-    closed_by = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=True)
+    closed_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     # Audit
-    created_by = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
-
-    # Relationships
-    user_allocations = relationship("CCUserBudget", back_populates="budget")
 
 
 class UserCostCentre(Base):
@@ -337,8 +334,8 @@ class UserCostCentre(Base):
     user_budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Foreign keys
-    user_id = Column(UUID(as_uuid=True), ForeignKey("prov_user.user_id"), nullable=False)
-    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("org_costcentres.cost_centre_id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False)
     cc_budget_id = Column(UUID(as_uuid=True), ForeignKey("cost_center_budget.budget_id"), nullable=False)
     clearance_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True)
 
@@ -362,6 +359,10 @@ class UserCostCentre(Base):
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
+    user = relationship("User", back_populates="cost_centres", foreign_keys=[user_id])
+    cost_centre = relationship("CostCentre", back_populates="members", foreign_keys=[cost_centre_id])
+    cc_budget = relationship("CostCenterBudget", foreign_keys=[cc_budget_id])
+    clearance_request = relationship("ApprovalRequest", foreign_keys=[clearance_request_id])
 
 class SubscriptionPlan(Base):
     """Subscription plan - TODO: migrate to UUID for consistency"""

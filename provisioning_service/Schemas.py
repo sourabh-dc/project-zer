@@ -242,6 +242,7 @@ class CostCentreRequest(BaseModel):
     period_end: Optional[date] = Field(None, description="Period end date")
     budget_amount_minor: Optional[int] = Field(None, ge=0, description="Budget amount in minor units for the period")
 
+    created_by: str = Field(..., description="Created by user ID (UUID, FK->users.user_id)")
 
 
 class OrgUnitRequest(BaseModel):

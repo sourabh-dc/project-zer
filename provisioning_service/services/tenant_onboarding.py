@@ -319,7 +319,7 @@ async def tenant_login(
 
         password_valid = bcrypt.checkpw(
             req.password.encode('utf-8'),
-            user.password.encode('utf-8')
+            user.password_hash.encode('utf-8')
         )
 
         if not password_valid:
@@ -336,7 +336,7 @@ async def tenant_login(
             )
 
         # Check if the user is active
-        if not user.active:
+        if not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive"
