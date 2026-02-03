@@ -1032,3 +1032,30 @@ class CheckoutRequest(BaseModel):
     mode: str = "payment"
     billing_cycle: str = "monthly"
     plan_code: str
+
+class BudgetRequestCreate(BaseModel):
+    tenant_id: int
+    cost_center_id: int
+    requested_by: int
+    amount: float
+    description: str | None = None
+
+
+class BudgetApprovalCreate(BaseModel):
+    budget_request_id: int
+    approver_id: int
+    approved_amount: float
+    comments: str | None = None
+
+
+class BudgetRequestOut(BaseModel):
+    id: int
+    tenant_id: int
+    cost_center_id: int
+    requested_by: int
+    amount: float
+    status: str
+    description: str | None
+
+    class Config:
+        orm_mode = True

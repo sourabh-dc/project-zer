@@ -1,17 +1,18 @@
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List
 from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from operations_service.Models import Tenant, User, ApprovalRequest, ApprovalRequestApprover, \
     UserCostCentre, SpendingEvent, ApproverLimit, CostCentre, ApprovalLog, UserRole, Role, OrgUnit, \
-    ApprovalChain, ApprovalChainStep
-from operations_service.Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
-    ApprovalResponseRequest, ApproverLimitRequest
+    ApprovalChain, ApprovalChainStep, BudgetRequest, BudgetApproval
+from operations_service.Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, \
+    ApprovalRequestRequest, \
+    ApprovalResponseRequest, ApproverLimitRequest, BudgetRequestOut, BudgetRequestCreate, BudgetApprovalCreate
 from operations_service.core.db_config import get_db
-from operations_service.core.permission_check_helpers import require_permission, resolve_approvers_for_step, check_tenant_access
+from operations_service.core.user_auth import check_user_authorization
 from operations_service.utils.logger import logger
 from operations_service.utils.metrics import req_total, req_duration
 
@@ -821,7 +822,7 @@ async def expire_requests(db: Session = Depends(get_db)):
 async def create_or_update_approver_limit(
         req: ApproverLimitRequest,
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("budgets.manage"))
+        ctx: UserContext = Depends(check_user_authorization("budgets.manage"))
 ):
     """Create or update an approver's limit."""
     try:
@@ -883,7 +884,7 @@ async def list_approver_limits(
         approver_user_id: Optional[str] = Query(None),
         org_unit_id: Optional[str] = Query(None),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("budgets.manage"))
+        ctx: UserContext = Depends(check_user_authorization("budgets.manage"))
 ):
     """List approver limits."""
     try:
@@ -940,7 +941,7 @@ async def cancel_approval_request(
         request_id: str,
         cancellation_reason: Optional[str] = Query(None, description="Cancellation reason"),
         db: Session = Depends(get_db),
-        ctx: UserContext = Depends(require_permission("approvals.requests.create"))
+        ctx: UserContext = Depends(check_user_authorization("approvals.requests.create"))
 ):
     """Allow requesters to cancel pending requests"""
     try:
@@ -956,8 +957,6 @@ async def cancel_approval_request(
         if str(approval_request.requested_by) != ctx.user_id and "*" not in ctx.permissions:
             raise HTTPException(status_code=403, detail="Only the requester can cancel this request")
 
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, approval_request.tenant_id)
 
         # Only allow cancellation of pending requests
         if approval_request.request_status != "pending":
@@ -1002,3 +1001,43 @@ async def cancel_approval_request(
         db.rollback()
         logger.error(f"❌ Cancel approval request failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# Endpoint: Create a new budget request
+@router.post("/requests/", response_model=BudgetRequestOut)
+def create_request(request: BudgetRequestCreate, db: Session = Depends(get_db)):
+    db_request = BudgetRequest(**request.dict())
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    return db_request
+
+
+# Endpoint: Approve a request (partial or full)
+@router.post("/requests/approve/")
+def approve_request(approval: BudgetApprovalCreate, db: Session = Depends(get_db)):
+    db_request = db.query(BudgetRequest).filter(BudgetRequest.id == approval.budget_request_id).first()
+    if not db_request:
+        raise HTTPException(status_code=404, detail="Budget request not found")
+
+    db_approval = BudgetApproval(**approval.dict(), decision="approved")
+    db.add(db_approval)
+    db.commit()
+
+    # Check total approved amount
+    total_approved = sum([float(a.approved_amount) for a in db_request.approvals if a.decision == "approved"])
+    if total_approved == float(db_request.amount):
+        db_request.status = "fully_approved"
+    elif total_approved > 0:
+        db_request.status = "partially_approved"
+    db.commit()
+    db.refresh(db_request)
+
+    return {"message": "Approval recorded", "status": db_request.status}
+
+
+# Endpoint: List all requests
+@router.get("/requests/", response_model=List[BudgetRequestOut])
+def list_requests(db: Session = Depends(get_db)):
+    return db.query(BudgetRequest).filter(
+        BudgetRequest.status.in_(["pending", "partially_approved"])
+    ).order_by(BudgetRequest.created_at.desc()).all()
