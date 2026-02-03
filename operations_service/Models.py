@@ -2,11 +2,11 @@ from datetime import datetime
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship, backref
 import uuid
 
-from core.db_config import engine
-from utils.logger import logger
+from provisioning_service.core.db_config import engine
+from provisioning_service.utils.logger import logger
 
 # ==================================================================================
 # DATABASE MODELS
@@ -14,43 +14,85 @@ from utils.logger import logger
 Base = declarative_base()
 
 class Tenant(Base):
-    """Tenant organization model"""
     __tablename__ = "tenants"
 
     tenant_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sites = relationship("Site", secondary="site_tenants", back_populates="tenants")
-    tenant_name = Column(String(200), nullable=False, unique=True, index=True)
-    tenant_type = Column("tenant_type", String(50), nullable=False)  # customer, retailer, distributor
-    registration_number = Column(String(100), nullable=True)
-    email = Column(String(255), nullable=False, unique=True, index=True)
-    phone = Column(String(50), nullable=True)
-    active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    tenant_name = Column(String, nullable=False, index=True)
+    tenant_type = Column(String, nullable=False)  # retailer/brand/franchisee
+    email = Column(String, nullable=False, index=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    registration_number = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    default_currency = Column(String(3), nullable=True)
+    timezone = Column(String, nullable=True)
+    locale = Column(String, nullable=True)
+    billing_email = Column(String, nullable=True)
+    billing_address = Column(JSONB, nullable=True)
+    primary_domain = Column(String, nullable=True)
+    logo = Column(String, nullable=True)
+    owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    industry = Column(String, nullable=True)
+    tech_contact_email = Column(String, nullable=True)
+    support_contact_email = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
 
 class Site(Base):
-    """Site model - physical locations that can be managed by multiple tenants"""
     __tablename__ = "sites"
+
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), nullable=False)
-    site_type = Column(String(50), nullable=False)
+    name = Column(String, nullable=False)
+    site_type = Column(String, nullable=False)  # mall/campus/DC/online-hub
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    currency = Column(String(3), nullable=True)
+    timezone = Column(String, nullable=True)
+    language = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    fax = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    url = Column(String, nullable=True)
+    logo_url = Column(String, nullable=True)
+    primary_billing_address = Column(JSONB, nullable=True)
+    primary_shipping_address = Column(JSONB, nullable=True)
+    shipping_addresses = Column(JSONB, nullable=True)
     geo = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
-    tenants = relationship("Tenant", secondary="site_tenants", back_populates="sites")
+    external_id = Column(String, nullable=True)
+    is_headquarter = Column(Boolean, nullable=True, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
 
 class Store(Base):
-    """Store model - retail locations under a site"""
     __tablename__ = "stores"
+
     store_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    store_type = Column(String(50), nullable=False)
+    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=True, index=True)
+
+    name = Column(String, nullable=False)
+    store_type = Column(String, nullable=False)  # physical/online/kiosk/darkstore
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    currency = Column(String(3), nullable=True)
+    timezone = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    url = Column(String, nullable=True)
+    logo_url = Column(String, nullable=True)
+    primary_shipping_address = Column(JSONB, nullable=True)
+    pickup_address = Column(JSONB, nullable=True)
     geo = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    external_id = Column(String, nullable=True)
+    fulfillment_mode = Column(String, nullable=True)  # pickup/ship/both
+    inventory_policy = Column(String, nullable=True)  # track_on_hand
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class User(Base):
@@ -58,22 +100,31 @@ class User(Base):
 
     user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    aifi_customer_id = Column(String(64), nullable=True, index=True)
-    email = Column(String(255), nullable=False)
-    first_name = Column(String(255), nullable=False)
-    last_name = Column(String(255), nullable=False)
-    phone = Column(String(50), nullable=True)
-    user_metadata = Column(JSONB, nullable=True)
-    password = Column(String(255), nullable=True)
-    active = Column(Boolean, nullable=False, default=True, index=True)
-    failed_login_attempts = Column(Integer, nullable=False, default=0)
+
+    email = Column(String, nullable=False)
+    password_hash = Column(String, nullable=False)  # required
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    display_name = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    position = Column(String, nullable=True)
+    profile_image = Column(String, nullable=True)
+    is_sso_enabled = Column(Boolean, nullable=True, default=False)
+    home_site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id"), nullable=True)
+    home_store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=True)
+    home_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id"), nullable=True)
+    all_locations = Column(Boolean, nullable=True, default=False)
+
+    failed_login_attempts = Column(Integer, nullable=True, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
-    refresh_token = Column(String(255), nullable=True)
+    refresh_token = Column(String, nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
-    display_name = Column(String(255), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
         Index("ix_users_tenant_email_unique", "tenant_id", "email", unique=True),
@@ -158,16 +209,34 @@ class RoleScope(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+
 class OrgUnit(Base):
     """Organisational hierarchy unit"""
     __tablename__ = "org_units"
+
     org_unit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    type = Column(String(50), nullable=False, index=True)  # directorate, business_unit, cost_centre, etc.
-    name = Column(String(255), nullable=False)
+
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False, index=True)  # department/division/team
+    status = Column(String, nullable=False, index=True)  # active/archived
+
     parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    code = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+    manager_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    external_id = Column(String, nullable=True)
+    path = Column(String, nullable=True)
+    depth = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    tenant = relationship("Tenant", backref=backref("org_units", cascade="all, delete-orphan"))
+    parent = relationship("OrgUnit", remote_side=[org_unit_id], backref="children")
+    manager = relationship("User", backref="managed_org_units", foreign_keys=[manager_user_id])
+    users = relationship("User", backref="home_org_unit", foreign_keys="User.home_org_unit_id")
 
 
 class UserOrgAssignment(Base):
@@ -210,38 +279,90 @@ class Vendor(Base):
 class CostCentre(Base):
     """Cost Centre model - budget tracking"""
     __tablename__ = "cost_centres"
+
     cost_centre_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(200), nullable=False)
-    manager_user_id = Column(SQLUUID(as_uuid=True), nullable=True)  # Optional manager
-    budget_minor = Column(BigInteger, default=0)  # Amount in minor units (pence/cents)
-    spent_minor = Column(BigInteger, default=0)
-    currency_code = Column(String(3), default="GBP")
-    status = Column(String(50), default="active", index=True)
-    recurring_budget_minor = Column(BigInteger, default=0)
-    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
-    last_reset_date = Column(Date, nullable=True)
-    next_reset_date = Column(Date, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    code = Column(String(50), nullable=False)  # unique per tenant
+    name = Column(String(255), nullable=False)
+    description = Column(String(500), nullable=True)
+    owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+class CostCenterBudget(Base):
+    __tablename__ = "cost_center_budget"
+
+    # Primary key
+    budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Foreign keys
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False)
+
+    # Period info
+    fiscal_year = Column(Integer, nullable=False)
+    period_type = Column(String(20), nullable=False)  # annual, quarterly, monthly, custom
+    period_number = Column(Integer, nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+
+    # Budget amounts (minor units = cents/paise)
+    budget_amount_minor = Column(BigInteger, nullable=False)
+    allocated_to_users_minor = Column(BigInteger, nullable=False, default=0)
+    remaining_to_allocate_minor = Column(BigInteger, nullable=True)
+    total_spent_minor = Column(BigInteger, nullable=False, default=0)
+    lapsed_amount_minor = Column(BigInteger, nullable=True)
+
+    # Status
+    status = Column(String(20), nullable=False)  # draft, active, closed
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    closed_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    # Audit
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
 
 class UserCostCentre(Base):
     __tablename__ = "user_cost_centres"
+    # Primary key
+    user_budget_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
-    allocated_budget_minor = Column(BigInteger, nullable=False, default=0)
-    spent_minor = Column(BigInteger, nullable=False, default=0)
-    currency_code = Column(String(3), default="GBP")
-    recurring_budget_minor = Column(BigInteger, default=0)  # Auto-allocated amount
-    recurring_period = Column(String(20), default="none")  # none, daily, weekly, monthly, yearly
-    last_reset_date = Column(Date, nullable=True)
-    next_reset_date = Column(Date, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    user = relationship("User", back_populates="cost_centres")
-    cost_centre = relationship("CostCentre", back_populates="members")
+    # Foreign keys
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    cost_centre_id = Column(UUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False)
+    cc_budget_id = Column(UUID(as_uuid=True), ForeignKey("cost_center_budget.budget_id"), nullable=False)
+    clearance_request_id = Column(UUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True)
+
+    # Budget allocations
+    max_budget_minor = Column(BigInteger, nullable=False)  # admin-set cap
+    allocated_minor = Column(BigInteger, nullable=False)  # allocated from CC
+    spent_minor = Column(BigInteger, nullable=False)  # amount spent
+    available_minor = Column(BigInteger, nullable=False)  # allocated - spent
+    recurring_amount_minor = Column(BigInteger, nullable=False)  # recurring allocation amount
+
+    # Recurring info
+    recurring_period = Column(String(20), nullable=True)  # weekly, monthly, etc.
+    next_recurring_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Blocking info
+    is_blocked = Column(Boolean, nullable=False, default=False)
+    blocked_reason = Column(String(255), nullable=True)
+    blocked_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Audit
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="cost_centres", foreign_keys=[user_id])
+    cost_centre = relationship("CostCentre", back_populates="members", foreign_keys=[cost_centre_id])
+    cc_budget = relationship("CostCenterBudget", foreign_keys=[cc_budget_id])
+    clearance_request = relationship("ApprovalRequest", foreign_keys=[clearance_request_id])
 
 class SubscriptionPlan(Base):
     """Subscription plan - TODO: migrate to UUID for consistency"""
@@ -292,6 +413,8 @@ class PlanFeature(Base):
     plan_code = Column(String(50), ForeignKey("subscription_plans.code", ondelete="CASCADE"), nullable=False, index=True)
     feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
+    # Optional limits per plan/feature (e.g., {"max_value": 5, "warn_at": 4})
+    limits = Column(JSON, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -529,16 +652,19 @@ class ApprovalRequest(Base):
     __tablename__ = "approval_requests"
     request_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    chain_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_chains.chain_id"), nullable=False, index=True)
+    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
+    chain_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_chains.chain_id"), nullable=True, index=True)
     request_number = Column(String(50), nullable=False, unique=True, index=True)
-    request_type = Column(String(50), nullable=False, index=True)  # budget, order, vendor
+    request_type = Column(String(50), nullable=False, index=True)  # budget, order, vendor, approval_limit_increase, cost_centre_increase
     request_data = Column(JSONB, nullable=False)
     requested_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, denied
+    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, partially_approved, approved, rejected, closed, expired, escalated
     current_step_number = Column(Integer, default=1, nullable=False)
     total_amount_minor = Column(Integer, nullable=True)
+    remaining_amount_minor = Column(Integer, nullable=True)
     currency = Column(String(3), default="GBP", nullable=True)
     due_date = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     completed_date = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -552,7 +678,8 @@ class ApprovalRequestApprover(Base):
     approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
     approver_role = Column(String(100), nullable=False)
     step_number = Column(Integer, nullable=False)
-    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, denied
+    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected
+    approved_amount_minor = Column(Integer, nullable=True)
     notes = Column(String(500), nullable=True)
     responded_at = Column(DateTime(timezone=True), nullable=True)
     escalation_sent = Column(Boolean, default=False, nullable=False)
@@ -563,6 +690,35 @@ class ApprovalRequestApprover(Base):
         Index('ix_approval_request_approver_status', 'status'),
         Index('ix_approval_request_approver_step', 'request_id', 'step_number'),
     )
+
+
+class ApprovalLog(Base):
+    """Immutable approval action log"""
+    __tablename__ = "approval_logs"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    action = Column(String(30), nullable=False)  # created, approved, partial_approved, rejected, expired, escalated
+    amount_minor = Column(Integer, nullable=True)
+    remaining_amount_minor = Column(Integer, nullable=True)
+    comment = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ApproverLimit(Base):
+    """Approver limits with reset windows"""
+    __tablename__ = "approver_limits"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
+    limit_amount_minor = Column(Integer, nullable=False)
+    consumed_amount_minor = Column(Integer, nullable=False, default=0)
+    reset_period = Column(String(20), default="daily", nullable=False)  # daily, weekly, monthly, custom
+    reset_anchor = Column(DateTime(timezone=True), nullable=True)
+    last_reset_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 #New Code - Sebin
 class PaymentTransaction(Base):
@@ -1106,27 +1262,6 @@ class SiteTenant(Base):
     )
 
 
-class ApproverLimit(Base):
-    """Approver limit model for instant budget approvals"""
-    __tablename__ = "approver_limits"
-    
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=True, index=True)
-    daily_limit_minor = Column(BigInteger, nullable=False, default=0)
-    daily_spent_minor = Column(BigInteger, nullable=False, default=0)
-    monthly_limit_minor = Column(BigInteger, nullable=False, default=0)
-    monthly_spent_minor = Column(BigInteger, nullable=False, default=0)
-    currency_code = Column(String(3), default="INR", nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_approver_limit_unique', 'tenant_id', 'user_id', 'cost_centre_id', unique=True),
-    )
-
-
 class InstantBudgetRequest(Base):
     """Instant budget request model"""
     __tablename__ = "instant_budget_requests"
@@ -1148,10 +1283,22 @@ class InstantBudgetRequest(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-# Create tables
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("✅ Database tables initialized")
-except Exception as e:
-    logger.error(f"❌ Table initialization failed: {e}")
+class VendorUser(Base):
+    """Vendor-specific user accounts"""
+    __tablename__ = "vendor_users"
 
+    user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    email = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    first_name = Column(String(255), nullable=False)
+    role = Column(String(50), nullable=False, default="vendor_staff")  # vendor_admin / vendor_staff
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_vendor_users_vendor_email_unique', 'vendor_id', 'email', unique=True),
+    )

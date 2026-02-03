@@ -3,7 +3,6 @@ Internal API routes for managing system configuration.
 Used by developers/admins to manage plans, features, roles, and permissions.
 """
 import uuid
-from datetime import datetime
 from typing import Optional
 from fastapi import Depends, APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -11,10 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
-from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest, PlanFeatureRequest
+from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.utils.logger import logger
-from provisioning_service.utils.metrics import req_total
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 

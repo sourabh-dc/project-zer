@@ -14,13 +14,12 @@ from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store,
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
     CostCenterBudget, VendorUser
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
-    CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, PasswordResetRequest, AssignRoleRequest, \
+    CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
     VendorUserCreate, VendorUserUpdate
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_customer
-from provisioning_service.core.permission_check_helpers import check_tenant_access
 from provisioning_service.core.user_auth import generate_api_key, invalidate_user_context, check_user_authorization
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.utils.logger import logger

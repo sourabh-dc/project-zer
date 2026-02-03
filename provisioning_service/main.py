@@ -11,7 +11,7 @@ from provisioning_service.core.helpers.load_features import insert_features_from
 from provisioning_service.services.provisioning_routes import router as provisioning_router
 from provisioning_service.services.catalog_routes import router as catalog_router
 from provisioning_service.services.auth_routes import router as auth_router
-from provisioning_service.services.approval_routes import router as approval_router
+from operations_service.operations.approval_routes import router as approval_router
 from provisioning_service.services.internal_routes import router as internal_router
 from provisioning_service.services.plan_routes import router as plan_router
 from provisioning_service.services.subscriptions_routes import router as subscriptions_router

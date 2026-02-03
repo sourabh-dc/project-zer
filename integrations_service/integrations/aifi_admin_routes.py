@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from integrations_service.core.db_config import get_db
 from integrations_service.Models import AifiStoreMap
-from operations_service.operations.orders import upsert_aifi_order
+from integrations_service.orders import upsert_aifi_order
 from integrations_service.core.helpers import aifi_services as aifi
 from integrations_service.Models import User, Product
 

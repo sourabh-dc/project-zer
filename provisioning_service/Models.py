@@ -5,9 +5,6 @@ from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship, backref
 import uuid
 
-from provisioning_service.core.db_config import engine
-from provisioning_service.utils.logger import logger
-
 # ==================================================================================
 # DATABASE MODELS
 # ==================================================================================
@@ -250,19 +247,6 @@ class UserOrgAssignment(Base):
     assigned_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class ApprovalDelegation(Base):
-    """Delegated approval assignments"""
-    __tablename__ = "approval_delegations"
-    delegation_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    delegator_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    delegate_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    resource_type = Column(String(50), nullable=True, index=True)
-    resource_id = Column(SQLUUID(as_uuid=True), nullable=True, index=True)
-    valid_from = Column(DateTime(timezone=True), nullable=True)
-    valid_to = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class Vendor(Base):
     """Vendor model - suppliers and partners"""
     __tablename__ = "vendors"
@@ -440,20 +424,6 @@ class TenantSubscription(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class SiteBillingAccount(Base):
-    """Site billing account model - payment details for sites"""
-    __tablename__ = "site_billing_accounts"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True, nullable=False)
-    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="CASCADE"), index=True, nullable=False)
-    payment_method = Column(String(20), nullable=False)
-    external_id = Column(String(100), index=True, nullable=False)
-    active = Column(Boolean, default=True, nullable=False, index=True)
-    account_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
 class SubscriptionUsage(Base):
     """Subscription usage tracking - monitors feature usage by tenant"""
     __tablename__ = "subscription_usage"
@@ -520,7 +490,6 @@ class StoreVariant(Base):
     )
 
 
-
 class Category(Base):
     """Product category model"""
     __tablename__ = "categories"
@@ -570,7 +539,6 @@ class Product(Base):
     )
 
 
-
 class Variant(Base):
     """Product variant model - SKU variations (size, color, etc.)"""
     __tablename__ = "variants"
@@ -585,20 +553,6 @@ class Variant(Base):
     stock_quantity = Column(Integer, default=0, nullable=False)
     low_stock_threshold = Column(Integer, default=10, nullable=False)
     active = Column(Boolean, default=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class Pricebook(Base):
-    """Pricebook model - store-specific pricing catalogs"""
-    __tablename__ = "pricebooks"
-    pricebook_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    description = Column(String(500), nullable=True)
-    currency = Column(String(3), default="GBP", nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -619,32 +573,6 @@ class PriceRule(Base):
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class ApprovalChain(Base):
-    """Approval chain model - workflow templates for approval processes"""
-    __tablename__ = "approval_chains"
-    chain_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    description = Column(String(500), nullable=True)
-    chain_type = Column(String(50), nullable=False, index=True)  # budget, purchase_order, vendor_onboarding
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class ApprovalChainStep(Base):
-    """Approval chain step model - individual steps in an approval chain"""
-    __tablename__ = "approval_chain_steps"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    approval_chain_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_chains.chain_id", ondelete="CASCADE"), nullable=False, index=True)
-    step_number = Column(Integer, nullable=False)
-    approver_role = Column(String(100), nullable=False)  # manager, finance_controller, director
-    approver_scope = Column(String(50), nullable=False)  # site, tenant, store
-    escalation_after_hours = Column(Integer, nullable=True)
-    is_required = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class ApprovalRequest(Base):
@@ -670,56 +598,6 @@ class ApprovalRequest(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class ApprovalRequestApprover(Base):
-    """Approval request approver model - tracks individual approver responses"""
-    __tablename__ = "approval_request_approvers"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id", ondelete="CASCADE"), nullable=False, index=True)
-    approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    approver_role = Column(String(100), nullable=False)
-    step_number = Column(Integer, nullable=False)
-    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected
-    approved_amount_minor = Column(Integer, nullable=True)
-    notes = Column(String(500), nullable=True)
-    responded_at = Column(DateTime(timezone=True), nullable=True)
-    escalation_sent = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_approval_request_approver_status', 'status'),
-        Index('ix_approval_request_approver_step', 'request_id', 'step_number'),
-    )
-
-
-class ApprovalLog(Base):
-    """Immutable approval action log"""
-    __tablename__ = "approval_logs"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id", ondelete="CASCADE"), nullable=False, index=True)
-    actor_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
-    action = Column(String(30), nullable=False)  # created, approved, partial_approved, rejected, expired, escalated
-    amount_minor = Column(Integer, nullable=True)
-    remaining_amount_minor = Column(Integer, nullable=True)
-    comment = Column(String(500), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class ApproverLimit(Base):
-    """Approver limits with reset windows"""
-    __tablename__ = "approver_limits"
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
-    limit_amount_minor = Column(Integer, nullable=False)
-    consumed_amount_minor = Column(Integer, nullable=False, default=0)
-    reset_period = Column(String(20), default="daily", nullable=False)  # daily, weekly, monthly, custom
-    reset_anchor = Column(DateTime(timezone=True), nullable=True)
-    last_reset_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
 #New Code - Sebin
 class PaymentTransaction(Base):
     """Payment transactions table"""
@@ -740,22 +618,6 @@ class PaymentTransaction(Base):
     user_id = Column(SQLUUID(as_uuid=True), nullable=True)
     transaction_metadata = Column(JSONB, nullable=True)
     raw_response = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=text('NOW()'))
-
-
-class Customer(Base):
-    """Customers table"""
-    __tablename__ = "customers"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    provider = Column(String(50), nullable=False)
-    external_customer_id = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=True)
-    name = Column(String(255), nullable=True)
-    phone = Column(String(50), nullable=True)
-    transaction_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text('NOW()'), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=text('NOW()'))
 
@@ -811,43 +673,6 @@ class TradeAccount(Base):
     updated_at = Column(DateTime(timezone=True), server_default=text('NOW()'), onupdate=text('NOW()'))
 
 
-class PaymentIntent(Base):
-    """Payment intent for transaction processing"""
-    __tablename__ = "payment_intents"
-
-    payment_intent_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey('tenants.tenant_id'), nullable=False)
-    order_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    trade_account_id = Column(SQLUUID(as_uuid=True), ForeignKey('trade_accounts.trade_account_id'), nullable=True)
-    amount_minor = Column(BigInteger, nullable=False)
-    currency = Column(String(3), nullable=False, default='GBP')
-    status = Column(String(20), nullable=False, default='pending')
-    provider = Column(String(50), nullable=False)
-    provider_intent_id = Column(String(255), nullable=True)
-    payment_method = Column(String(50), nullable=True)
-    payment_metadata = Column(JSONB, nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    succeeded_at = Column(DateTime(timezone=True), nullable=True)
-    failed_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
-    updated_at = Column(DateTime(timezone=True), server_default=text('NOW()'), onupdate=text('NOW()'))
-
-
-class CurrencyRate(Base):
-    """Currency exchange rates"""
-    __tablename__ = "currency_rates"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    base_currency = Column(String(3), nullable=False)
-    target_currency = Column(String(3), nullable=False)
-    rate = Column(String(50), nullable=False)
-    source = Column(String(50), nullable=False, default='manual')
-    valid_from = Column(DateTime(timezone=True), nullable=False)
-    valid_to = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
-
-
 class PaymentWebhook(Base):
     """Payment webhook events"""
     __tablename__ = "payment_webhooks"
@@ -861,53 +686,6 @@ class PaymentWebhook(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
 
-class Order(Base):
-    """Order entity"""
-    __tablename__ = "orders"
-
-    order_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    aifi_order_id = Column(String(50), nullable=True, unique=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    customer_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    order_number = Column(String(50), nullable=False, unique=True)
-    order_status = Column(String(20), nullable=False, default='pending')
-    order_type = Column(String(20), nullable=False, default='purchase')
-    total_amount_minor = Column(Integer, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    payment_status = Column(String(20), nullable=False, default='pending')
-    fulfillment_status = Column(String(20), nullable=False, default='pending')
-    approval_request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
-    shipping_address = Column(JSON, nullable=True)
-    billing_address = Column(JSON, nullable=True)
-    order_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class AifiStoreMap(Base):
-    """Mapping between AiFi storeId (numeric/string) and our Store UUID."""
-    __tablename__ = "aifi_store_mappings"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    aifi_store_id = Column(String(64), nullable=False, unique=True, index=True)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, unique=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class OrderItem(Base):
-    """Order item entity"""
-    __tablename__ = "order_items"
-
-    item_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(SQLUUID(as_uuid=True), ForeignKey('orders.order_id'), nullable=False)
-    product_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    variant_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    quantity = Column(Integer, nullable=False)
-    unit_price_minor = Column(Integer, nullable=False)
-    total_price_minor = Column(Integer, nullable=False)
-    item_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class VendorSettlement(Base):
     """Vendor Settlement: Main settlement record for vendor payouts"""
@@ -1015,78 +793,6 @@ class VendorSettlementBatch(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
-class AifiSession(Base):
-    """AiFi session tracking"""
-    __tablename__ = "aifi_sessions"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=True, index=True)
-    aifi_session_id = Column(String(64), nullable=False, unique=True, index=True)
-    customer_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True, index=True)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True, index=True)
-    status = Column(String(50), nullable=True)
-    session_token = Column(String(128), nullable=True)
-    code = Column(String(128), nullable=True)
-    session_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class Budget(Base):
-    """Budget for cost centres - Phase 4"""
-    __tablename__ = "budgets"
-
-    budget_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey('cost_centres.cost_centre_id'), nullable=False)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    budget_year = Column(Integer, nullable=False)
-    budget_month = Column(Integer, nullable=False)
-    budget_type = Column(String(50), nullable=False)
-    budget_amount_minor = Column(BigInteger, nullable=False)
-    spent_amount_minor = Column(BigInteger, nullable=False, default=0)
-    available_amount_minor = Column(BigInteger, nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default='GBP')
-    status = Column(String(20), nullable=False, default='active')
-    approval_workflow_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
-class BudgetTransaction(Base):
-    """Budget transactions for spend tracking - Phase 4"""
-    __tablename__ = "budget_transactions"
-
-    transaction_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    budget_id = Column(SQLUUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    amount_minor = Column(BigInteger, nullable=False)
-    transaction_type = Column(String(50), nullable=False)
-    description = Column(Text, nullable=False)
-    reference_id = Column(String(100), nullable=True)
-    reference_type = Column(String(50), nullable=True)
-    approval_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    is_approved = Column(Boolean, nullable=False, default=False)
-    created_by = Column(SQLUUID(as_uuid=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class BudgetAlert(Base):
-    """Budget alerts for overspend notifications - Phase 4"""
-    __tablename__ = "budget_alerts"
-
-    alert_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    budget_id = Column(SQLUUID(as_uuid=True), ForeignKey('budgets.budget_id'), nullable=False)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    alert_type = Column(String(50), nullable=False)
-    threshold_percentage = Column(Numeric(5, 2), nullable=False)
-    message = Column(Text, nullable=False)
-    is_acknowledged = Column(Boolean, nullable=False, default=False)
-    acknowledged_by = Column(SQLUUID(as_uuid=True), nullable=True)
-    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class TradeInvoice(Base):
     """Trade Invoice: Tenant invoices for billing"""
     __tablename__ = "trade_invoices"
@@ -1128,105 +834,6 @@ class TradeInvoiceLine(Base):
     invoice = relationship("TradeInvoice", back_populates="lines")
 
 
-class BillingOutboxEvent(Base):
-    """Billing Outbox Event: For reliable event publishing"""
-    __tablename__ = "billing_outbox_events"
-
-    event_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    aggregate_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    retry_count = Column(Integer, nullable=False, default=0)
-
-class LedgerEntryNew(Base):
-    """Enhanced ledger entry with v4.1 features"""
-    __tablename__ = "ledger_entries_new"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    vendor_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    account = Column(String(100), nullable=False)
-    entry_type = Column(String(20), nullable=False)
-    amount_minor = Column(BigInteger, nullable=False)
-    currency = Column(String(3), nullable=False)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    reference_type = Column(String(50), nullable=True)
-    reference_id = Column(String(255), nullable=True)
-    description = Column(Text, nullable=True)
-    entry_metadata = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class AccountBalanceNew(Base):
-    """Precomputed account balances for performance"""
-    __tablename__ = "account_balances_new"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    account = Column(String(100), nullable=False)
-    currency = Column(String(3), nullable=False)
-    balance_minor = Column(BigInteger, nullable=False, server_default='0')
-    last_updated = Column(DateTime(timezone=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class OutboxEvent(Base):
-    """Outbox pattern for reliable event publishing"""
-    __tablename__ = "outbox_events"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    event_type = Column(String(100), nullable=False)
-    event_data = Column(JSONB, nullable=False)
-    status = Column(String(20), nullable=False, default='pending')
-    retry_count = Column(Integer, nullable=False, default=0)
-    max_retries = Column(Integer, nullable=False, default=3)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class AuditLog(Base):
-    """Audit trail for all operations"""
-    __tablename__ = "audit_logs"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(50), nullable=False)
-    resource_id = Column(String(255), nullable=True)
-    details = Column(JSONB, nullable=True)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    session_id = Column(String(100), nullable=True)
-    correlation_id = Column(String(100), nullable=True)
-    severity = Column(String(20), nullable=False, default="info")
-    category = Column(String(50), nullable=False, default="system")
-    retention_until = Column(DateTime(timezone=True), nullable=True)
-
-
-class IdempotencyRecord(Base):
-    """Idempotency records to prevent duplicate operations"""
-    __tablename__ = "idempotency_records"
-
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
-    user_id = Column(SQLUUID(as_uuid=True), nullable=True)
-    request_hash = Column(String(255), nullable=False)
-    response_data = Column(JSONB, nullable=False)
-    status_code = Column(Integer, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-
-
 class SpendingEvent(Base):
     """Spending events for budget tracking and audit"""
     __tablename__ = "spending_events"
@@ -1260,27 +867,6 @@ class SiteTenant(Base):
     __table_args__ = (
         Index('ix_site_tenant_unique', 'site_id', 'tenant_id', unique=True),
     )
-
-
-class InstantBudgetRequest(Base):
-    """Instant budget request model"""
-    __tablename__ = "instant_budget_requests"
-    
-    request_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
-    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True, index=True)
-    requested_amount_minor = Column(BigInteger, nullable=False)
-    approved_amount_minor = Column(BigInteger, nullable=False, default=0)
-    remaining_amount_minor = Column(BigInteger, nullable=False)
-    reason = Column(Text, nullable=True)
-    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected, expired, partial
-    requested_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
-    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
-    approved_at = Column(DateTime(timezone=True), nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class VendorUser(Base):

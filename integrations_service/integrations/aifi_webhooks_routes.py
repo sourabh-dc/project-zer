@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations_service.core.helpers import aifi_services as aifi
-from operations_service.operations.orders import upsert_aifi_order
+from integrations_service.orders import upsert_aifi_order
 from integrations_service.utils.logger import logger
 
 router = APIRouter(prefix="/integrations/vendors/aifi/webhooks", tags=["integrations"])

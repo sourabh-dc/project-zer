@@ -5,15 +5,15 @@ from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import Tenant, User, ApprovalRequest, ApprovalRequestApprover, \
+from operations_service.Models import Tenant, User, ApprovalRequest, ApprovalRequestApprover, \
     UserCostCentre, SpendingEvent, ApproverLimit, CostCentre, ApprovalLog, UserRole, Role, OrgUnit, \
     ApprovalChain, ApprovalChainStep
-from provisioning_service.Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
+from operations_service.Schemas import UserContext, ApprovalChainRequest, ApprovalChainStepRequest, ApprovalRequestRequest, \
     ApprovalResponseRequest, ApproverLimitRequest
-from provisioning_service.core.db_config import get_db
-from provisioning_service.core.permission_check_helpers import require_permission, resolve_approvers_for_step, check_tenant_access
-from provisioning_service.utils.logger import logger
-from provisioning_service.utils.metrics import req_total, req_duration
+from operations_service.core.db_config import get_db
+from operations_service.core.permission_check_helpers import require_permission, resolve_approvers_for_step, check_tenant_access
+from operations_service.utils.logger import logger
+from operations_service.utils.metrics import req_total, req_duration
 
 
 router = APIRouter(prefix="/approvals", tags=["Approvals"])

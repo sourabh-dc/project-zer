@@ -15,7 +15,6 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
-from provisioning_service.core.permission_check_helpers import require_permission
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.utils.logger import logger

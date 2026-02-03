@@ -4,14 +4,14 @@ from typing import Optional, Dict, List
 
 from sqlalchemy.orm import Session
 
-from Models import (
+from operations_service.Models import (
     LedgerEntryNew as LedgerEntry,
     AccountBalanceNew as AccountBalance,
     Order,
     OrderItem,
 )
-from core.db_config import SessionLocal
-from utils.logger import logger
+from operations_service.core.db_config import SessionLocal
+from operations_service.utils.logger import logger
 
 
 def _items_summary(items: List[OrderItem]) -> List[Dict]:

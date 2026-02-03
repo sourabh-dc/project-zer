@@ -8,9 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from operations.orders import upsert_aifi_order  # noqa: F401 (ensure deps loaded)
 from operations.ledger_routes import router as ledger_router
-from services.auth_routes import router as auth_router
+from operations.approval_routes import router as approval_router
 
 app = FastAPI(title="Operations Service", version="1.0.0")
 
@@ -24,7 +23,7 @@ app.add_middleware(
 )
 
 # Operations-specific routers
-app.include_router(auth_router, tags=["authentication"])
+app.include_router(approval_router, tags=["approval"])
 app.include_router(ledger_router, tags=["operations"])
 
 

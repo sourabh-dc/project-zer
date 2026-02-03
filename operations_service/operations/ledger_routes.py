@@ -4,14 +4,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 
-from core.db_config import get_db
-from Models import (
+from operations_service.core.db_config import get_db
+from operations_service.Models import (
     Order,
     OrderItem,
     LedgerEntryNew as LedgerEntry,
     AccountBalanceNew as AccountBalance,
 )
-from operations.ledger import record_order_ledger, record_entry_pair
+from operations_service.operations.ledger import record_order_ledger, record_entry_pair
 
 router = APIRouter(prefix="/operations/ledger", tags=["operations"])
 

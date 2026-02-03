@@ -6,7 +6,7 @@ import asyncio
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import uuid
-
+import os
 import httpx
 
 from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, SpendingEvent, User
