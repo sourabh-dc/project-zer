@@ -1,17 +1,25 @@
 # services/core/routes/entitlements.py
 """
-Entitlement Service
+Entitlement Service - With Policy Engine Integration
+
+Policies enforced:
+1. entitlement.access - Cross-tenant access, subscription status, feature in plan, usage limits
+2. entitlement.usage.warning - Warnings when approaching limits
+
+Features:
 - Check if tenant can use a feature
 - Record feature usage with concurrency safety
 - Proper billing cycle anchoring (not calendar-based)
 - Support for daily, weekly, monthly, yearly reset periods
 """
 import uuid
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from dateutil.relativedelta import relativedelta
+import httpx
 
 from Models import (
     TenantSubscription, PlanFeature, Feature, SubscriptionUsage
@@ -22,6 +30,32 @@ from core.permission_check_helpers import require_permission
 from utils.logger import logger
 
 router = APIRouter(prefix="/v1/entitlements", tags=["entitlements"])
+
+POLICY_ENGINE_URL = os.getenv("POLICY_ENGINE_URL", "http://localhost:8004")
+
+
+async def evaluate_policy(action: str, subject: dict, resource: dict, context: dict = None) -> dict:
+    """Evaluate a policy against the Policy Engine."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{POLICY_ENGINE_URL}/v1/policy-engine/evaluate",
+                json={
+                    "action": action,
+                    "subject": subject,
+                    "resource": resource,
+                    "context": context or {}
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Policy Engine error: {response.status_code} - {response.text}")
+                return {"allowed": True, "effect": "allow", "reason": "Policy Engine unavailable"}
+    except Exception as e:
+        logger.error(f"Policy Engine connection error: {e}")
+        return {"allowed": True, "effect": "allow", "reason": f"Policy Engine unavailable: {e}"}
 
 
 # ============================================================================
@@ -35,24 +69,18 @@ def get_reset_delta(reset_period: str) -> relativedelta:
     elif reset_period == "weekly":
         return relativedelta(weeks=1)
     elif reset_period == "monthly":
-        return relativedelta(months=1)  # Proper month handling (28/29/30/31 days)
+        return relativedelta(months=1)
     elif reset_period == "yearly":
-        return relativedelta(years=1)  # Proper year handling (leap years)
+        return relativedelta(years=1)
     else:
-        return relativedelta(months=1)  # Default to monthly
+        return relativedelta(months=1)
 
 
 def get_current_period_start(sub: TenantSubscription, reset_period: str) -> datetime:
     """
     Calculate current period start anchored to billing cycle, NOT calendar.
-    
-    This ensures:
-    - Monthly resets happen on the same day each month (e.g., 15th)
-    - Yearly resets happen on the anniversary date
-    - No drift due to Feb having 28 days
     """
     if not sub.current_period_start:
-        # Fallback to now if no billing anchor
         return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     
     anchor = sub.current_period_start
@@ -62,11 +90,9 @@ def get_current_period_start(sub: TenantSubscription, reset_period: str) -> date
     now = datetime.now(timezone.utc)
     
     if reset_period == "daily":
-        # Daily: start of current day
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     elif reset_period == "weekly":
-        # Weekly: align to billing anchor's weekday
         anchor_weekday = anchor.weekday()
         current_weekday = now.weekday()
         days_since_anchor_weekday = (current_weekday - anchor_weekday) % 7
@@ -74,33 +100,22 @@ def get_current_period_start(sub: TenantSubscription, reset_period: str) -> date
         return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
     
     elif reset_period == "monthly":
-        # Monthly: same day of month as billing start
-        anchor_day = min(anchor.day, 28)  # Handle months with fewer days
-        
-        # Calculate months since anchor
+        anchor_day = min(anchor.day, 28)
         months_diff = (now.year - anchor.year) * 12 + (now.month - anchor.month)
-        
-        # If we haven't reached the anchor day this month, we're in the previous period
         if now.day < anchor_day:
             months_diff -= 1
-        
         period_start = anchor + relativedelta(months=months_diff)
         return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
     
     elif reset_period == "yearly":
-        # Yearly: anniversary of billing start
         years_diff = now.year - anchor.year
-        
-        # If we haven't reached the anniversary this year, we're in the previous period
         anchor_this_year = anchor.replace(year=now.year)
         if now < anchor_this_year:
             years_diff -= 1
-        
         period_start = anchor + relativedelta(years=years_diff)
         return period_start.replace(hour=0, minute=0, second=0, microsecond=0)
     
     else:
-        # Default to monthly
         return get_current_period_start(sub, "monthly")
 
 
@@ -111,11 +126,9 @@ def is_subscription_active(sub: TenantSubscription) -> bool:
     
     now = datetime.now(timezone.utc)
     
-    # Check status
     if sub.status not in ["active", "trialing"]:
         return False
     
-    # Check if trial expired
     if sub.status == "trialing" and sub.trial_ends_at:
         if sub.trial_ends_at.tzinfo is None:
             trial_end = sub.trial_ends_at.replace(tzinfo=timezone.utc)
@@ -124,7 +137,6 @@ def is_subscription_active(sub: TenantSubscription) -> bool:
         if trial_end < now:
             return False
     
-    # Check if subscription ended (after cancellation)
     if sub.ends_at:
         if sub.ends_at.tzinfo is None:
             ends = sub.ends_at.replace(tzinfo=timezone.utc)
@@ -149,92 +161,130 @@ async def check_entitlement(
     """
     Check if tenant is entitled to use a feature.
     
+    Policy Engine validates:
+    - Cross-tenant access denied
+    - Subscription must be active
+    - Feature must be in plan
+    - Usage limit not exceeded
+    
     Returns:
     - allowed: bool - whether the operation is permitted
     - reason: str - why it's not allowed (if applicable)
     - usage/limit/remaining: current usage stats (if metered)
+    - warning: str - if approaching limit
     """
-    if str(ctx.tenant_id) != req.tenant_id:
-        raise HTTPException(403, "Access denied to other tenant's entitlements")
-
-    # Get subscription with status check
+    # Get subscription
     sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    subscription_active = is_subscription_active(sub)
     
-    if not is_subscription_active(sub):
-        return {
-            "allowed": False,
-            "reason": "no_active_subscription",
-            "message": "No active subscription found. Please subscribe to a plan."
-        }
-
     # Check if feature is in plan
-    pf = db.query(PlanFeature).filter_by(
-        plan_code=sub.plan_code,
-        feature_code=req.feature_code,
-        enabled=True
-    ).first()
+    pf = None
+    feature_in_plan = False
+    if sub:
+        pf = db.query(PlanFeature).filter_by(
+            plan_code=sub.plan_code,
+            feature_code=req.feature_code,
+            enabled=True
+        ).first()
+        feature_in_plan = pf is not None
     
-    if not pf:
-        return {
-            "allowed": False,
-            "reason": "feature_not_in_plan",
-            "message": f"Feature '{req.feature_code}' is not included in your current plan."
-        }
-
-    # Check limits
-    limit = (pf.limits or {}).get("max_value")
-    warn_at = (pf.limits or {}).get("warn_at")
-    
-    if not limit:
-        # Unlimited feature
-        return {
-            "allowed": True,
-            "unlimited": True,
-            "message": "Feature has no usage limits."
-        }
-
-    # Get feature details for reset period
+    # Get feature details
     feature = db.query(Feature).filter_by(code=req.feature_code).first()
-    if not feature:
-        return {
-            "allowed": False,
-            "reason": "feature_not_found",
-            "message": "Feature configuration not found."
-        }
-
-    # Calculate period (anchored to billing cycle)
-    period_start = get_current_period_start(sub, feature.reset_period)
-    period_end = period_start + get_reset_delta(feature.reset_period)
     
-    # Get current usage
-    usage = db.query(SubscriptionUsage).filter_by(
-        tenant_id=ctx.tenant_id,
-        feature_code=req.feature_code,
-        period_start=period_start
-    ).first()
-
-    used = usage.usage_count if usage else 0
+    # Calculate usage info
+    limit = (pf.limits or {}).get("max_value") if pf else None
+    warn_at = (pf.limits or {}).get("warn_at") if pf else None
+    used = 0
+    period_start = None
+    period_end = None
+    
+    if sub and feature and limit:
+        period_start = get_current_period_start(sub, feature.reset_period)
+        period_end = period_start + get_reset_delta(feature.reset_period)
+        
+        usage = db.query(SubscriptionUsage).filter_by(
+            tenant_id=ctx.tenant_id,
+            feature_code=req.feature_code,
+            period_start=period_start
+        ).first()
+        used = usage.usage_count if usage else 0
+    
     requested = req.requested_count or 1
+    would_exceed = limit and (used + requested) > limit
+    usage_percentage = (used / limit * 100) if limit and limit > 0 else 0
     
-    # Check if request would exceed limit
-    would_exceed = (used + requested) > limit
-    
-    response = {
-        "allowed": not would_exceed,
-        "used": used,
-        "limit": limit,
-        "remaining": max(0, limit - used),
-        "requested": requested,
-        "resets_at": period_end.isoformat(),
-        "period_start": period_start.isoformat()
+    # Build context for Policy Engine
+    subject = {
+        "user_id": ctx.user_id,
+        "tenant_id": str(ctx.tenant_id),
+        "subscription_active": subscription_active,
+        "plan_features": [pf.feature_code] if pf else []
     }
     
-    if would_exceed:
-        response["reason"] = "limit_exceeded"
-        response["message"] = f"Would exceed limit. Used {used}/{limit}, requested {requested}."
+    resource = {
+        "tenant_id": req.tenant_id,
+        "feature_code": req.feature_code,
+        "feature_in_plan": feature_in_plan,
+        "current_usage": used,
+        "requested_count": requested,
+        "usage_limit": limit,
+        "would_exceed_limit": would_exceed,
+        "usage_percentage": usage_percentage
+    }
     
-    if warn_at and used >= warn_at and not would_exceed:
-        response["warning"] = f"Approaching limit: {used}/{limit} used ({(used/limit)*100:.0f}%)"
+    # Evaluate policy
+    policy_result = await evaluate_policy(
+        action="entitlement.check",
+        subject=subject,
+        resource=resource
+    )
+    
+    # Build response
+    if not policy_result.get("allowed", True):
+        reason = policy_result.get("reason", "Access denied")
+        
+        # Map to specific error codes
+        if "tenant" in reason.lower():
+            return {"allowed": False, "reason": "cross_tenant_access", "message": reason}
+        elif "subscription" in reason.lower():
+            return {"allowed": False, "reason": "no_active_subscription", "message": reason}
+        elif "plan" in reason.lower():
+            return {"allowed": False, "reason": "feature_not_in_plan", "message": reason}
+        elif "limit" in reason.lower() or "exceeded" in reason.lower():
+            return {
+                "allowed": False,
+                "reason": "limit_exceeded",
+                "message": reason,
+                "used": used,
+                "limit": limit,
+                "remaining": max(0, limit - used) if limit else None,
+                "requested": requested
+            }
+        else:
+            return {"allowed": False, "reason": "policy_denied", "message": reason}
+    
+    # Allowed - build success response
+    response = {
+        "allowed": True,
+        "feature_code": req.feature_code
+    }
+    
+    if limit:
+        response.update({
+            "used": used,
+            "limit": limit,
+            "remaining": max(0, limit - used),
+            "requested": requested,
+            "resets_at": period_end.isoformat() if period_end else None,
+            "period_start": period_start.isoformat() if period_start else None
+        })
+        
+        # Add warning if approaching limit
+        if warn_at and used >= warn_at:
+            response["warning"] = f"Approaching limit: {used}/{limit} used ({usage_percentage:.0f}%)"
+    else:
+        response["unlimited"] = True
+        response["message"] = "Feature has no usage limits."
     
     return response
 
@@ -248,42 +298,87 @@ async def record_usage(
     """
     Record feature usage with concurrency safety.
     
-    Uses SELECT FOR UPDATE to prevent race conditions when multiple
-    requests try to update usage simultaneously.
+    Policy Engine validates access before recording.
+    Uses SELECT FOR UPDATE to prevent race conditions.
     """
-    if str(ctx.tenant_id) != req.tenant_id:
-        raise HTTPException(403, "Access denied to other tenant's usage")
-
-    # Get subscription with status check
+    # Get subscription
     sub = db.query(TenantSubscription).filter_by(tenant_id=ctx.tenant_id).first()
+    subscription_active = is_subscription_active(sub)
     
-    if not is_subscription_active(sub):
-        raise HTTPException(403, "No active subscription")
-
     # Check if feature is in plan
-    pf = db.query(PlanFeature).filter_by(
-        plan_code=sub.plan_code,
-        feature_code=req.feature_code,
-        enabled=True
-    ).first()
+    pf = None
+    feature_in_plan = False
+    if sub:
+        pf = db.query(PlanFeature).filter_by(
+            plan_code=sub.plan_code,
+            feature_code=req.feature_code,
+            enabled=True
+        ).first()
+        feature_in_plan = pf is not None
     
-    if not pf:
-        raise HTTPException(403, f"Feature '{req.feature_code}' not in your plan")
-
     # Get feature details
     feature = db.query(Feature).filter_by(code=req.feature_code).first()
+    
+    # Calculate usage info
+    limit = (pf.limits or {}).get("max_value") if pf else None
+    period_start = None
+    period_end = None
+    used = 0
+    
+    if sub and feature:
+        period_start = get_current_period_start(sub, feature.reset_period)
+        period_end = period_start + get_reset_delta(feature.reset_period)
+        
+        # Get current usage (without lock for policy check)
+        usage_check = db.query(SubscriptionUsage).filter_by(
+            tenant_id=ctx.tenant_id,
+            feature_code=req.feature_code,
+            period_start=period_start
+        ).first()
+        used = usage_check.usage_count if usage_check else 0
+    
+    would_exceed = limit and (used + req.count) > limit
+    usage_percentage = (used / limit * 100) if limit and limit > 0 else 0
+    
+    # Evaluate policy
+    policy_result = await evaluate_policy(
+        action="entitlement.use",
+        subject={
+            "user_id": ctx.user_id,
+            "tenant_id": str(ctx.tenant_id),
+            "subscription_active": subscription_active
+        },
+        resource={
+            "tenant_id": req.tenant_id,
+            "feature_code": req.feature_code,
+            "feature_in_plan": feature_in_plan,
+            "current_usage": used,
+            "requested_count": req.count,
+            "usage_limit": limit,
+            "would_exceed_limit": would_exceed,
+            "usage_percentage": usage_percentage
+        }
+    )
+    
+    if not policy_result.get("allowed", True):
+        reason = policy_result.get("reason", "Access denied")
+        
+        if "tenant" in reason.lower():
+            raise HTTPException(403, "Access denied to other tenant's usage")
+        elif "subscription" in reason.lower():
+            raise HTTPException(403, "No active subscription")
+        elif "plan" in reason.lower():
+            raise HTTPException(403, f"Feature '{req.feature_code}' not in your plan")
+        elif "limit" in reason.lower() or "exceeded" in reason.lower():
+            raise HTTPException(429, f"Usage limit exceeded. Current: {used}/{limit}, requested: {req.count}")
+        else:
+            raise HTTPException(403, reason)
+    
+    # Now record usage with lock
     if not feature:
         raise HTTPException(404, "Feature configuration not found")
-
-    # Calculate period (anchored to billing cycle)
-    period_start = get_current_period_start(sub, feature.reset_period)
-    period_end = period_start + get_reset_delta(feature.reset_period)
-    
-    # Get limit
-    limit = (pf.limits or {}).get("max_value")
     
     # CRITICAL: Use with_for_update() for concurrency safety
-    # This locks the row until the transaction completes
     usage = db.query(SubscriptionUsage).filter_by(
         tenant_id=ctx.tenant_id,
         feature_code=req.feature_code,
@@ -291,7 +386,7 @@ async def record_usage(
     ).with_for_update().first()
 
     if usage:
-        # Check limit before incrementing
+        # Double-check limit with lock
         if limit and (usage.usage_count + req.count) > limit:
             raise HTTPException(
                 429,
@@ -301,7 +396,6 @@ async def record_usage(
         usage.usage_count += req.count
         usage.updated_at = datetime.now(timezone.utc)
     else:
-        # New usage record
         if limit and req.count > limit:
             raise HTTPException(
                 429,
@@ -323,14 +417,21 @@ async def record_usage(
     
     logger.info(f"✅ Recorded usage for tenant {ctx.tenant_id}: {req.feature_code} +{req.count} (total: {usage.usage_count})")
     
-    return {
+    # Build response with optional warning
+    response = {
         "recorded": req.count,
         "total": usage.usage_count,
         "limit": limit,
         "remaining": (limit - usage.usage_count) if limit else None,
-        "period_start": period_start.isoformat(),
-        "period_end": period_end.isoformat()
+        "period_start": period_start.isoformat() if period_start else None,
+        "period_end": period_end.isoformat() if period_end else None
     }
+    
+    # Add warning if approaching limit (80%+)
+    if limit and usage.usage_count >= (limit * 0.8):
+        response["warning"] = f"Approaching limit: {usage.usage_count}/{limit} used ({(usage.usage_count/limit)*100:.0f}%)"
+    
+    return response
 
 
 @router.get("/usage")
@@ -345,7 +446,6 @@ async def get_usage_summary(
     if not sub:
         return {"usage": [], "message": "No subscription found"}
     
-    # Get all features in plan
     plan_features = db.query(PlanFeature, Feature).join(
         Feature, PlanFeature.feature_code == Feature.code
     ).filter(
@@ -359,7 +459,6 @@ async def get_usage_summary(
     plan_features = plan_features.all()
     
     usage_data = []
-    now = datetime.now(timezone.utc)
     
     for pf, feature in plan_features:
         period_start = get_current_period_start(sub, feature.reset_period)
@@ -372,9 +471,11 @@ async def get_usage_summary(
         ).first()
         
         limit = (pf.limits or {}).get("max_value")
+        warn_at = (pf.limits or {}).get("warn_at")
         used = usage.usage_count if usage else 0
+        percentage_used = round((used / limit) * 100, 1) if limit and limit > 0 else 0
         
-        usage_data.append({
+        item = {
             "feature_code": feature.code,
             "feature_name": feature.name,
             "category": feature.category,
@@ -385,8 +486,14 @@ async def get_usage_summary(
             "reset_period": feature.reset_period,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "percentage_used": round((used / limit) * 100, 1) if limit and limit > 0 else 0
-        })
+            "percentage_used": percentage_used
+        }
+        
+        # Add warning if approaching limit
+        if warn_at and used >= warn_at:
+            item["warning"] = f"Approaching limit: {percentage_used}% used"
+        
+        usage_data.append(item)
     
     return {
         "tenant_id": str(ctx.tenant_id),

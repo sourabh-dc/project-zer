@@ -72,6 +72,10 @@ class User(Base):
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
     display_name = Column(String(255), nullable=True)
+    
+    # Budget and ordering limits
+    max_order_limit_minor = Column(Integer, nullable=True, default=10000000)  # Default 100,000 (in minor units)
+    
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.utcnow, nullable=True)
 

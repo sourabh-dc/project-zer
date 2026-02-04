@@ -43,6 +43,7 @@ services:
       PORT: 8000
       LOG_LEVEL: INFO
       ALLOW_ORIGINS: "*"
+      POLICY_ENGINE_URL: http://policy-engine:8004
     ports:
       - "8000:8000"
     depends_on:
@@ -50,6 +51,39 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      policy-engine:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Policy Engine Service
+  policy-engine:
+    build:
+      context: .
+      dockerfile: policy_engine/Dockerfile
+    container_name: zeroque-policy-engine
+    environment:
+      DATABASE_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      REDIS_URL: redis://redis:6379/1
+      PORT: 8004
+      LOG_LEVEL: INFO
+      ALLOW_ORIGINS: "*"
+      ENABLE_DECISION_LOGGING: "true"
+      ENABLE_METRICS: "true"
+      POLICY_CACHE_TTL_SECONDS: "300"
+      DECISION_LOG_RETENTION_DAYS: "90"
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
 
 volumes:

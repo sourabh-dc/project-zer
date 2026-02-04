@@ -95,6 +95,9 @@ class User(Base):
     refresh_token = Column(String, nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Budget and ordering limits
+    max_order_limit_minor = Column(Integer, nullable=True, default=10000000)  # Default 100,000 (in minor units)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -418,7 +421,6 @@ class ApprovalChainStep(Base):
     step_number = Column(Integer, nullable=False)
     approver_role = Column(String(100), nullable=False)  # manager, finance_controller, director
     approver_scope = Column(String(50), nullable=False)  # site, tenant, store
-    escalation_after_hours = Column(Integer, nullable=True)
     is_required = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -434,7 +436,7 @@ class ApprovalRequest(Base):
     request_type = Column(String(50), nullable=False, index=True)  # budget, order, vendor, approval_limit_increase, cost_centre_increase
     request_data = Column(JSONB, nullable=False)
     requested_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
-    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, partially_approved, approved, rejected, closed, expired, escalated
+    request_status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected, canceled, expired
     current_step_number = Column(Integer, default=1, nullable=False)
     total_amount_minor = Column(Integer, nullable=True)
     remaining_amount_minor = Column(Integer, nullable=True)
@@ -454,11 +456,10 @@ class ApprovalRequestApprover(Base):
     approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
     approver_role = Column(String(100), nullable=False)
     step_number = Column(Integer, nullable=False)
-    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected
+    status = Column(String(20), default="pending", nullable=False, index=True)  # pending, approved, rejected, canceled
     approved_amount_minor = Column(Integer, nullable=True)
     notes = Column(String(500), nullable=True)
     responded_at = Column(DateTime(timezone=True), nullable=True)
-    escalation_sent = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
@@ -474,7 +475,7 @@ class ApprovalLog(Base):
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id", ondelete="CASCADE"), nullable=False, index=True)
     actor_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
-    action = Column(String(30), nullable=False)  # created, approved, partial_approved, rejected, expired, escalated
+    action = Column(String(30), nullable=False)  # created, approved, rejected, canceled, expired
     amount_minor = Column(Integer, nullable=True)
     remaining_amount_minor = Column(Integer, nullable=True)
     comment = Column(String(500), nullable=True)

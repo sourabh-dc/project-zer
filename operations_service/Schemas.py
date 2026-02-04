@@ -443,14 +443,13 @@ class ApprovalChainStepRequest(BaseModel):
     step_number: int = Field(gt=0, description="Step number in the chain")
     approver_role: str = Field(description="Approver role (manager, finance_controller, director)")
     approver_scope: str = Field(description="Approver scope (site, tenant, store)")
-    escalation_after_hours: Optional[int] = Field(None, gt=0, description="Hours before escalation (optional)")
     is_required: bool = Field(default=True, description="Whether this step is required")
 
 
 class ApprovalRequestRequest(BaseModel):
     """Approval request creation request"""
     tenant_id: str = Field(description="Tenant ID")
-    chain_id: str = Field(description="Approval chain ID to use")
+    org_unit_id: Optional[str] = Field(None, description="Org unit ID (optional, for scoping approvers)")
     request_type: str = Field(description="Request type (budget, order, vendor)")
     request_data: Dict[str, Any] = Field(description="Request details")
     total_amount_minor: Optional[int] = Field(None, description="Amount in minor units (optional)")
@@ -466,9 +465,9 @@ class ApprovalRequestRequest(BaseModel):
 
 
 class ApprovalResponseRequest(BaseModel):
-    """Approval response request"""
+    """Approval response request - full approve or reject only"""
     approver_user_id: str = Field(description="Approver user ID")
-    approved: bool = Field(description="Whether to approve or deny")
+    response: str = Field(description="Response: 'approved' or 'rejected'")
     notes: Optional[str] = Field(None, max_length=500, description="Approval notes (optional)")
 
 class ResourceContext(BaseModel):
