@@ -1,8 +1,7 @@
 import httpx
 from typing import Dict, List, Tuple
 
-from integrations.config import INTEGRATION_SETTINGS
-from utils.logger import logger
+from integrations_service.integrations.config import INTEGRATION_SETTINGS
 
 AIFI_BASE_URL = (INTEGRATION_SETTINGS.AIFI_BASE_URL or "").rstrip("/")
 AIFI_API_KEY = INTEGRATION_SETTINGS.AIFI_API_KEY
