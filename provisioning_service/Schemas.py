@@ -165,6 +165,7 @@ class UserRequest(BaseModel):
     home_store_id: Optional[str] = Field(None, description="Home store ID (UUID, optional)")
     home_org_unit_id: Optional[str] = Field(None, description="Home org unit ID (UUID, optional)")
     all_locations: Optional[bool] = Field(False, description="Access to all locations (optional)")
+    max_order_limit_minor: Optional[int] = Field(None, ge=0, description="Maximum order limit in minor units (e.g., cents). Default: 10000000 (100,000)")
 
     @field_validator('password')
     @classmethod

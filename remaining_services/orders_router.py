@@ -1,10 +1,20 @@
+"""
+Order Service - Refactored with Policy Engine Integration
+
+Policies enforced:
+1. order.cost_centre_assignment - User must be assigned to a cost centre
+2. order.budget.check - User must have sufficient budget
+3. order.large_order_approval - Orders exceeding user's limit require approval
+"""
+
 import uuid
 import json
 from datetime import datetime, timezone
 from fastapi import HTTPException, Depends, Query, APIRouter
 from sqlalchemy.orm import Session
+from typing import Optional
 
-from Models import Order, OrderItem, Tenant, UserCostCentre, CostCentre, ApprovalRequest, SpendingEvent
+from Models import Order, OrderItem, Tenant, UserCostCentre, CostCentre, User, SpendingEvent
 from Schemas import OrderRequest, OrderUpdateRequest, UserContext
 from core.db_config import get_db
 from core.user_auth import get_user_context
@@ -13,7 +23,55 @@ from utils.metrics import req_total, req_duration
 from utils.service_bus import publish_spending_event, publish_order_event
 from utils.redis_client import redis_client
 
+# Policy Engine Client
+import httpx
+import os
+
+POLICY_ENGINE_URL = os.getenv("POLICY_ENGINE_URL", "http://localhost:8004")
+
 app = APIRouter()
+
+
+async def evaluate_policy(action: str, subject: dict, resource: dict, context: dict = None) -> dict:
+    """
+    Evaluate a policy against the Policy Engine.
+    
+    Returns:
+        dict with keys: allowed, effect, reason, requires_approval, approval_chain_id
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{POLICY_ENGINE_URL}/v1/policy-engine/evaluate",
+                json={
+                    "action": action,
+                    "subject": subject,
+                    "resource": resource,
+                    "context": context or {}
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Policy Engine error: {response.status_code} - {response.text}")
+                # Fail open with warning in case of Policy Engine issues
+                return {
+                    "allowed": True,
+                    "effect": "allow",
+                    "reason": "Policy Engine unavailable - allowing with warning",
+                    "requires_approval": False
+                }
+    except Exception as e:
+        logger.error(f"Policy Engine connection error: {e}")
+        # Fail open with warning
+        return {
+            "allowed": True,
+            "effect": "allow", 
+            "reason": f"Policy Engine unavailable: {e}",
+            "requires_approval": False
+        }
+
 
 # =============================================================================
 # ORDER ENDPOINTS
@@ -25,38 +83,24 @@ async def create_order(
         db: Session = Depends(get_db),
         ctx: UserContext = Depends(get_user_context)
 ):
-    """Create a new order with budget validation for customer tenants"""
+    """
+    Create a new order with Policy Engine validation.
+    
+    Policies evaluated:
+    1. order.cost_centre_assignment - User must be assigned to a cost centre
+    2. order.budget.check - User must have sufficient budget
+    3. order.large_order_approval - Large orders require approval
+    """
     start = datetime.now()
     try:
         req_total.labels(operation="create_order", status="start").inc()
         
-        # 1. Get tenant and check type
+        # 1. Get tenant
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(ctx.tenant_id)).first()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
         
-        # 2. For customer tenants, enforce budget checks
-        if tenant.tenant_type == "customer":
-            # Get user cost centre assignment
-            user_cc = db.query(UserCostCentre).filter(
-                UserCostCentre.user_id == uuid.UUID(ctx.user_id)
-            ).first()
-            
-            if not user_cc:
-                raise HTTPException(status_code=403, detail="User not assigned to any cost centre. Please contact your manager.")
-            
-            # If approval request provided, validate it
-            if hasattr(req, 'approval_request_id') and req.approval_request_id:
-                appr = db.query(ApprovalRequest).filter(
-                    ApprovalRequest.request_id == uuid.UUID(req.approval_request_id),
-                    ApprovalRequest.request_status == "approved",
-                    ApprovalRequest.requested_by == uuid.UUID(ctx.user_id)
-                ).first()
-                
-                if not appr:
-                    raise HTTPException(status_code=400, detail="Valid approved budget request required")
-        
-        # 3. Calculate total amount
+        # 2. Calculate total amount first (needed for policy evaluation)
         total_amount = 0
         items = []
         
@@ -86,32 +130,88 @@ async def create_order(
                 "total_price_minor": item_total
             })
         
-        # 4. Budget checks for customer tenants
-        if tenant.tenant_type == "customer":
-            # Check user budget
-            if user_cc.spent_minor + total_amount > user_cc.allocated_budget_minor:
-                available = user_cc.allocated_budget_minor - user_cc.spent_minor
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Insufficient personal budget. Available: {available} minor units, Required: {total_amount}"
-                )
-            
-            # Check cost centre budget
-            cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
-            if not cc:
-                raise HTTPException(status_code=500, detail="Cost centre not found")
-            
-            if cc.spent_minor + total_amount > cc.budget_minor:
-                available = cc.budget_minor - cc.spent_minor
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Cost centre budget exceeded. Available: {available} minor units, Required: {total_amount}"
-                )
+        # 3. For customer tenants, evaluate policies via Policy Engine
+        user_cc = None
+        cc = None
+        approval_request_id = None
         
-        # 5. Create order
+        if tenant.tenant_type == "customer":
+            # Get user data for policy context
+            user = db.query(User).filter(User.user_id == uuid.UUID(ctx.user_id)).first()
+            user_cc = db.query(UserCostCentre).filter(
+                UserCostCentre.user_id == uuid.UUID(ctx.user_id)
+            ).first()
+            
+            # Build subject context for policy evaluation
+            subject = {
+                "user_id": ctx.user_id,
+                "tenant_id": ctx.tenant_id,
+                "roles": ctx.roles if hasattr(ctx, 'roles') else [],
+                "cost_centre_id": str(user_cc.cost_centre_id) if user_cc else None,
+                "budget_remaining": (user_cc.allocated_budget_minor - user_cc.spent_minor) if user_cc else 0,
+                "max_order_limit_minor": user.max_order_limit_minor if user else 10000000
+            }
+            
+            # Build resource context
+            resource = {
+                "order_total": total_amount,
+                "item_count": len(items),
+                "tenant_id": ctx.tenant_id
+            }
+            
+            # Evaluate order.create policy (handles all 3 policies)
+            policy_result = await evaluate_policy(
+                action="order.create",
+                subject=subject,
+                resource=resource,
+                context={"timestamp": datetime.now(timezone.utc).isoformat()}
+            )
+            
+            logger.info(f"Policy evaluation result: {policy_result}")
+            
+            # Handle policy decision
+            if not policy_result.get("allowed", True):
+                effect = policy_result.get("effect", "deny")
+                reason = policy_result.get("reason", "Policy evaluation failed")
+                
+                if effect == "require_approval":
+                    # Check if approval was provided
+                    if hasattr(req, 'approval_request_id') and req.approval_request_id:
+                        # Validate the approval request
+                        from Models import ApprovalRequest
+                        appr = db.query(ApprovalRequest).filter(
+                            ApprovalRequest.request_id == uuid.UUID(req.approval_request_id),
+                            ApprovalRequest.request_status == "approved",
+                            ApprovalRequest.requested_by == uuid.UUID(ctx.user_id)
+                        ).first()
+                        
+                        if not appr:
+                            raise HTTPException(
+                                status_code=403,
+                                detail="Valid approved request required for this order amount"
+                            )
+                        approval_request_id = uuid.UUID(req.approval_request_id)
+                    else:
+                        raise HTTPException(
+                            status_code=403,
+                            detail={
+                                "message": reason,
+                                "requires_approval": True,
+                                "order_total": total_amount,
+                                "user_limit": subject.get("max_order_limit_minor")
+                            }
+                        )
+                else:
+                    # Deny
+                    raise HTTPException(status_code=403, detail=reason)
+            
+            # Get cost centre for budget deduction
+            if user_cc:
+                cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
+        
+        # 4. Create order
         site_uuid = uuid.UUID(req.site_id) if req.site_id else None
         store_uuid = uuid.UUID(req.store_id) if req.store_id else None
-        approval_req_id = uuid.UUID(req.approval_request_id) if hasattr(req, 'approval_request_id') and req.approval_request_id else None
         
         order = Order(
             order_id=uuid.uuid4(),
@@ -122,8 +222,8 @@ async def create_order(
             order_number=f"ORD-{int(datetime.now(timezone.utc).timestamp())}-{uuid.uuid4().hex[:6]}",
             order_type=req.order_type or ("employee_purchase" if tenant.tenant_type == "customer" else "purchase"),
             total_amount_minor=total_amount,
-            currency=user_cc.currency_code if tenant.tenant_type == "customer" else "GBP",
-            approval_request_id=approval_req_id,
+            currency=user_cc.currency_code if user_cc else "GBP",
+            approval_request_id=approval_request_id,
             order_status="confirmed",
             payment_status="budget_deducted" if tenant.tenant_type == "customer" else "pending",
             fulfillment_status="pending",
@@ -134,7 +234,7 @@ async def create_order(
         db.add(order)
         db.flush()
         
-        # 6. Add order items
+        # 5. Add order items
         for item in items:
             db.add(OrderItem(
                 order_id=order.order_id,
@@ -145,8 +245,8 @@ async def create_order(
                 total_price_minor=item['total_price_minor']
             ))
         
-        # 7. Deduct budgets for customer tenants
-        if tenant.tenant_type == "customer":
+        # 6. Deduct budgets for customer tenants
+        if tenant.tenant_type == "customer" and user_cc and cc:
             user_cc.spent_minor += total_amount
             cc.spent_minor += total_amount
             
@@ -157,7 +257,7 @@ async def create_order(
                 user_id=uuid.UUID(ctx.user_id),
                 cost_centre_id=user_cc.cost_centre_id,
                 order_id=order.order_id,
-                approval_request_id=approval_req_id,
+                approval_request_id=approval_request_id,
                 amount_minor=total_amount,
                 currency_code=user_cc.currency_code,
                 metadata={
@@ -170,20 +270,20 @@ async def create_order(
         db.commit()
         db.refresh(order)
         
-        # 8. Publish events (non-critical - don't fail order if this fails)
+        # 7. Publish events (non-critical)
         try:
-            if tenant.tenant_type == "customer":
+            if tenant.tenant_type == "customer" and user_cc:
                 publish_spending_event(
                     event_type="budget_spent",
                     user_id=ctx.user_id,
                     cost_centre_id=str(user_cc.cost_centre_id),
                     amount_minor=total_amount,
                     order_id=str(order.order_id),
-                    approval_request_id=str(approval_req_id) if approval_req_id else None,
+                    approval_request_id=str(approval_request_id) if approval_request_id else None,
                     metadata={
                         "tenant_id": ctx.tenant_id,
                         "order_number": order.order_number,
-                        "manager_id": str(cc.manager_user_id) if cc.manager_user_id else None
+                        "manager_id": str(cc.manager_user_id) if cc and cc.manager_user_id else None
                     }
                 )
             

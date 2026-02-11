@@ -1,4 +1,12 @@
+"""
+AiFi Order Integration Service - With Policy Engine Integration
+
+Handles orders coming from AiFi webhooks.
+Uses Policy Engine for budget validation.
+"""
 import uuid
+import os
+import httpx
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Optional, List
 
@@ -18,6 +26,9 @@ from operations_service.Models import (
 from operations_service.core.db_config import SessionLocal
 from operations_service.utils.logger import logger
 from operations_service.operations.ledger import record_order_ledger
+
+
+POLICY_ENGINE_URL = os.getenv("POLICY_ENGINE_URL", "http://localhost:8004")
 
 
 def _to_minor(amount: Optional[str | float | int]) -> int:
@@ -95,10 +106,40 @@ def _resolve_store(db: Session, aifi_store_id) -> Optional[uuid.UUID]:
     return None
 
 
+def evaluate_policy_sync(action: str, subject: dict, resource: dict, context: dict = None) -> dict:
+    """
+    Synchronous policy evaluation for use in non-async contexts.
+    
+    Returns:
+        dict with keys: allowed, decision, reason
+    """
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(
+                f"{POLICY_ENGINE_URL}/v1/policy-engine/evaluate",
+                json={
+                    "action": action,
+                    "subject": subject,
+                    "resource": resource,
+                    "context": context or {}
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Policy Engine error: {response.status_code} - {response.text}")
+                # Fail open with warning
+                return {"allowed": True, "decision": "allowed", "reason": "Policy Engine unavailable"}
+    except Exception as e:
+        logger.error(f"Policy Engine connection error: {e}")
+        return {"allowed": True, "decision": "allowed", "reason": f"Policy Engine unavailable: {e}"}
+
+
 def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
     """
     Upsert an AiFi order into our orders/order_items tables.
-    - No budget enforcement.
+    - Uses Policy Engine for budget validation.
     - Requires mapping AiFi customer -> local user via User.aifi_customer_id.
     - Attempts to map products via Product.aifi_product_id.
     """
@@ -204,19 +245,65 @@ def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
         if computed_total:
             order.total_amount_minor = computed_total
 
+        # =====================================================================
+        # POLICY ENGINE VALIDATION
+        # =====================================================================
         budget_delta = 0
         try:
             user_cc = db.query(UserCostCentre).filter(UserCostCentre.user_id == user.user_id).first()
+            
             if user_cc:
-                available = (user_cc.allocated_budget_minor or 0) - (user_cc.spent_minor or 0)
-                if available <= 0:
-                    db.rollback()
-                    return {"status": "error", "reason": "budget_exhausted", "available_minor": available}
+                # Build subject context for policy evaluation
+                budget_remaining = (user_cc.allocated_budget_minor or 0) - (user_cc.spent_minor or 0)
+                
+                subject = {
+                    "user_id": str(user.user_id),
+                    "tenant_id": str(tenant_id),
+                    "cost_centre_id": str(user_cc.cost_centre_id) if user_cc.cost_centre_id else None,
+                    "budget_remaining": budget_remaining,
+                    "max_order_limit_minor": getattr(user, 'max_order_limit_minor', 10000000) or 10000000
+                }
+                
+                resource = {
+                    "order_total": computed_total,
+                    "item_count": len(items_payload) - len(skipped_items),
+                    "source": "aifi"
+                }
+                
+                # Evaluate policy
+                policy_result = evaluate_policy_sync(
+                    action="order.create",
+                    subject=subject,
+                    resource=resource,
+                    context={"channel": "aifi_webhook"}
+                )
+                
+                logger.info(f"Policy evaluation for AiFi order: {policy_result}")
+                
+                if not policy_result.get("allowed", True):
+                    decision = policy_result.get("decision", "denied")
+                    reason = policy_result.get("reason", "Policy evaluation failed")
+                    
+                    # For AiFi orders, we can't require approval - just deny
+                    if decision in ["denied", "approval_required"]:
+                        db.rollback()
+                        return {
+                            "status": "error",
+                            "reason": "policy_denied",
+                            "policy_reason": reason,
+                            "decision": decision,
+                            "order_total": computed_total,
+                            "budget_remaining": budget_remaining
+                        }
+                
+                # Policy allowed - deduct budget
                 budget_delta = computed_total
                 user_cc.spent_minor = (user_cc.spent_minor or 0) + budget_delta
+                
                 cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == user_cc.cost_centre_id).first()
                 if cc:
                     cc.spent_minor = (cc.spent_minor or 0) + budget_delta
+                
                 db.add(
                     SpendingEvent(
                         event_id=uuid.uuid4(),
@@ -231,7 +318,7 @@ def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
                     )
                 )
         except Exception as exc:
-            logger.warning(f"Budget update skipped: {exc}")
+            logger.warning(f"Budget/policy check skipped: {exc}")
 
         # Record ledger (best-effort, idempotent)
         try:
@@ -254,4 +341,3 @@ def upsert_aifi_order(order_data: Dict, db: Optional[Session] = None) -> Dict:
     finally:
         if close_db:
             db.close()
-
