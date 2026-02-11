@@ -8,7 +8,7 @@ from integrations_service.orders import upsert_aifi_order
 from integrations_service.core.helpers import aifi_services as aifi
 from integrations_service.Models import User, Product
 
-router = APIRouter(prefix="/integrations/vendors/aifi/admin", tags=["integrations"])
+router = APIRouter(prefix="/integrations/aifi/zeroque-admin", tags=["integrations"])
 
 
 @router.get("/store-mappings")

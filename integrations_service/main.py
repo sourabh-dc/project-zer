@@ -11,7 +11,12 @@ sys.path.insert(0, str(BASE_DIR))
 from integrations.aifi_routes import router as aifi_router
 from integrations.aifi_sessions_routes import router as aifi_sessions_router
 from integrations.aifi_webhooks_routes import router as aifi_webhooks_router
-from integrations.aifi_admin_routes import router as aifi_admin_router
+from integrations.zeroque_admin_routes import router as aifi_admin_router
+from integrations.aifi_store import router as aifi_store_router
+from integrations.aifi_cutomer_app import router as aifi_customer_app_router
+from integrations.aifi_admin_orders import router as aifi_admin_orders_router
+from integrations.aifi_admin_products import router as aifi_admin_products_router
+from integrations.aifi_store_customer import router as aifi_store_customer_router
 
 app = FastAPI(title="Integrations Service", version="1.0.0")
 
@@ -28,6 +33,11 @@ app.include_router(aifi_router, tags=["integrations"])
 app.include_router(aifi_sessions_router, tags=["integrations"])
 app.include_router(aifi_webhooks_router, tags=["integrations"])
 app.include_router(aifi_admin_router, tags=["integrations"])
+app.include_router(aifi_store_router, tags=["aifi-store"])
+app.include_router(aifi_customer_app_router, tags=["AiFi Customer App"])
+app.include_router(aifi_admin_orders_router, tags=["AiFi Admin Orders"])
+app.include_router(aifi_admin_products_router, tags=["AiFi Admin Products"])
+app.include_router(aifi_store_customer_router, tags=["AiFi Store Customer"])
 
 
 @app.get("/health")

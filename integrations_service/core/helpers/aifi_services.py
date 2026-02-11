@@ -1,5 +1,5 @@
 import httpx
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 from integrations_service.integrations.config import INTEGRATION_SETTINGS
 
@@ -28,7 +28,7 @@ def _headers() -> Dict[str, str]:
         "Content-Type": "application/json",
     }
     if AIFI_LOCATION_ID:
-        headers["X-Location-Id"] = AIFI_LOCATION_ID
+        headers["X-Location-Id"] = str(AIFI_LOCATION_ID)
     return headers
 
 
@@ -65,6 +65,30 @@ async def fetch_products() -> List[Dict]:
             else:
                 break
     return products
+
+
+# NEW: single-page fetch for admin endpoints that want paginated results without loading all pages
+async def fetch_products_page(offset: int = 0, count: int = 100, q: str = None) -> Dict[str, Any]:
+    """Fetch a single page of products from AiFi Admin API.
+
+    Returns the raw JSON response from the AiFi Admin API so callers can access pagination metadata.
+    """
+    params = {"offset": offset, "count": count}
+    if q:
+        params["q"] = q
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(f"{AIFI_BASE_URL}{PATH_PRODUCTS}", headers=_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+# NEW: fetch single product detail from AiFi admin API
+async def fetch_product_detail(product_id: str) -> Dict[str, Any]:
+    """Fetch a single product by AiFi product id."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"{AIFI_BASE_URL}{PATH_PRODUCTS}/{product_id}", headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---------- Orders (Admin) ----------
@@ -262,7 +286,7 @@ async def update_session(session_id: str, suspected_fraud: bool = None, metadata
 def _store_headers(store: str = None, location: str = None) -> Dict[str, str]:
     h = _headers()
     if store or AIFI_STORE_ID:
-        h["X-AIFI-Store"] = store or AIFI_STORE_ID
+        h["X-AIFI-Store"] = str(store or AIFI_STORE_ID)
     if location or AIFI_LOCATION_ID:
         h["X-AIFI-LocationId"] = str(location or AIFI_LOCATION_ID)
     return h

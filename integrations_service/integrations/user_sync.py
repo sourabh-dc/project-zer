@@ -2,9 +2,9 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from Models import User
-from core.db_config import SessionLocal
-from core.helpers import aifi_services as aifi
+from integrations_service.Models import User
+from integrations_service.core.db_config import SessionLocal
+from integrations_service.core.helpers import aifi_services as aifi
 
 
 async def sync_users(delete_remote_missing: bool = False) -> Dict:

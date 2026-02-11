@@ -2,9 +2,9 @@ from typing import Dict, List
 
 from sqlalchemy.orm import Session
 
-from Models import Product, StoreProduct
-from core.db_config import SessionLocal
-from core.helpers import aifi_services as aifi
+from integrations_service.Models import Product, StoreProduct
+from integrations_service.core.db_config import SessionLocal
+from integrations_service.core.helpers import aifi_services as aifi
 
 
 def _store_prices_for_product(db: Session, product_id) -> List[Dict]:
