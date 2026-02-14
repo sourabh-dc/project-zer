@@ -559,32 +559,12 @@ class Variant(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-
-class PriceRule(Base):
-    """Price rule model - pricing rules for products in pricebooks"""
-    __tablename__ = "price_rules"
-    rule_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    pricebook_id = Column(SQLUUID(as_uuid=True), ForeignKey("pricebooks.pricebook_id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=True, index=True)
-    variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=True, index=True)
-    rule_type = Column(String(50), nullable=False)  # fixed, percentage, discount
-    rule_value = Column(Integer, nullable=False)  # For fixed: price in minor units, for percentage: basis points (e.g., 1000 = 10%)
-    min_quantity = Column(Integer, nullable=True)
-    max_quantity = Column(Integer, nullable=True)
-    valid_from = Column(DateTime(timezone=True), nullable=True)
-    valid_until = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
 class ApprovalRequest(Base):
     """Approval request model - individual approval requests"""
     __tablename__ = "approval_requests"
     request_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
-    chain_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_chains.chain_id"), nullable=True, index=True)
     request_number = Column(String(50), nullable=False, unique=True, index=True)
     request_type = Column(String(50), nullable=False, index=True)  # budget, order, vendor, approval_limit_increase, cost_centre_increase
     request_data = Column(JSONB, nullable=False)
@@ -836,13 +816,36 @@ class TradeInvoiceLine(Base):
 
     invoice = relationship("TradeInvoice", back_populates="lines")
 
+class Order(Base):
+    """Order entity"""
+    __tablename__ = "orders"
+
+    order_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    aifi_order_id = Column(String(50), nullable=True, unique=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    site_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    store_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    customer_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    order_number = Column(String(50), nullable=False, unique=True)
+    order_status = Column(String(20), nullable=False, default='pending')
+    order_type = Column(String(20), nullable=False, default='purchase')
+    total_amount_minor = Column(Integer, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='GBP')
+    payment_status = Column(String(20), nullable=False, default='pending')
+    fulfillment_status = Column(String(20), nullable=False, default='pending')
+    approval_request_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_requests.request_id"), nullable=True, index=True)
+    shipping_address = Column(JSON, nullable=True)
+    billing_address = Column(JSON, nullable=True)
+    order_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 class SpendingEvent(Base):
     """Spending events for budget tracking and audit"""
     __tablename__ = "spending_events"
     
     event_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    event_type = Column(String(50), nullable=False)  # budget_allocated, budget_spent, order_created
+    event_type = Column(String(50), nullable=False)
     user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
     cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id"), nullable=False, index=True)
     order_id = Column(SQLUUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=True, index=True)

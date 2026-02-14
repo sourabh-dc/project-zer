@@ -45,48 +45,6 @@ def _period_end(start: datetime, cycle: str) -> datetime:
         return start + timedelta(days=365)
     return start + timedelta(days=30)
 
-
-def _record_payment_ledger(db: Session, tenant_id, amount_minor: int, currency: str):
-    # Best-effort: post to operations ledger (subscription payment) and audit via SpendingEvent if possible.
-    ops_url = os.environ.get("OPERATIONS_URL", "http://localhost:8002")
-    payment_id = f"subpay-{uuid.uuid4()}"
-    try:
-        client = httpx.Client(timeout=5.0)
-        resp = client.post(
-            f"{ops_url}/operations/ledger/subscription-payment",
-            json={
-                "tenant_id": str(tenant_id),
-                "amount_minor": amount_minor,
-                "currency": currency or "GBP",
-                "payment_id": payment_id,
-                "description": "Subscription payment",
-            },
-        )
-        if resp.status_code >= 300:
-            logger.warning(f"Ledger post failed: {resp.status_code} {resp.text}")
-    except Exception as exc:
-        logger.warning(f"Ledger post failed: {exc}")
-
-    # Fallback/audit SpendingEvent
-    admin_user = db.query(User).filter(User.tenant_id == tenant_id).order_by(User.created_at.asc()).first()
-    cc = db.execute(
-        text("select cost_centre_id from cost_centres where tenant_id=:tid limit 1"),
-        {"tid": tenant_id},
-    ).scalar()
-    if admin_user and cc:
-        db.add(SpendingEvent(
-            event_id=uuid.uuid4(),
-            event_type="payment_received",
-            user_id=admin_user.user_id,
-            cost_centre_id=cc,
-            order_id=None,
-            approval_request_id=None,
-            amount_minor=amount_minor,
-            currency_code=currency or "GBP",
-            event_metadata={"source": "stripe", "payment_id": payment_id}
-        ))
-
-
 @router.post("/create-checkout-session")
 async def create_checkout_session(
     data: CheckoutRequest,
@@ -185,8 +143,6 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
         sub.is_active = is_active
         sub.payment_method = payment_method
         sub.status = status
-        if amount_minor and currency:
-            _record_payment_ledger(db, uuid.UUID(str(tenant_id)), amount_minor, currency)
         db.commit()
         return {"status": "ok"}
 
@@ -198,45 +154,18 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
         return {"status": "ok"}
 
     if event_type == "invoice.payment_succeeded":
-        tenant_id = data.get("metadata", {}).get("tenant_id")
-        plan_code = data.get("metadata", {}).get("plan_code")
-        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
-        amount_paid = data.get("amount_paid") or data.get("amount_due")
-        currency = data.get("currency", "gbp").upper()
-        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("subscription"), "active", True, "card", amount_minor=amount_paid, currency=currency)
         return {"status": "ok"}
 
     if event_type == "invoice.payment_failed":
-        tenant_id = data.get("metadata", {}).get("tenant_id")
-        plan_code = data.get("metadata", {}).get("plan_code")
-        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
-        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("subscription"), "payment_failed", False, "card")
         return {"status": "failed"}
 
     if event_type == "payment_intent.succeeded":
-        tenant_id = data.get("metadata", {}).get("tenant_id")
-        plan_code = data.get("metadata", {}).get("plan_code")
-        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
-        amount = data.get("amount_received") or data.get("amount") or 0
-        currency = data.get("currency", "GBP").upper()
-        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "active", True, "card", amount_minor=amount, currency=currency)
         return {"status": "ok"}
 
     if event_type == "payment_intent.payment_failed":
-        tenant_id = data.get("metadata", {}).get("tenant_id")
-        plan_code = data.get("metadata", {}).get("plan_code")
-        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
-        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "payment_failed", False, "card")
         return {"status": "failed"}
 
     if event_type in ["customer.subscription.deleted", "customer.subscription.updated"]:
-        sub = data
-        tenant_id = sub.get("metadata", {}).get("tenant_id")
-        plan_code = sub.get("metadata", {}).get("plan_code")
-        billing_cycle = sub.get("metadata", {}).get("billing_cycle", "monthly")
-        status = sub.get("status")
-        is_active = status in ["active", "trialing"]
-        upsert_subscription(tenant_id, plan_code, billing_cycle, sub.get("id"), status, is_active, "card")
         return {"status": "ok"}
 
     return {"status": "ignored"}

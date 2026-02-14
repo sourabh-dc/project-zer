@@ -465,7 +465,7 @@ async def list_store_products(
     limit: int = Query(100, le=500),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(require_permission("stores.products.view"))
+    ctx: UserContext = Depends(check_user_authorization("stores.products.view"))
 ):
     try:
         store_uuid = UUID(store_id)
