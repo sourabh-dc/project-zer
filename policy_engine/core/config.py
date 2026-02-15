@@ -3,15 +3,49 @@ Policy Engine Configuration
 Environment-based settings for the Policy Engine service
 """
 import os
+
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get values from environment
+keyvault_name = os.getenv("KEYVAULT_NAME")
+vault_url = f"https://{keyvault_name}.vault.azure.net"
+
+# Authenticate using App Registration credentials
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=vault_url, credential=credential)
+
+environment = os.getenv("ENVIRONMENT", "Development")
+# Retrieve the secret
+if environment == "Development":
+    db_name = client.get_secret("dbName").value
+    db_password = client.get_secret("dbPassword").value
+    db_host = client.get_secret("dbHost").value
+    db_username = client.get_secret("dbUsername").value
+    email_conn_string = client.get_secret("azure-email").value
+else:
+    db_name = os.getenv("POSTGRES_DB")
+    db_password = os.getenv("POSTGRES_PASSWORD")
+    db_host = os.getenv("POSTGRES_HOST")
+    db_username = os.getenv("POSTGRES_USER")
+    email_conn_string = os.getenv("AZURE_EMAIL_CONNECTION_STRING")
+
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables"""
-    
-    # Database
-    DATABASE_URL: str = "postgresql://zeroque:zeroque_dev_password@localhost:5432/zeroque_dev"
+    """Application settings - simple and powerful"""
+    DATABASE_URL: str = Field(
+        default=f"postgresql://{db_username}:{db_password}@{db_host}:5432/{db_name}",
+        description="PostgreSQL connection URL"
+    )
     
     # Redis (for caching policies)
     REDIS_URL: str = "redis://localhost:6379/1"  # Use DB 1 for policy engine
@@ -52,6 +86,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"
 
 
 @lru_cache()

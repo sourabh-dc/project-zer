@@ -19,8 +19,9 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 from starlette.responses import Response
 
 from policy_engine.core.config import SETTINGS
-from policy_engine.core.db_config import init_db
+from policy_engine.core.db_config import init_db, SessionLocal
 from policy_engine.core.redis_client import policy_cache
+from policy_engine.core.helpers.load_policies import load_policies
 from policy_engine.routes import policies, evaluate, decisions, action_types
 from policy_engine.Schemas import HealthResponse, ErrorResponse
 from policy_engine.utils.logger import logger
@@ -64,6 +65,14 @@ async def lifespan(app: FastAPI):
     # Initialize database
     init_db()
     
+    # Load policies from CSV
+    try:
+        with SessionLocal() as session:
+            load_policies(session)
+        logger.info("✅ Policies loaded from CSV")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load policies from CSV: {e}")
+
     # Connect to Redis
     await policy_cache.connect()
     
