@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 from starlette import status
 
-from operations_service.Models import RolePermission, Permission, Role
+from operations_service.Models import RolePermission, Permission, Role, User, Tenant, UserCostCentre, CostCentre, CostCenterBudget, UserRole
 from operations_service.core.config import SETTINGS
 from operations_service.core.db_config import SessionLocal
 from operations_service.utils.logger import logger
@@ -182,3 +182,150 @@ def check_user_authorization(permission: str):
             logger.error(f"Authorization error: {exc}")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token")
     return dependency
+
+async def get_user_context(user_id: str) -> Dict[str, Any]:
+    """
+    Retrieves comprehensive user context including:
+    - User details (name, email, phone, position, etc.)
+    - Tenant information
+    - Roles assigned to the user
+    - Budget information (allocated, spent, available, max limit)
+    - Cost centre details
+
+    Args:
+        user_id: The UUID of the user
+
+    Returns:
+        Dict containing all user context information
+
+    Raises:
+        HTTPException: If user not found or database error
+    """
+    try:
+        with SessionLocal() as db:
+            # Get user with tenant info
+            user = db.query(User).filter(User.user_id == user_id).first()
+
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"User with id {user_id} not found"
+                )
+
+            # Get tenant info
+            tenant = db.query(Tenant).filter(Tenant.tenant_id == user.tenant_id).first()
+
+            # Get user roles
+            user_roles = db.query(Role.code, Role.description).join(
+                UserRole, UserRole.role_id == Role.role_id
+            ).filter(UserRole.user_id == user_id).all()
+
+            roles_list = [{"code": r.code, "description": r.description} for r in user_roles]
+
+            # Get user cost centre assignments with budget details
+            cost_centre_assignments = db.query(
+                UserCostCentre,
+                CostCentre,
+                CostCenterBudget
+            ).join(
+                CostCentre, UserCostCentre.cost_centre_id == CostCentre.cost_centre_id
+            ).join(
+                CostCenterBudget, UserCostCentre.cc_budget_id == CostCenterBudget.budget_id
+            ).filter(
+                UserCostCentre.user_id == user_id
+            ).all()
+
+            # Calculate totals across all cost centres
+            total_allocated = 0
+            total_spent = 0
+            total_available = 0
+            total_max_budget = 0
+
+            cost_centres_detail = []
+            for ucc, cc, ccb in cost_centre_assignments:
+                total_allocated += ucc.allocated_minor or 0
+                total_spent += ucc.spent_minor or 0
+                total_available += ucc.available_minor or 0
+                total_max_budget += ucc.max_budget_minor or 0
+
+                cost_centres_detail.append({
+                    "cost_centre_id": str(cc.cost_centre_id),
+                    "cost_centre_code": cc.code,
+                    "cost_centre_name": cc.name,
+                    "description": cc.description,
+                    "is_active": cc.is_active,
+                    "budget": {
+                        "budget_id": str(ccb.budget_id),
+                        "fiscal_year": ccb.fiscal_year,
+                        "period_type": ccb.period_type,
+                        "period_number": ccb.period_number,
+                        "period_start": ccb.period_start.isoformat() if ccb.period_start else None,
+                        "period_end": ccb.period_end.isoformat() if ccb.period_end else None,
+                        "budget_amount_minor": ccb.budget_amount_minor,
+                        "total_spent_minor": ccb.total_spent_minor,
+                        "status": ccb.status
+                    },
+                    "user_allocation": {
+                        "max_budget_minor": ucc.max_budget_minor,
+                        "allocated_minor": ucc.allocated_minor,
+                        "spent_minor": ucc.spent_minor,
+                        "available_minor": ucc.available_minor,
+                        "recurring_amount_minor": ucc.recurring_amount_minor,
+                        "recurring_period": ucc.recurring_period,
+                        "next_recurring_at": ucc.next_recurring_at.isoformat() if ucc.next_recurring_at else None,
+                        "is_blocked": ucc.is_blocked,
+                        "blocked_reason": ucc.blocked_reason
+                    }
+                })
+
+            # Build user context response
+            user_context = {
+                "user": {
+                    "user_id": str(user.user_id),
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "display_name": user.display_name,
+                    "phone": user.phone,
+                    "position": user.position,
+                    "profile_image": user.profile_image,
+                    "is_active": user.is_active,
+                    "is_sso_enabled": user.is_sso_enabled,
+                    "all_locations": user.all_locations,
+                    "max_order_limit_minor": user.max_order_limit_minor,
+                    "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+                    "created_at": user.created_at.isoformat() if user.created_at else None
+                },
+                "tenant": {
+                    "tenant_id": str(tenant.tenant_id) if tenant else None,
+                    "tenant_name": tenant.tenant_name if tenant else None,
+                    "tenant_type": tenant.tenant_type if tenant else None,
+                    "email": tenant.email if tenant else None,
+                    "active": tenant.active if tenant else None,
+                    "default_currency": tenant.default_currency if tenant else None,
+                    "timezone": tenant.timezone if tenant else None,
+                    "locale": tenant.locale if tenant else None,
+                    "industry": tenant.industry if tenant else None
+                } if tenant else None,
+                "roles": roles_list,
+                "budget_summary": {
+                    "total_max_budget_minor": total_max_budget,
+                    "total_allocated_minor": total_allocated,
+                    "total_spent_minor": total_spent,
+                    "total_available_minor": total_available,
+                    "utilization_percent": round((total_spent / total_allocated * 100), 2) if total_allocated > 0 else 0,
+                    "cost_centres_count": len(cost_centres_detail)
+                },
+                "cost_centres": cost_centres_detail
+            }
+
+            return user_context
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error fetching user context: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve user context: {str(exc)}"
+        )

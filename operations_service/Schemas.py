@@ -580,16 +580,59 @@ class MultiCurrencyConversionResponse(BaseModel):
     exchange_rate: float
     converted_at: datetime
 
+
+class OrderItemInput(BaseModel):
+    """Order item input for creating orders"""
+    product_id: str = Field(..., description="Product UUID")
+    variant_id: Optional[str] = Field(None, description="Variant UUID (optional)")
+    quantity: int = Field(1, ge=1, description="Quantity of items")
+    unit_price_minor: int = Field(..., ge=0, description="Unit price in minor units (e.g., pence)")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "product_id": "550e8400-e29b-41d4-a716-446655440001",
+                "variant_id": None,
+                "quantity": 2,
+                "unit_price_minor": 1500
+            }
+        }
+    )
+
+
 class OrderRequest(BaseModel):
     """Order creation request"""
-    customer_id: str
-    site_id: Optional[str] = None
-    store_id: Optional[str] = None
-    order_type: str = "purchase"
-    items: List[Dict[str, Any]]
-    shipping_address: Optional[Dict[str, Any]] = None
-    billing_address: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    customer_id: str = Field(..., description="Customer/User UUID")
+    site_id: Optional[str] = Field(None, description="Site UUID (optional)")
+    store_id: Optional[str] = Field(None, description="Store UUID (optional)")
+    order_type: str = Field("purchase", description="Order type: purchase, employee_purchase, etc.")
+    items: List[Dict[str, Any]] = Field(..., min_length=1, description="List of order items")
+    shipping_address: Optional[Dict[str, Any]] = Field(None, description="Shipping address JSON")
+    billing_address: Optional[Dict[str, Any]] = Field(None, description="Billing address JSON")
+    approval_request_id: Optional[str] = Field(None, description="Pre-approved request ID for large orders")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional order metadata")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "customer_id": "550e8400-e29b-41d4-a716-446655440000",
+                "store_id": "550e8400-e29b-41d4-a716-446655440002",
+                "order_type": "employee_purchase",
+                "items": [
+                    {
+                        "product_id": "550e8400-e29b-41d4-a716-446655440001",
+                        "quantity": 2,
+                        "unit_price_minor": 1500
+                    }
+                ],
+                "shipping_address": {
+                    "line1": "123 Main St",
+                    "city": "London",
+                    "postcode": "SW1A 1AA"
+                }
+            }
+        }
+    )
 
 
 class OrderItemRequest(BaseModel):

@@ -286,51 +286,51 @@ class UserCostCentre(Base):
     clearance_request = relationship("ApprovalRequest", foreign_keys=[clearance_request_id])
 
 
-class StoreProduct(Base):
-    """Store-specific product selection and pricing"""
-    __tablename__ = "store_products"
-    
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    # Store-specific pricing and availability
-    price_minor = Column(Integer, nullable=False)  # Store-specific selling price
-    currency = Column(String(3), default="GBP", nullable=False)
-    is_available = Column(Boolean, default=True, nullable=False, index=True)
-    
-    # Store-level inventory tracking
-    stock_quantity = Column(Integer, default=0, nullable=False)
-    low_stock_threshold = Column(Integer, default=10, nullable=False)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_store_product_unique', 'store_id', 'product_id', unique=True),
-    )
-
-
-class StoreVariant(Base):
-    """Store-specific variant overrides for products"""
-    __tablename__ = "store_variants"
-    
-    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_product_id = Column(SQLUUID(as_uuid=True), ForeignKey("store_products.id", ondelete="CASCADE"), nullable=False, index=True)
-    variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    # Optional variant-level overrides
-    price_minor = Column(Integer, nullable=True)  # If null, use StoreProduct price
-    stock_quantity = Column(Integer, nullable=True)  # Track variant stock per store
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    __table_args__ = (
-        Index('ix_store_variant_unique', 'store_product_id', 'variant_id', unique=True),
-    )
+# class StoreProduct(Base):
+#     """Store-specific product selection and pricing"""
+#     __tablename__ = "store_products"
+#
+#     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="CASCADE"), nullable=False, index=True)
+#     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+#     product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
+#
+#     # Store-specific pricing and availability
+#     price_minor = Column(Integer, nullable=False)  # Store-specific selling price
+#     currency = Column(String(3), default="GBP", nullable=False)
+#     is_available = Column(Boolean, default=True, nullable=False, index=True)
+#
+#     # Store-level inventory tracking
+#     stock_quantity = Column(Integer, default=0, nullable=False)
+#     low_stock_threshold = Column(Integer, default=10, nullable=False)
+#
+#     created_at = Column(DateTime(timezone=True), server_default=func.now())
+#     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+#
+#     __table_args__ = (
+#         Index('ix_store_product_unique', 'store_id', 'product_id', unique=True),
+#     )
+#
+#
+# class StoreVariant(Base):
+#     """Store-specific variant overrides for products"""
+#     __tablename__ = "store_variants"
+#
+#     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     store_product_id = Column(SQLUUID(as_uuid=True), ForeignKey("store_products.id", ondelete="CASCADE"), nullable=False, index=True)
+#     variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=False, index=True)
+#     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+#
+#     # Optional variant-level overrides
+#     price_minor = Column(Integer, nullable=True)  # If null, use StoreProduct price
+#     stock_quantity = Column(Integer, nullable=True)  # Track variant stock per store
+#
+#     created_at = Column(DateTime(timezone=True), server_default=func.now())
+#     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+#
+#     __table_args__ = (
+#         Index('ix_store_variant_unique', 'store_product_id', 'variant_id', unique=True),
+#     )
 
 
 class Product(Base):
@@ -382,22 +382,22 @@ class Pricebook(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class PriceRule(Base):
-    """Price rule model - pricing rules for products in pricebooks"""
-    __tablename__ = "price_rules"
-    rule_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    pricebook_id = Column(SQLUUID(as_uuid=True), ForeignKey("pricebooks.pricebook_id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=True, index=True)
-    variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=True, index=True)
-    rule_type = Column(String(50), nullable=False)  # fixed, percentage, discount
-    rule_value = Column(Integer, nullable=False)  # For fixed: price in minor units, for percentage: basis points (e.g., 1000 = 10%)
-    min_quantity = Column(Integer, nullable=True)
-    max_quantity = Column(Integer, nullable=True)
-    valid_from = Column(DateTime(timezone=True), nullable=True)
-    valid_until = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+# class PriceRule(Base):
+#     """Price rule model - pricing rules for products in pricebooks"""
+#     __tablename__ = "price_rules"
+#     rule_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     pricebook_id = Column(SQLUUID(as_uuid=True), ForeignKey("pricebooks.pricebook_id", ondelete="CASCADE"), nullable=False, index=True)
+#     product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=True, index=True)
+#     variant_id = Column(SQLUUID(as_uuid=True), ForeignKey("variants.variant_id", ondelete="CASCADE"), nullable=True, index=True)
+#     rule_type = Column(String(50), nullable=False)  # fixed, percentage, discount
+#     rule_value = Column(Integer, nullable=False)  # For fixed: price in minor units, for percentage: basis points (e.g., 1000 = 10%)
+#     min_quantity = Column(Integer, nullable=True)
+#     max_quantity = Column(Integer, nullable=True)
+#     valid_from = Column(DateTime(timezone=True), nullable=True)
+#     valid_until = Column(DateTime(timezone=True), nullable=True)
+#     is_active = Column(Boolean, default=True, nullable=False, index=True)
+#     created_at = Column(DateTime(timezone=True), server_default=func.now())
+#     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class ApprovalChain(Base):
@@ -770,9 +770,9 @@ class BudgetRequest(Base):
     __tablename__ = "budget_requests"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    cost_center_id = Column(Integer, ForeignKey("cost_centers.id"), nullable=False)
-    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    tenant_id = Column(UUID, ForeignKey("tenants.tenant_id"), nullable=False)
+    cost_center_id = Column(UUID, ForeignKey("cost_centres.cost_centre_id"), nullable=False)
+    requested_by = Column(UUID, ForeignKey("users.user_id"), nullable=False)
 
     amount = Column(Numeric(12, 2), nullable=False)
     description = Column(Text, nullable=True)
@@ -793,7 +793,7 @@ class BudgetApproval(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     budget_request_id = Column(Integer, ForeignKey("budget_requests.id"), nullable=False)
-    approver_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approver_id = Column(UUID, ForeignKey("users.user_id"), nullable=False)
 
     approved_amount = Column(Numeric(12, 2), nullable=False)
     decision = Column(

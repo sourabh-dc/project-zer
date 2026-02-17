@@ -1,6 +1,6 @@
 import logging
 
-from core.config import SETTINGS, SERVICE_NAME
+from operations_service.core.config import SETTINGS, SERVICE_NAME
 
 # Configure logging
 logging.basicConfig(
