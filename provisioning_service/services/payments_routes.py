@@ -4,12 +4,8 @@ from fastapi import HTTPException, APIRouter, Request, Depends
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-import uuid
-import os
-import httpx
 
-from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, SpendingEvent, User
+from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice
 from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db

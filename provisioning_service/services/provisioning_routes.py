@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional
-import secrets
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
@@ -17,7 +16,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
     VendorUserCreate, VendorUserUpdate
-from provisioning_service.core.config import SETTINGS
+
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_customer
 from provisioning_service.core.user_auth import check_user_authorization
