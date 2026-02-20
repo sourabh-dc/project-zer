@@ -769,98 +769,6 @@ async def list_users(
         logger.error(f"❌ List users failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-@router.post("/users/bulk-import", status_code=201)
-async def bulk_import_users(
-        req: BulkUserRequest,
-        db: Session = Depends(get_db),
-        ctx: UserContext = Depends(check_user_authorization('tenant.admin')
-        )
-):
-    """Bulk import users"""
-    start = datetime.now()
-    try:
-        req_total.labels(operation="bulk_import_users", status="start").inc()
-
-        # SECURITY: Verify tenant access
-        check_tenant_access(ctx, uuid.UUID(req.tenant_id))
-
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        results = {"success": [], "failed": []}
-        tenant_uuid = uuid.UUID(req.tenant_id)
-
-        for user_data in req.users:
-            try:
-                email = user_data.get("email")
-                display_name = user_data.get("display_name", email)
-
-                if not email:
-                    results["failed"].append({"error": "Missing email", "data": user_data})
-                    continue
-
-                # Check if email exists
-                if db.query(User).filter(func.lower(User.email) == email.lower()).first():
-                    results["failed"].append({"email": email, "error": "Email already exists"})
-                    continue
-
-                # Generate random password
-                temp_password = f"temp_{secrets.token_urlsafe(16)}"
-                password_hash = bcrypt.hashpw(temp_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-                # Generate API key
-                api_key = generate_api_key()
-                api_key_expires_at = datetime.now(timezone.utc) + timedelta(days=SETTINGS.API_KEY_EXPIRY_DAYS)
-
-                # Create user
-                user = User(
-                    user_id=uuid.uuid4(),
-                    tenant_id=tenant_uuid,
-                    email=email.lower(),
-                    display_name=display_name,
-                    password=password_hash,
-                    active=True
-                )
-                db.add(user)
-                db.flush()
-
-                results["success"].append({
-                    "user_id": str(user.user_id),
-                    "email": email,
-                    "api_key": api_key,
-                    "temporary_password": temp_password
-                })
-            except Exception as e:
-                results["failed"].append({"email": user_data.get("email", "unknown"), "error": str(e)})
-
-        db.commit()
-
-        req_total.labels(operation="bulk_import_users", status="success").inc()
-        req_duration.labels(operation="bulk_import_users").observe(
-            (datetime.now() - start).total_seconds()
-        )
-
-        logger.info(f"✅ Bulk import: {len(results['success'])}/{len(req.users)} succeeded")
-
-        return {
-            "tenant_id": req.tenant_id,
-            "total_requested": len(req.users),
-            "success_count": len(results["success"]),
-            "failed_count": len(results["failed"]),
-            "results": results
-        }
-    except HTTPException:
-        req_total.labels(operation="bulk_import_users", status="error").inc()
-        raise
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="bulk_import_users", status="error").inc()
-        logger.error(f"❌ Bulk import failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @router.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
@@ -1814,9 +1722,6 @@ async def assign_role_to_user(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Assigned role {req.role_id} to user {user_id}")
-        invalidate_user_context(str(user.user_id), str(user.tenant_id))
-
         return {
             "user_id": user_id,
             "role_id": req.role_id,
@@ -1915,8 +1820,6 @@ async def remove_role_from_user(
         )
 
         logger.info(f"✅ Removed role {role_id} from user {user_id}")
-        if user:
-            invalidate_user_context(str(user.user_id), str(user.tenant_id))
 
         return {
             "user_id": user_id,
@@ -2122,4 +2025,332 @@ async def delete_org_unit(
         db.rollback()
         logger.error(f"Delete org unit failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# =============================================================================
+# ORG UNIT - USER ASSIGNMENT ENDPOINTS
+# =============================================================================
+
+@router.post("/org_units/assignments", status_code=201)
+async def assign_user_to_org_unit(
+        req: OrgUnitAssignmentRequest,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("org_units.assign"))
+):
+    """
+    Assign a user to an organisational unit with a specific role.
+
+    This creates a mapping between a user and an org unit, defining their
+    role within that organisational structure.
+    """
+    try:
+        # Validate UUIDs
+        try:
+            user_uuid = uuid.UUID(req.user_id)
+            org_unit_uuid = uuid.UUID(req.org_unit_id)
+            role_uuid = uuid.UUID(req.role_id)
+            assigned_by_uuid = uuid.UUID(req.assigned_by) if req.assigned_by else None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
+
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == user_uuid).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Verify org unit exists and belongs to same tenant
+        org_unit = db.query(OrgUnit).filter(
+            OrgUnit.org_unit_id == org_unit_uuid,
+            OrgUnit.tenant_id == user.tenant_id
+        ).first()
+        if not org_unit:
+            raise HTTPException(status_code=404, detail="Org unit not found or does not belong to user's tenant")
+
+        # Verify role exists
+        role = db.query(Role).filter(Role.role_id == role_uuid).first()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        # Check if assignment already exists
+        existing = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.user_id == user_uuid,
+            UserOrgAssignment.org_unit_id == org_unit_uuid
+        ).first()
+
+        if existing:
+            # Update existing assignment with new role
+            existing.role_id = role_uuid
+            existing.assigned_by = assigned_by_uuid
+            existing.assigned_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(existing)
+
+            logger.info(f"Updated user {user_uuid} assignment to org unit {org_unit_uuid} with role {role_uuid}")
+
+            return {
+                "assignment_id": str(existing.assignment_id),
+                "user_id": str(existing.user_id),
+                "org_unit_id": str(existing.org_unit_id),
+                "role_id": str(existing.role_id),
+                "role_code": role.code,
+                "assigned_by": str(existing.assigned_by) if existing.assigned_by else None,
+                "assigned_at": existing.assigned_at.isoformat() if existing.assigned_at else None,
+                "message": "Assignment updated"
+            }
+
+        # Create new assignment
+        assignment = UserOrgAssignment(
+            user_id=user_uuid,
+            org_unit_id=org_unit_uuid,
+            role_id=role_uuid,
+            assigned_by=assigned_by_uuid
+        )
+        db.add(assignment)
+        db.commit()
+        db.refresh(assignment)
+
+        logger.info(f"Assigned user {user_uuid} to org unit {org_unit_uuid} with role {role_uuid}")
+
+        return {
+            "assignment_id": str(assignment.assignment_id),
+            "user_id": str(assignment.user_id),
+            "org_unit_id": str(assignment.org_unit_id),
+            "role_id": str(assignment.role_id),
+            "role_code": role.code,
+            "assigned_by": str(assignment.assigned_by) if assignment.assigned_by else None,
+            "assigned_at": assignment.assigned_at.isoformat() if assignment.assigned_at else None,
+            "message": "Assignment created"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Assign user to org unit failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/org_units/{org_unit_id}/users")
+async def get_org_unit_users(
+        org_unit_id: str,
+        include_children: bool = Query(False, description="Include users from child org units"),
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("org_units.manage"))
+):
+    """
+    Get all users assigned to an organisational unit.
+
+    Optionally include users from child org units.
+    """
+    try:
+        try:
+            ou_uuid = uuid.UUID(org_unit_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid org_unit_id format")
+
+        # Verify org unit exists
+        org_unit = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_uuid).first()
+        if not org_unit:
+            raise HTTPException(status_code=404, detail="Org unit not found")
+
+        # Get org unit IDs to query
+        org_unit_ids = [ou_uuid]
+
+        if include_children:
+            # Get all child org units recursively
+            def get_children_ids(parent_id):
+                children = db.query(OrgUnit.org_unit_id).filter(
+                    OrgUnit.parent_org_unit_id == parent_id
+                ).all()
+                child_ids = [c[0] for c in children]
+                for child_id in child_ids:
+                    child_ids.extend(get_children_ids(child_id))
+                return child_ids
+
+            org_unit_ids.extend(get_children_ids(ou_uuid))
+
+        # Query assignments with user and role info
+        assignments = db.query(
+            UserOrgAssignment,
+            User,
+            Role,
+            OrgUnit
+        ).join(
+            User, UserOrgAssignment.user_id == User.user_id
+        ).join(
+            Role, UserOrgAssignment.role_id == Role.role_id
+        ).join(
+            OrgUnit, UserOrgAssignment.org_unit_id == OrgUnit.org_unit_id
+        ).filter(
+            UserOrgAssignment.org_unit_id.in_(org_unit_ids)
+        ).all()
+
+        users = []
+        for assignment, user, role, ou in assignments:
+            users.append({
+                "assignment_id": str(assignment.assignment_id),
+                "user_id": str(user.user_id),
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "display_name": user.display_name,
+                "position": user.position,
+                "is_active": user.is_active,
+                "org_unit_id": str(ou.org_unit_id),
+                "org_unit_name": ou.name,
+                "role_id": str(role.role_id),
+                "role_code": role.code,
+                "assigned_at": assignment.assigned_at.isoformat() if assignment.assigned_at else None
+            })
+
+        return {
+            "org_unit_id": str(org_unit.org_unit_id),
+            "org_unit_name": org_unit.name,
+            "include_children": include_children,
+            "total_users": len(users),
+            "users": users
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get org unit users failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/users/{user_id}/org_units")
+async def get_user_org_units(
+        user_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("org_units.manage"))
+):
+    """
+    Get all organisational units a user is assigned to.
+    """
+    try:
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+        # Verify user exists
+        user = db.query(User).filter(User.user_id == user_uuid).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Query assignments
+        assignments = db.query(
+            UserOrgAssignment,
+            OrgUnit,
+            Role
+        ).join(
+            OrgUnit, UserOrgAssignment.org_unit_id == OrgUnit.org_unit_id
+        ).join(
+            Role, UserOrgAssignment.role_id == Role.role_id
+        ).filter(
+            UserOrgAssignment.user_id == user_uuid
+        ).all()
+
+        org_units = []
+        for assignment, ou, role in assignments:
+            org_units.append({
+                "assignment_id": str(assignment.assignment_id),
+                "org_unit_id": str(ou.org_unit_id),
+                "org_unit_name": ou.name,
+                "org_unit_type": ou.type,
+                "org_unit_status": ou.status,
+                "role_id": str(role.role_id),
+                "role_code": role.code,
+                "assigned_at": assignment.assigned_at.isoformat() if assignment.assigned_at else None
+            })
+
+        return {
+            "user_id": str(user.user_id),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "total_assignments": len(org_units),
+            "org_units": org_units
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get user org units failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/org_units/assignments/{assignment_id}", status_code=204)
+async def remove_user_from_org_unit(
+        assignment_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("org_units.assign"))
+):
+    """
+    Remove a user's assignment from an organisational unit.
+    """
+    try:
+        try:
+            assignment_uuid = uuid.UUID(assignment_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid assignment_id format")
+
+        assignment = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.assignment_id == assignment_uuid
+        ).first()
+
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+
+        user_id = assignment.user_id
+        org_unit_id = assignment.org_unit_id
+
+        db.delete(assignment)
+        db.commit()
+
+        logger.info(f"Removed user {user_id} from org unit {org_unit_id}")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Remove user from org unit failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/org_units/{org_unit_id}/users/{user_id}", status_code=204)
+async def remove_user_from_org_unit_by_ids(
+        org_unit_id: str,
+        user_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("org_units.assign"))
+):
+    """
+    Remove a user's assignment from an organisational unit by org_unit_id and user_id.
+    """
+    try:
+        try:
+            ou_uuid = uuid.UUID(org_unit_id)
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+        assignment = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.org_unit_id == ou_uuid,
+            UserOrgAssignment.user_id == user_uuid
+        ).first()
+
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+
+        db.delete(assignment)
+        db.commit()
+
+        logger.info(f"Removed user {user_id} from org unit {org_unit_id}")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Remove user from org unit failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 

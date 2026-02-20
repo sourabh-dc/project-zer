@@ -1176,3 +1176,24 @@ class VendorUserCreate(BaseModel):
     first_name: str
     role: str = "vendor_staff"
     active: bool = True
+
+class SubscribeRequest(BaseModel):
+    """Request to subscribe to a plan"""
+    plan_code: str = Field(description="Plan code to subscribe to")
+    billing_cycle: str = Field(default="monthly", description="monthly, quarterly, or yearly")
+    start_trial: bool = Field(default=True, description="Start with 7-day free trial")
+
+
+class WhoAmIResponse(BaseModel):
+    """Current user context with tenant and subscription info"""
+    user_id: str
+    email: str
+    display_name: Optional[str]
+    tenant_id: str
+    tenant_name: str
+    roles: List[str]
+    permissions: List[str]
+    subscription: Optional[dict] = None
+    plan: Optional[dict] = None
+    features: List[dict] = []
+    trial_info: Optional[dict] = None

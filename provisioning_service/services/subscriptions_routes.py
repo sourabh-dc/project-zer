@@ -8,37 +8,15 @@ from sqlalchemy.orm import Session
 from provisioning_service.Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserRole, Role, \
     PlanPrice, Feature, PlanFeature, RolePermission, Permission
 from provisioning_service.Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
-    CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext
+    CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext, SubscribeRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.utils.logger import logger
 
+
 router = APIRouter(prefix="/subscriptions", tags=["Subscription Plans"])
 
 TRIAL_DAYS = 7
-
-
-class SubscribeRequest(BaseModel):
-    """Request to subscribe to a plan"""
-    plan_code: str = Field(description="Plan code to subscribe to")
-    billing_cycle: str = Field(default="monthly", description="monthly, quarterly, or yearly")
-    start_trial: bool = Field(default=True, description="Start with 7-day free trial")
-
-
-class WhoAmIResponse(BaseModel):
-    """Current user context with tenant and subscription info"""
-    user_id: str
-    email: str
-    display_name: Optional[str]
-    tenant_id: str
-    tenant_name: str
-    roles: List[str]
-    permissions: List[str]
-    subscription: Optional[dict] = None
-    plan: Optional[dict] = None
-    features: List[dict] = []
-    trial_info: Optional[dict] = None
-
 
 @router.get("/whoami")
 async def whoami(
@@ -180,117 +158,6 @@ async def whoami(
         "features": features_data,
         "trial_info": trial_info,
     }
-
-
-@router.post("/subscribe", status_code=201)
-async def subscribe_to_plan(
-    req: SubscribeRequest,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("tenant.admin"))
-):
-    """
-    Subscribe tenant to a plan. Includes 7-day free trial by default.
-    After trial, subscription continues with the selected billing cycle.
-    """
-    tenant_id = uuid.UUID(ctx["tenant_id"]) if isinstance(ctx, dict) else uuid.UUID(ctx.tenant_id)
-
-    # Check plan exists
-    plan = db.query(SubscriptionPlan).filter(
-        SubscriptionPlan.code == req.plan_code,
-        SubscriptionPlan.is_active == True
-    ).first()
-    if not plan:
-        raise HTTPException(404, "Plan not found or inactive")
-
-    # Check for existing active subscription
-    now = datetime.now(timezone.utc)
-    existing = db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == tenant_id,
-        TenantSubscription.is_active == True,
-        TenantSubscription.current_period_end > now
-    ).first()
-
-    if existing:
-        raise HTTPException(400, f"Active subscription exists (plan: {existing.plan_code}). Cancel or upgrade instead.")
-
-    # Deactivate any old subscriptions
-    db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == tenant_id
-    ).update({"is_active": False})
-
-    # Calculate period
-    if req.start_trial:
-        period_start = now
-        period_end = now + timedelta(days=TRIAL_DAYS)
-        is_trial = True
-    else:
-        period_start = now
-        if req.billing_cycle == "yearly":
-            period_end = now + timedelta(days=365)
-        elif req.billing_cycle == "quarterly":
-            period_end = now + timedelta(days=90)
-        else:
-            period_end = now + timedelta(days=30)
-        is_trial = False
-
-    # Create subscription
-    subscription = TenantSubscription(
-        tenant_id=tenant_id,
-        plan_code=req.plan_code,
-        billing_cycle=req.billing_cycle,
-        payment_method="pending",
-        current_period_start=period_start,
-        current_period_end=period_end,
-        is_active=True,
-        is_trial=is_trial,
-    )
-    db.add(subscription)
-    db.commit()
-    db.refresh(subscription)
-
-    # Get pricing
-    pricing = db.query(PlanPrice).filter(PlanPrice.plan_code == req.plan_code).first()
-    price = 0
-    if pricing:
-        if req.billing_cycle == "yearly":
-            price = int(pricing.price_yearly_minor)
-        elif req.billing_cycle == "quarterly":
-            price = int(pricing.price_quarterly_minor)
-        else:
-            price = int(pricing.price_monthly_minor)
-
-    logger.info(f"Subscription created: tenant={tenant_id}, plan={req.plan_code}, trial={is_trial}")
-
-    return {
-        "subscription_id": subscription.id,
-        "tenant_id": str(tenant_id),
-        "plan_code": req.plan_code,
-        "plan_name": plan.name,
-        "billing_cycle": req.billing_cycle,
-        "is_trial": is_trial,
-        "trial_days": TRIAL_DAYS if is_trial else 0,
-        "period_start": period_start.isoformat(),
-        "period_end": period_end.isoformat(),
-        "price_minor": 0 if is_trial else price,
-        "currency": pricing.currency if pricing else "GBP",
-        "message": f"{'7-day free trial started!' if is_trial else 'Subscription active.'} Ends {period_end.strftime('%Y-%m-%d')}",
-    }
-
-
-@router.post("/create", status_code=201)
-async def create_subscription(
-    req: TenantSubscriptionRequest,
-    db: Session = Depends(get_db)
-):
-    """Create a new subscription"""
-    tenant_subscription = TenantSubscription(tenant_id=req.tenant_id, plan_code=req.plan_code,
-                                             current_period_start=req.current_period_start, is_trial=False,
-                                             current_period_end=req.current_period_end, payment_method=req.payment_method,
-                                             is_active=True, external_id=req.external_id)
-
-    db.add(tenant_subscription)
-    db.commit()
-    return tenant_subscription
 
 @router.post("/renew", status_code=201)
 async def renew_subscription(
