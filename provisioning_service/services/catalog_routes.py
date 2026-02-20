@@ -1,13 +1,16 @@
 import uuid
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+import io
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import and_, or_
 from uuid import UUID
+import pandas as pd
 
 from provisioning_service.Models import (
-    Tenant, Category, Product, Variant, StoreProduct, Store, Vendor
+    Tenant, Category, Product, Variant, StoreProduct, Store, Vendor,
+    Colour, Size, Fit, UosLabel
 )
 from provisioning_service.Schemas import (
     CategoryRequest, ProductRequest, VariantRequest, StoreProductRequest,
@@ -164,6 +167,14 @@ async def create_product(
     ).first():
         raise HTTPException(409, "SKU already exists in your catalog")
 
+    # EAN must be unique per tenant if provided
+    if req.ean and db.query(Product).filter(
+        Product.tenant_id == req.tenant_id,
+        Product.ean == req.ean,
+        Product.active == True
+    ).first():
+        raise HTTPException(409, "EAN already exists in your catalog")
+
     category_id = None
     if req.category_id:
         try:
@@ -189,22 +200,125 @@ async def create_product(
         ).first():
             raise HTTPException(404, "Vendor not found")
 
+    brand_id = None
+    if req.brand_id:
+        try:
+            brand_id = UUID(req.brand_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid brand_id")
+
+    # Validate matrix parent if this is a child product
+    matrix_parent_id = None
+    if req.matrix_parent_id:
+        try:
+            matrix_parent_id = UUID(req.matrix_parent_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid matrix_parent_id")
+        parent = db.query(Product).filter(
+            Product.product_id == matrix_parent_id,
+            Product.tenant_id == req.tenant_id,
+            Product.active == True
+        ).first()
+        if not parent:
+            raise HTTPException(404, "Matrix parent product not found")
+        if parent.matrix_type != "parent":
+            raise HTTPException(400, "matrix_parent_id must reference a parent product")
+
+    # Validate colour_id
+    colour_id = None
+    if req.colour_id:
+        try:
+            colour_id = UUID(req.colour_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid colour_id")
+        if not db.query(Colour).filter(Colour.colour_id == colour_id).first():
+            raise HTTPException(404, "Colour not found")
+
+    # Validate size_id
+    size_id = None
+    if req.size_id:
+        try:
+            size_id = UUID(req.size_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid size_id")
+        if not db.query(Size).filter(Size.size_id == size_id).first():
+            raise HTTPException(404, "Size not found")
+
+    # Validate fit_id
+    fit_id = None
+    if req.fit_id:
+        try:
+            fit_id = UUID(req.fit_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid fit_id")
+        if not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
+            raise HTTPException(404, "Fit not found")
+
+    # Validate UOS labels
+    if req.outer_label_id:
+        if not db.query(UosLabel).filter(UosLabel.label_id == req.outer_label_id).first():
+            raise HTTPException(404, "Outer UOS label not found")
+    if req.inner_label_id:
+        if not db.query(UosLabel).filter(UosLabel.label_id == req.inner_label_id).first():
+            raise HTTPException(404, "Inner UOS label not found")
+
     product = Product(
         product_id=uuid.uuid4(),
         tenant_id=req.tenant_id,
+        external_id=req.external_id,
+        sku=req.sku.strip(),
+        ean=req.ean.strip() if req.ean else None,
+        mpn=req.mpn,
         vendor_id=vendor_id,
         category_id=category_id,
-        sku=req.sku.strip(),
-        barcode=req.barcode.strip(),
-        name=req.name.strip(),
-        description=req.description,
-        brand=req.brand,
-        base_price_minor=req.base_price_minor,
+        brand_id=brand_id,
+        manufacturer=req.manufacturer,
+        is_matrix_item=req.is_matrix_item,
+        matrix_type=req.matrix_type or "standalone",
+        matrix_parent_id=matrix_parent_id,
+        colour_id=colour_id,
+        size_id=size_id,
+        fit_id=fit_id,
+        item_option=req.item_option,
+        display_name=req.display_name.strip(),
+        web_display_name=req.web_display_name,
+        sales_description=req.sales_description,
+        purchase_description=req.purchase_description,
+        packing_slip_description=req.packing_slip_description,
+        detailed_description=req.detailed_description,
+        additional_description=req.additional_description,
+        weight=req.weight,
+        weight_unit=req.weight_unit,
+        width=req.width,
+        depth=req.depth,
+        height=req.height,
+        outer_quantity=req.outer_quantity,
+        outer_label_id=req.outer_label_id,
+        inner_quantity=req.inner_quantity,
+        inner_label_id=req.inner_label_id,
+        reorder_multiple=req.reorder_multiple,
+        purchase_price_minor=req.purchase_price_minor,
         currency=req.currency or "GBP",
-        tax_rate=req.tax_rate or 0.0,
-        weight=req.weight or 0.0,
-        product_type=req.product_type or "physical",
+        tax_rate=req.tax_rate or 0,
+        manufacturer_country=req.manufacturer_country,
+        commodity_code=req.commodity_code,
+        product_type=req.product_type,
+        colour_filter=req.colour_filter,
+        size_filter=req.size_filter,
+        search_keywords=req.search_keywords,
+        is_dangerous_goods=req.is_dangerous_goods,
+        cas_number=req.cas_number,
+        un_number=req.un_number,
+        proper_shipping_name=req.proper_shipping_name,
+        transport_hazard_class=req.transport_hazard_class,
+        packing_group=req.packing_group,
+        adr_classification_code=req.adr_classification_code,
+        adr_tunnel_restriction_code=req.adr_tunnel_restriction_code,
+        adr_hazard_id_number=req.adr_hazard_id_number,
+        tax_code=req.tax_code,
+        restricted=req.restricted,
         product_metadata=req.product_metadata or {},
+        comments=req.comments,
         active=True
     )
     db.add(product)
@@ -213,11 +327,11 @@ async def create_product(
         db.refresh(product)
         try:
             aifi_product = await cv_create_product({
-                "externalId": product.product_id,
-                "name": product.name,
-                "barcode": product.barcode,
-                "price": product.base_price_minor,
-                "weight": str(product.weight),
+                "externalId": str(product.product_id),
+                "name": product.display_name,
+                "barcode": product.ean or product.sku,
+                "price": product.purchase_price_minor,
+                "weight": str(product.weight) if product.weight else "0",
                 "thumbnail": ""
             })
             product.aifi_product_id = aifi_product.get("id")
@@ -229,13 +343,15 @@ async def create_product(
         record_feature_usage(db, req.tenant_id, "products", count=1)
     except IntegrityError as e:
         db.rollback()
-        raise HTTPException(409, "SKU or data conflict")
+        raise HTTPException(409, "SKU or EAN conflict")
 
     return {
         "product_id": str(product.product_id),
         "sku": product.sku,
-        "name": product.name,
-        "base_price_minor": product.base_price_minor,
+        "ean": product.ean,
+        "display_name": product.display_name,
+        "matrix_type": product.matrix_type,
+        "purchase_price_minor": product.purchase_price_minor,
         "active": True
     }
 
@@ -265,14 +381,14 @@ async def list_products(
     if search:
         q = q.filter(
             or_(
-                Product.name.ilike(f"%{search}%"),
+                Product.display_name.ilike(f"%{search}%"),
                 Product.sku.ilike(f"%{search}%"),
-                Product.brand.ilike(f"%{search}%")
+                Product.ean.ilike(f"%{search}%")
             )
         )
 
     total = q.count()
-    items = q.order_by(Product.name).offset(offset).limit(limit).all()
+    items = q.order_by(Product.display_name).offset(offset).limit(limit).all()
 
     return {
         "total": total,
@@ -282,9 +398,10 @@ async def list_products(
             {
                 "product_id": str(p.product_id),
                 "sku": p.sku,
-                "name": p.name,
-                "brand": p.brand,
-                "base_price_minor": p.base_price_minor,
+                "ean": p.ean,
+                "display_name": p.display_name,
+                "matrix_type": p.matrix_type,
+                "purchase_price_minor": p.purchase_price_minor,
                 "currency": p.currency,
                 "category_id": str(p.category_id) if p.category_id else None,
                 "active": p.active
@@ -334,7 +451,7 @@ async def create_variant(
         sku=req.sku.strip(),
         name=req.name.strip(),
         attributes=req.attributes or {},
-        price_minor=req.price_minor or product.base_price_minor,
+        price_minor=req.price_minor or product.purchase_price_minor,
         currency=req.currency or "GBP",
         stock_quantity=req.stock_quantity or 0,
         active=True
@@ -396,7 +513,7 @@ async def add_product_to_store(
         store_id=store_id,
         tenant_id=ctx["tenant_id"],
         product_id=product_id,
-        price_minor=req.price_minor or product.base_price_minor,
+        price_minor=req.price_minor or product.purchase_price_minor,
         currency=req.currency or "GBP",
         is_available=True,
         stock_quantity=req.stock_quantity or 0
@@ -516,4 +633,231 @@ async def list_store_products(
         "limit": limit,
         "offset": offset,
         "products": products
+    }
+
+
+# =============================================================================
+# BULK UPLOAD ENDPOINT
+# =============================================================================
+
+@router.post("/products/bulk-upload", status_code=201)
+async def bulk_upload_products(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+):
+    """
+    Bulk upload products from an Excel file.
+    The Excel file should have columns matching the products table fields.
+    """
+    tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+
+    # Validate file type
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(400, "File must be an Excel file (.xlsx or .xls)")
+
+    try:
+        # Read file content
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
+    except Exception as e:
+        logger.error(f"Error reading Excel file: {e}")
+        raise HTTPException(400, f"Failed to read Excel file: {str(e)}")
+
+    # Normalize column names (lowercase and strip whitespace)
+    df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
+
+    # Required columns
+    required_columns = ['sku', 'display_name', 'purchase_price_minor']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise HTTPException(400, f"Missing required columns: {', '.join(missing_columns)}")
+
+    # Track results
+    created_products = []
+    errors = []
+
+    for index, row in df.iterrows():
+        row_num = index + 2  # Excel row number (1-indexed + header row)
+        try:
+            sku = str(row.get('sku', '')).strip()
+            if not sku or pd.isna(row.get('sku')):
+                errors.append({"row": row_num, "error": "SKU is required"})
+                continue
+
+            display_name = str(row.get('display_name', '')).strip()
+            if not display_name or pd.isna(row.get('display_name')):
+                errors.append({"row": row_num, "error": "display_name is required"})
+                continue
+
+            # Check for duplicate SKU within tenant
+            existing = db.query(Product).filter(
+                Product.tenant_id == tenant_id,
+                Product.sku == sku,
+                Product.active == True
+            ).first()
+            if existing:
+                errors.append({"row": row_num, "error": f"SKU '{sku}' already exists"})
+                continue
+
+            # Parse optional fields with proper null handling
+            def get_value(key, default=None):
+                val = row.get(key)
+                if pd.isna(val) or val == '' or val is None:
+                    return default
+                return val
+
+            def get_uuid(key):
+                val = get_value(key)
+                if val:
+                    try:
+                        return UUID(str(val))
+                    except ValueError:
+                        return None
+                return None
+
+            def get_int(key, default=None):
+                val = get_value(key)
+                if val is not None:
+                    try:
+                        return int(float(val))
+                    except (ValueError, TypeError):
+                        return default
+                return default
+
+            def get_float(key, default=None):
+                val = get_value(key)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
+                return default
+
+            def get_bool(key, default=False):
+                val = get_value(key)
+                if val is not None:
+                    if isinstance(val, bool):
+                        return val
+                    if isinstance(val, str):
+                        return val.lower() in ('true', 'yes', '1', 't', 'y')
+                    return bool(val)
+                return default
+
+            # Validate foreign key references if provided
+            vendor_id = get_uuid('vendor_id')
+            if vendor_id and not db.query(Vendor).filter(Vendor.vendor_id == vendor_id, Vendor.tenant_id == tenant_id).first():
+                errors.append({"row": row_num, "error": f"Vendor ID not found: {vendor_id}"})
+                continue
+
+            category_id = get_uuid('category_id')
+            if category_id and not db.query(Category).filter(Category.category_id == category_id, Category.tenant_id == tenant_id, Category.active == True).first():
+                errors.append({"row": row_num, "error": f"Category ID not found: {category_id}"})
+                continue
+
+            colour_id = get_uuid('colour_id')
+            if colour_id and not db.query(Colour).filter(Colour.colour_id == colour_id).first():
+                errors.append({"row": row_num, "error": f"Colour ID not found: {colour_id}"})
+                continue
+
+            size_id = get_uuid('size_id')
+            if size_id and not db.query(Size).filter(Size.size_id == size_id).first():
+                errors.append({"row": row_num, "error": f"Size ID not found: {size_id}"})
+                continue
+
+            fit_id = get_uuid('fit_id')
+            if fit_id and not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
+                errors.append({"row": row_num, "error": f"Fit ID not found: {fit_id}"})
+                continue
+
+            # Create product object
+            product = Product(
+                product_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                external_id=get_value('external_id'),
+                sku=sku,
+                ean=get_value('ean'),
+                mpn=get_value('mpn'),
+                vendor_id=vendor_id,
+                category_id=category_id,
+                brand_id=get_uuid('brand_id'),
+                manufacturer=get_value('manufacturer'),
+                is_matrix_item=get_bool('is_matrix_item', False),
+                matrix_type=get_value('matrix_type', 'standalone'),
+                matrix_parent_id=get_uuid('matrix_parent_id'),
+                colour_id=colour_id,
+                size_id=size_id,
+                fit_id=fit_id,
+                item_option=get_value('item_option'),
+                display_name=display_name,
+                web_display_name=get_value('web_display_name'),
+                sales_description=get_value('sales_description'),
+                purchase_description=get_value('purchase_description'),
+                packing_slip_description=get_value('packing_slip_description'),
+                detailed_description=get_value('detailed_description'),
+                additional_description=get_value('additional_description'),
+                weight=get_float('weight'),
+                weight_unit=get_value('weight_unit'),
+                width=get_float('width'),
+                depth=get_float('depth'),
+                height=get_float('height'),
+                outer_quantity=get_int('outer_quantity'),
+                outer_label_id=get_int('outer_label_id'),
+                inner_quantity=get_int('inner_quantity'),
+                inner_label_id=get_int('inner_label_id'),
+                reorder_multiple=get_int('reorder_multiple'),
+                purchase_price_minor=get_int('purchase_price_minor', 0),
+                currency=get_value('currency', 'GBP'),
+                tax_rate=get_int('tax_rate', 0),
+                manufacturer_country=get_value('manufacturer_country'),
+                commodity_code=get_value('commodity_code'),
+                product_type=get_value('product_type'),
+                colour_filter=get_value('colour_filter'),
+                size_filter=get_value('size_filter'),
+                search_keywords=get_value('search_keywords'),
+                is_dangerous_goods=get_bool('is_dangerous_goods', False),
+                cas_number=get_value('cas_number'),
+                un_number=get_value('un_number'),
+                proper_shipping_name=get_value('proper_shipping_name'),
+                transport_hazard_class=get_value('transport_hazard_class'),
+                packing_group=get_value('packing_group'),
+                adr_classification_code=get_value('adr_classification_code'),
+                adr_tunnel_restriction_code=get_value('adr_tunnel_restriction_code'),
+                adr_hazard_id_number=get_value('adr_hazard_id_number'),
+                tax_code=get_value('tax_code'),
+                restricted=get_bool('restricted', False),
+                comments=get_value('comments'),
+                active=True
+            )
+
+            db.add(product)
+            created_products.append({
+                "row": row_num,
+                "product_id": str(product.product_id),
+                "sku": product.sku,
+                "display_name": product.display_name
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing row {row_num}: {e}")
+            errors.append({"row": row_num, "error": str(e)})
+
+    # Commit all products at once
+    if created_products:
+        try:
+            db.commit()
+            # Record feature usage for all created products
+            record_feature_usage(db, str(tenant_id), "products", count=len(created_products))
+        except IntegrityError as e:
+            db.rollback()
+            logger.error(f"Database error during bulk commit: {e}")
+            raise HTTPException(500, f"Database error: {str(e)}")
+
+    return {
+        "message": f"Bulk upload completed. {len(created_products)} products created, {len(errors)} errors.",
+        "total_rows": len(df),
+        "created_count": len(created_products),
+        "error_count": len(errors),
+        "created_products": created_products,
+        "errors": errors
     }

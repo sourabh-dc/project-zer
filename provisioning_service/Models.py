@@ -251,6 +251,70 @@ class Vendor(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+class ColourGroup(Base):
+    """Colour group model - grouping colours by category"""
+    __tablename__ = "colour_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    colour_name = Column(String(100), nullable=False, index=True)
+    colour_group = Column(String(100), nullable=False, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Colour(Base):
+    """Colour model - product colour definitions"""
+    __tablename__ = "colours"
+
+    colour_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False, index=True)
+    abbreviation = Column(String(20), nullable=True)
+    colour_group = Column(String(100), nullable=True, index=True)
+    source_internal_id = Column(String(100), nullable=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class Size(Base):
+    """Size model - product size definitions"""
+    __tablename__ = "sizes"
+
+    size_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(50), nullable=False, index=True)
+    abbreviation = Column(String(20), nullable=True)
+    sort_order = Column(Integer, nullable=True, default=0)
+    source_internal_id = Column(String(100), nullable=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class Fit(Base):
+    """Fit model - product fit types"""
+    __tablename__ = "fits"
+
+    fit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False, index=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class UosLabel(Base):
+    """UOS Label model - unit of sale labels"""
+    __tablename__ = "uos_labels"
+
+    label_id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, index=True)
+    label_type = Column(String(50), nullable=True, index=True)
+    source_id = Column(String(100), nullable=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class CostCentre(Base):
     """Cost Centre model - budget tracking"""
     __tablename__ = "cost_centres"
@@ -479,36 +543,106 @@ class Category(Base):
 class Product(Base):
     __tablename__ = "products"
 
+    # Primary key and identity
     product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
-    aifi_product_id = Column(String(64), nullable=True, index=True)
+    external_id = Column(String(100), nullable=True, index=True)  # NetSuite/external system ID
+    aifi_product_id = Column(String(64), nullable=True, index=True)  # Legacy integration ID
+    sku = Column(String(100), nullable=False)  # Stock Keeping Unit
+    ean = Column(String(128), nullable=True, index=True)  # European Article Number / barcode
+    mpn = Column(String(100), nullable=True)  # Manufacturer Part Number
+
+    # Relationships
     vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"), nullable=True, index=True)
     category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
-    sku = Column(String(100), nullable=False)
-    barcode = Column(String(128), nullable=False)
-    name = Column(String(255), nullable=False)
-    description = Column(String(1000), nullable=True)
-    brand = Column(String(100), nullable=True)
-    manufacturer = Column(String(255), nullable=True)
-    base_price_minor = Column(Integer, nullable=False)
+    brand_id = Column(SQLUUID(as_uuid=True), nullable=True, index=True)  # FK → brands
+    manufacturer = Column(String(255), nullable=True)  # Manufacturer name (free text)
+
+    # Matrix (variant) fields
+    is_matrix_item = Column(Boolean, nullable=False, default=False)  # TRUE if product has colour/size/fit variants
+    matrix_type = Column(String(20), nullable=False, server_default=text("'standalone'"))  # standalone / parent / child
+    matrix_parent_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="SET NULL"), nullable=True, index=True)  # Self-ref for children
+    colour_id = Column(SQLUUID(as_uuid=True), ForeignKey("colours.colour_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → colours
+    size_id = Column(SQLUUID(as_uuid=True), ForeignKey("sizes.size_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → sizes
+    fit_id = Column(SQLUUID(as_uuid=True), ForeignKey("fits.fit_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → fits
+    item_option = Column(String(255), nullable=True)  # Domain-specific option (Glove Type, etc.)
+
+    # Description fields
+    display_name = Column(String(255), nullable=False)  # Primary display name in UI
+    web_display_name = Column(String(255), nullable=True)  # E-commerce display name (max 60 char)
+    sales_description = Column(Text, nullable=True)  # Customer-facing description
+    purchase_description = Column(Text, nullable=True)  # Supplier-facing description
+    packing_slip_description = Column(Text, nullable=True)  # Logistics/packing slip text
+    detailed_description = Column(Text, nullable=True)  # Extended/HTML product description
+    additional_description = Column(Text, nullable=True)  # Supplementary information
+
+    # Physical attributes
+    weight = Column(Numeric(10, 3), nullable=True)  # Product weight value
+    weight_unit = Column(String(10), nullable=True)  # g / kg / lb
+    width = Column(Numeric(10, 3), nullable=True)  # Width in mm
+    depth = Column(Numeric(10, 3), nullable=True)  # Depth in mm
+    height = Column(Numeric(10, 3), nullable=True)  # Height in mm
+
+    # Packaging
+    outer_quantity = Column(Integer, nullable=True)  # Quantity in outer packaging
+    outer_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK → uos_labels
+    inner_quantity = Column(Integer, nullable=True)  # Quantity in inner packaging
+    inner_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK → uos_labels
+    reorder_multiple = Column(Integer, nullable=True)  # Minimum reorder multiple
+
+    # Pricing
+    purchase_price_minor = Column(Integer, nullable=False)  # Cost price in pence/cents (minor units)
     currency = Column(String(3), nullable=False, server_default=text("'GBP'"))
-    weight = Column(Numeric(10, 3), nullable=True)  # Kg or grams; stored as decimal
-    tax_rate = Column(BigInteger, nullable=False, server_default="0")
-    tax_code = Column(String(64), nullable=True)
-    product_type = Column(String(50), nullable=True)
-    restricted = Column(Boolean, nullable=False, default=False, index=True)
-    thumbnail = Column(String(500), nullable=True)
-    invalid_thumbnail = Column(Boolean, default=False, nullable=False)
-    product_metadata = Column(JSONB, nullable=True)
-    active = Column(Boolean, nullable=False, default=True, index=True)
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    tax_rate = Column(BigInteger, nullable=False, server_default=text("0"))
+
+    # Classification
+    manufacturer_country = Column(String(100), nullable=True)  # Country of origin
+    commodity_code = Column(String(50), nullable=True)  # HS/customs commodity code
+    product_type = Column(String(50), nullable=True)  # Product type classification
+
+    # Web / filtering
+    colour_filter = Column(String(100), nullable=True)  # Filterable colour value for web store
+    size_filter = Column(String(100), nullable=True)  # Filterable size value for web store
+    search_keywords = Column(Text, nullable=True)  # SEO / site search keywords
+
+    # Hazmat fields
+    is_dangerous_goods = Column(Boolean, nullable=False, default=False)  # Master dangerous goods flag
+    cas_number = Column(String(50), nullable=True)  # Chemical Abstracts Service number
+    un_number = Column(String(50), nullable=True)  # UN dangerous goods number
+    proper_shipping_name = Column(String(255), nullable=True)  # Official shipping name for hazmat
+    transport_hazard_class = Column(String(50), nullable=True)  # Hazmat transport class
+    packing_group = Column(String(20), nullable=True)  # I / II / III
+    adr_classification_code = Column(String(50), nullable=True)  # ADR road transport classification
+    adr_tunnel_restriction_code = Column(String(20), nullable=True)  # Tunnel restriction code
+    adr_hazard_id_number = Column(String(50), nullable=True)  # ADR hazard identification number
+
+    # System fields
+    tax_code = Column(String(64), nullable=True)  # Tax code reference
+    restricted = Column(Boolean, nullable=False, default=False, index=True)  # Restricted product flag
+    product_metadata = Column(JSONB, nullable=True)  # Flexible JSON for extra data
+    comments = Column(Text, nullable=True)  # Free-text notes/comments
+    active = Column(Boolean, nullable=False, default=True, index=True)  # Active/inactive flag
+    deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete timestamp
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=True)
 
     __table_args__ = (
         Index("ix_products_tenant_sku_unique", "tenant_id", "sku", unique=True),
-        Index("ix_products_tenant_barcode_unique", "tenant_id", "barcode", unique=True),
+        Index("ix_products_tenant_ean_unique", "tenant_id", "ean", unique=True, postgresql_where=text("ean IS NOT NULL")),
     )
+
+
+class ProductImage(Base):
+    """Product image model - multiple images per product"""
+    __tablename__ = "product_images"
+
+    image_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    image_url = Column(String(500), nullable=False)  # URL to image file
+    position = Column(Integer, nullable=False, default=1)  # Display order (1-5)
+    is_primary = Column(Boolean, nullable=False, default=False)  # Primary/thumbnail image flag
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Variant(Base):

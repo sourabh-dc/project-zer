@@ -1540,6 +1540,54 @@ async def remove_permission_from_role(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.get("/permissions")
+async def get_all_permissions(
+        skip: int = Query(0, ge=0, description="Number of records to skip"),
+        limit: int = Query(100, ge=1, le=500, description="Maximum number of records to return"),
+        search: Optional[str] = Query(None, description="Search by code or description"),
+        db: Session = Depends(get_db)
+):
+    """
+    Get all permissions in the system.
+
+    Returns a paginated list of all available permissions.
+    """
+    try:
+        query = db.query(Permission)
+
+        # Apply search filter if provided
+        if search:
+            search_pattern = f"%{search}%"
+            query = query.filter(
+                (Permission.code.ilike(search_pattern)) |
+                (Permission.description.ilike(search_pattern))
+            )
+
+        # Get total count
+        total = query.count()
+
+        # Apply pagination and ordering
+        permissions = query.order_by(Permission.code).offset(skip).limit(limit).all()
+
+        return {
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "permissions": [
+                {
+                    "permission_id": str(p.permission_id),
+                    "code": p.code,
+                    "description": p.description,
+                    "created_at": p.created_at.isoformat() if p.created_at else None
+                }
+                for p in permissions
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Get permissions failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.get("/roles/{role_code}/permissions")
 async def get_role_permissions(
         role_code: str,

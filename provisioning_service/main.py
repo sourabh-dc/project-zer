@@ -8,6 +8,7 @@ from provisioning_service.Models import Base
 from provisioning_service.core.db_config import engine
 from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv
 from provisioning_service.core.helpers.load_features import insert_features_from_csv
+from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
 from provisioning_service.services.provisioning_routes import router as provisioning_router
 from provisioning_service.services.catalog_routes import router as catalog_router
 from provisioning_service.services.auth_routes import router as auth_router
@@ -29,6 +30,7 @@ except Exception as e:
 
 insert_permissions_from_csv(r'provisioning_service/permissions.csv')
 insert_features_from_csv(r'provisioning_service/features.csv')
+load_product_features_on_startup()
 
 
 @app.exception_handler(Exception)

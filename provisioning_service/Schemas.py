@@ -161,7 +161,6 @@ class UserRequest(BaseModel):
     home_store_id: Optional[str] = Field(None, description="Home store ID (UUID, optional)")
     home_org_unit_id: Optional[str] = Field(None, description="Home org unit ID (UUID, optional)")
     all_locations: Optional[bool] = Field(False, description="Access to all locations (optional)")
-    max_order_limit_minor: Optional[int] = Field(None, ge=0, description="Maximum order limit in minor units (e.g., cents). Default: 10000000 (100,000)")
 
     @field_validator('password')
     @classmethod
@@ -431,20 +430,82 @@ class CategoryRequest(BaseModel):
 class ProductRequest(BaseModel):
     """Product creation request"""
     tenant_id: str = Field(description="Tenant ID")
+
+    # Relationships
     vendor_id: Optional[str] = Field(None, description="Vendor ID (optional)")
     category_id: Optional[str] = Field(None, description="Category ID (optional)")
+    brand_id: Optional[str] = Field(None, description="Brand ID (optional)")
+
+    # Identity fields
+    external_id: Optional[str] = Field(None, max_length=100, description="External system ID (NetSuite, etc.)")
     sku: str = Field(min_length=1, max_length=100, description="Product SKU")
-    barcode: str = Field(min_length=1, max_length=128, description="Product barcode")
-    name: str = Field(min_length=1, max_length=255, description="Product name")
-    description: Optional[str] = Field(None, max_length=1000, description="Product description")
-    brand: Optional[str] = Field(None, max_length=100, description="Brand (optional)")
-    manufacturer: Optional[str] = Field(None, max_length=255, description="Manufacturer (optional)")
-    base_price_minor: int = Field(ge=0, description="Base price in minor units")
+    ean: Optional[str] = Field(None, max_length=128, description="European Article Number / barcode")
+    mpn: Optional[str] = Field(None, max_length=100, description="Manufacturer Part Number")
+    manufacturer: Optional[str] = Field(None, max_length=255, description="Manufacturer name")
+
+    # Matrix (variant) fields
+    is_matrix_item: bool = Field(default=False, description="TRUE if product has colour/size/fit variants")
+    matrix_type: str = Field(default="standalone", description="standalone / parent / child")
+    matrix_parent_id: Optional[str] = Field(None, description="Parent product ID for child variants")
+    colour_id: Optional[str] = Field(None, description="Colour ID (optional)")
+    size_id: Optional[str] = Field(None, description="Size ID (optional)")
+    fit_id: Optional[str] = Field(None, description="Fit ID (optional)")
+    item_option: Optional[str] = Field(None, max_length=255, description="Domain-specific option (Glove Type, etc.)")
+
+    # Description fields
+    display_name: str = Field(min_length=1, max_length=255, description="Primary display name in UI")
+    web_display_name: Optional[str] = Field(None, max_length=255, description="E-commerce display name (max 60 char)")
+    sales_description: Optional[str] = Field(None, description="Customer-facing description")
+    purchase_description: Optional[str] = Field(None, description="Supplier-facing description")
+    packing_slip_description: Optional[str] = Field(None, description="Logistics/packing slip text")
+    detailed_description: Optional[str] = Field(None, description="Extended/HTML product description")
+    additional_description: Optional[str] = Field(None, description="Supplementary information")
+
+    # Physical attributes
+    weight: Optional[float] = Field(None, description="Product weight value")
+    weight_unit: Optional[str] = Field(None, max_length=10, description="g / kg / lb")
+    width: Optional[float] = Field(None, description="Width in mm")
+    depth: Optional[float] = Field(None, description="Depth in mm")
+    height: Optional[float] = Field(None, description="Height in mm")
+
+    # Packaging
+    outer_quantity: Optional[int] = Field(None, description="Quantity in outer packaging")
+    outer_label_id: Optional[int] = Field(None, description="Outer UOS label ID")
+    inner_quantity: Optional[int] = Field(None, description="Quantity in inner packaging")
+    inner_label_id: Optional[int] = Field(None, description="Inner UOS label ID")
+    reorder_multiple: Optional[int] = Field(None, description="Minimum reorder multiple")
+
+    # Pricing
+    purchase_price_minor: int = Field(ge=0, description="Cost price in pence/cents (minor units)")
     currency: str = Field(default="GBP", max_length=3, description="Currency code")
-    weight: Optional[float] = Field(None, description="Weight (optional)")
     tax_rate: int = Field(default=0, ge=0, description="Tax rate in basis points")
-    product_type: Optional[str] = Field(None, description="Product type (optional)")
-    product_metadata: Optional[Dict[str, Any]] = Field(None, description="Product metadata (optional)")
+
+    # Classification
+    manufacturer_country: Optional[str] = Field(None, max_length=100, description="Country of origin")
+    commodity_code: Optional[str] = Field(None, max_length=50, description="HS/customs commodity code")
+    product_type: Optional[str] = Field(None, max_length=50, description="Product type classification")
+
+    # Web / filtering
+    colour_filter: Optional[str] = Field(None, max_length=100, description="Filterable colour value for web store")
+    size_filter: Optional[str] = Field(None, max_length=100, description="Filterable size value for web store")
+    search_keywords: Optional[str] = Field(None, description="SEO / site search keywords")
+
+    # Hazmat fields
+    is_dangerous_goods: bool = Field(default=False, description="Master dangerous goods flag")
+    cas_number: Optional[str] = Field(None, max_length=50, description="Chemical Abstracts Service number")
+    un_number: Optional[str] = Field(None, max_length=50, description="UN dangerous goods number")
+    proper_shipping_name: Optional[str] = Field(None, max_length=255, description="Official shipping name for hazmat")
+    transport_hazard_class: Optional[str] = Field(None, max_length=50, description="Hazmat transport class")
+    packing_group: Optional[str] = Field(None, max_length=20, description="I / II / III")
+    adr_classification_code: Optional[str] = Field(None, max_length=50, description="ADR road transport classification")
+    adr_tunnel_restriction_code: Optional[str] = Field(None, max_length=20, description="Tunnel restriction code")
+    adr_hazard_id_number: Optional[str] = Field(None, max_length=50, description="ADR hazard identification number")
+
+    # System fields
+    tax_code: Optional[str] = Field(None, max_length=64, description="Tax code reference")
+    restricted: bool = Field(default=False, description="Restricted product flag")
+    product_metadata: Optional[Dict[str, Any]] = Field(None, description="Flexible JSON for extra data")
+    comments: Optional[str] = Field(None, description="Free-text notes/comments")
 
 
 class VariantRequest(BaseModel):
