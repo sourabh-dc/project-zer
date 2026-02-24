@@ -1,8 +1,10 @@
 from datetime import datetime
+from typing import Dict, Any, Optional
+
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
-from sqlalchemy.orm import declarative_base, relationship, backref
+from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column
 import uuid
 
 # ==================================================================================
@@ -717,3 +719,32 @@ class VendorUser(Base):
     __table_args__ = (
         Index('ix_vendor_users_vendor_email_unique', 'vendor_id', 'email', unique=True),
     )
+
+
+class OutboxEvent(Base):
+    __tablename__ = 'outbox_events'
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(nullable=False)
+    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(default='pending')
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=3)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = 'audit_logs'
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(nullable=False)
+    resource_type: Mapped[str] = mapped_column(nullable=False)
+    resource_id: Mapped[Optional[str]] = mapped_column(nullable=True)
+    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
