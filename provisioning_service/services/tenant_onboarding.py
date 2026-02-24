@@ -1,8 +1,11 @@
+import json
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List
 import jwt
 from azure.communication.email import EmailClient
+from azure.identity import DefaultAzureCredential
+from azure.servicebus import ServiceBusClient, ServiceBusMessage
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -187,6 +190,9 @@ async def validate_otp(
         logger.error(f"OTP validation error for {req.email}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OTP validation failed")
 
+# Constants (Move these to environment variables)
+SB_NAMESPACE = "zeroque.servicebus.windows.net"
+QUEUE_NAME = "tenant-signup-queue"
 @router.post("/tenant-signup", status_code=201)
 async def create_tenant(
         req: TenantRequest,
@@ -199,10 +205,6 @@ async def create_tenant(
         if existing:
             raise HTTPException(status_code=409, detail="Tenant email already exists")
 
-        password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
-        # Create tenant
-        # python
-        now = datetime.now(timezone.utc)
         tenant = Tenant(
             tenant_id=uuid.uuid4(),
             tenant_name=getattr(req, "tenant_name", getattr(req, "name", None)),
@@ -229,65 +231,18 @@ async def create_tenant(
         db.commit()
         db.refresh(tenant)
 
-        # create user
-        user = User(user_id=uuid.uuid4(), tenant_id=tenant.tenant_id, first_name=req.admin_firstname,
-                    last_name=req.admin_lastname, display_name=req.admin_firstname+" "+req.admin_lastname, email=req.admin_email,
-                    password_hash=password_hash)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        # PRODUCE EVENT (Offload the rest)
+        # We pass the original request data + the generated tenant_id
+        event_data = req.dict()
+        event_data["tenant_id"] = str(tenant.tenant_id)
 
-        # ensure tenant_admin role exists
-        role = db.query(Role).filter(Role.code == "tenant_admin").first()
-        if not role:
-            role = Role(role_id=uuid.uuid4(), code="tenant_admin", description="Super admin for tenant")
-            db.add(role)
-            db.flush()
+        async with DefaultAzureCredential() as credential:
+            async with ServiceBusClient(SB_NAMESPACE, credential) as client:
+                async with client.get_queue_sender(QUEUE_NAME) as sender:
+                    message = ServiceBusMessage(json.dumps(event_data))
+                    await sender.send_messages(message)
 
-        # ensure core permissions exist and assign to role
-        core_permissions = [
-            ("tenant.admin", "Full tenant administration"),
-            ("users.manage", "Create and manage users"),
-            ("sites.manage", "Create and manage sites"),
-            ("stores.manage", "Create and manage stores"),
-            ("vendors.manage", "Create and manage vendors"),
-            ("budgets.manage", "Manage budgets and cost centres"),
-            ("approvals.manage", "Manage approval chains and requests"),
-            ("catalog.manage", "Manage products and catalog"),
-        ]
-
-        for perm_code, perm_desc in core_permissions:
-            perm = db.query(Permission).filter(Permission.code == perm_code).first()
-            if not perm:
-                perm = Permission(permission_id=uuid.uuid4(), code=perm_code, description=perm_desc)
-                db.add(perm)
-                db.flush()
-
-            existing_rp = db.query(RolePermission).filter(
-                RolePermission.role_code == role.code,
-                RolePermission.permission_code == perm_code
-            ).first()
-            if not existing_rp:
-                db.add(RolePermission(id=uuid.uuid4(), role_code=role.code, permission_code=perm_code))
-
-        # assign role to user
-        user_role = UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=role.role_id)
-        db.add(user_role)
-        db.commit()
-
-        logger.info(f"Signup complete: tenant={tenant.tenant_id}, user={user.user_id}")
-
-        return {
-            "tenant_id": str(tenant.tenant_id),
-            "user_id": str(user.user_id),
-            "name": tenant.tenant_name,
-            "type": tenant.tenant_type,
-            "role": role.code,
-            "created_at": tenant.created_at.isoformat()
-        }
-    except HTTPException:
-        req_total.labels(operation="create_tenant", status="error").inc()
-        raise
+        return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_tenant", status="error").inc()
