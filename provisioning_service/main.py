@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 import traceback
 from fastapi import FastAPI, Request
@@ -18,19 +19,51 @@ from provisioning_service.services.subscriptions_routes import router as subscri
 from provisioning_service.services.tenant_onboarding import router as onboarding_router
 from provisioning_service.services.payments_routes import router as payments_router
 from provisioning_service.utils.logger import logger
+from provisioning_service.core.sb_client import messaging_service
 
-app = FastAPI(title="Provisioning Service", version="1.0.0")
 
-# Create tables
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("✅ Database tables initialized")
-except Exception as e:
-    logger.error(f"❌ Table initialization failed: {e}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context: start messaging service, initialise DB/tables and pre-load data.
 
-insert_permissions_from_csv(r'provisioning_service/permissions.csv')
-insert_features_from_csv(r'provisioning_service/features.csv')
-load_product_features_on_startup()
+    This replaces deprecated `@app.on_event("startup")` / `@app.on_event("shutdown")`.
+    """
+    # Startup
+    try:
+        # Start messaging service (Service Bus connections)
+        try:
+            await messaging_service.start()
+            logger.info("✅ Messaging service started")
+        except Exception as ex:
+            logger.warning(f"Messaging service failed to start: {ex}")
+
+        # Create tables and load initial data
+        try:
+            Base.metadata.create_all(bind=engine)
+            logger.info("✅ Database tables initialized")
+        except Exception as e:
+            logger.error(f"❌ Table initialization failed: {e}")
+
+        # Load static data (permissions/features)
+        try:
+            insert_permissions_from_csv(r'provisioning_service/permissions.csv')
+            insert_features_from_csv(r'provisioning_service/features.csv')
+            load_product_features_on_startup()
+        except Exception as ex:
+            logger.warning(f"Initial data load failed: {ex}")
+
+        yield
+
+    finally:
+        # Shutdown - stop messaging service cleanly
+        try:
+            await messaging_service.stop()
+            logger.info("✅ Messaging service stopped")
+        except Exception as ex:
+            logger.warning(f"Messaging service stop failed: {ex}")
+
+
+app = FastAPI(title="Provisioning Service", version="1.0.0", lifespan=lifespan)
 
 
 @app.exception_handler(Exception)

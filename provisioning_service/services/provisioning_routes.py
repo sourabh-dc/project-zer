@@ -7,18 +7,21 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import  Response
+import json
+from azure.servicebus import ServiceBusMessage
+from azure.identity.aio import DefaultAzureCredential
+from azure.servicebus.aio import ServiceBusClient
 
 from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
     SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
-    CostCenterBudget, VendorUser
+    CostCenterBudget, VendorUser, OutboxEvent
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
     VendorUserCreate, VendorUserUpdate
 
 from provisioning_service.core.db_config import get_db
-from provisioning_service.core.helpers.aifi_services import cv_create_customer
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.utils.logger import logger
@@ -660,7 +663,7 @@ async def create_user(
         # Hash password
         password_hash = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-        # Create user
+        # Create user (persist user record immediately)
         user = User(
             user_id=uuid.uuid4(),
             tenant_id=uuid.UUID(req.tenant_id),
@@ -684,15 +687,34 @@ async def create_user(
         db.commit()
         db.refresh(user)
 
+        # Create outbox event for post-create processing (e.g., aiFi sync) and send outbox_id to queue
+        from provisioning_service.Models import OutboxEvent
+
+        event_data = {
+            "user_id": str(user.user_id),
+            "tenant_id": str(user.tenant_id),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name
+        }
+
+        outbox = OutboxEvent(
+            tenant_id=user.tenant_id,
+            event_type="user.created",
+            event_data=event_data,
+            status="pending",
+        )
+        db.add(outbox)
+        db.commit()
+        db.refresh(outbox)
+
         try:
-            aifi_customer = await cv_create_customer(
-                {"externalId": user.user_id, "email": user.email, "firstName": user.first_name,
-                 "lastName": user.last_name})
-            user.aifi_customer_id = aifi_customer.get("id")
-            db.commit()
+            from provisioning_service.core.sb_client import messaging_service
+            await messaging_service.send_outbox_message(str(outbox.id))
         except Exception as e:
-            logger.warning(f"❌ AiFi customer sync failed, continuing: {e}")
-            db.rollback()
+            # The "Relay" will pick this up later if the notify fails.
+            logger.warning(f"Failed to notify Service Bus: {e}")
+
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "users.manage", count=1)
 
@@ -701,7 +723,7 @@ async def create_user(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"Created user: {user.user_id} ({user.email})")
+        logger.info(f"Created user: {user.user_id} ({user.email}) - outbox {outbox.id}")
 
         return {
             "user_id": str(user.user_id),
@@ -2398,6 +2420,4 @@ async def remove_user_from_org_unit_by_ids(
         db.rollback()
         logger.error(f"Remove user from org unit failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
 

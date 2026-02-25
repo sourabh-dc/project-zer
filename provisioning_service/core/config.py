@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     AIFI_STORE_ID: str = Field(default=os.getenv("AIFI_STORE_ID", ""))
     AIFI_LOCATION_ID: str = Field(default=os.getenv("AIFI_LOCATION_ID", ""))
 
+    SB_NAMESPACE: str = "zeroque.servicebus.windows.net"
+    QUEUE_NAME: str = "outbox-task-queue"
+
     EMAIL_CONNECTION_STRING: str = email_conn_string
 
     model_config = ConfigDict(env_file=".env", extra="ignore")

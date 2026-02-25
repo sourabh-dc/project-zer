@@ -1,12 +1,8 @@
-import json
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List
 import jwt
 from azure.communication.email import EmailClient
-from azure.servicebus import ServiceBusMessage
-from azure.identity.aio import DefaultAzureCredential
-from azure.servicebus.aio import ServiceBusClient
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -191,9 +187,7 @@ async def validate_otp(
         logger.error(f"OTP validation error for {req.email}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OTP validation failed")
 
-# Constants (Move these to environment variables)
-SB_NAMESPACE = "zeroque.servicebus.windows.net"
-QUEUE_NAME = "tenant-signup-queue"
+
 @router.post("/tenant-signup", status_code=201)
 async def create_tenant(
         req: TenantRequest,
@@ -246,12 +240,12 @@ async def create_tenant(
         db.commit()
         db.refresh(outbox)
 
-        # PRODUCE EVENT (Offload the rest) - send only the outbox id so worker uses DB record
-        async with DefaultAzureCredential() as credential:
-            async with ServiceBusClient(SB_NAMESPACE, credential) as client:
-                async with client.get_queue_sender(QUEUE_NAME) as sender:
-                    message = ServiceBusMessage(json.dumps({"outbox_id": str(outbox.id)}))
-                    await sender.send_messages(message)
+        try:
+            from provisioning_service.core.sb_client import messaging_service
+            await messaging_service.send_outbox_message(str(outbox.id))
+        except Exception as e:
+            # The "Relay" will pick this up later if the notify fails.
+            logger.warning(f"Failed to notify Service Bus: {e}")
 
         return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}
     except Exception as e:
