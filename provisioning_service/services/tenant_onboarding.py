@@ -4,13 +4,14 @@ from datetime import datetime, timezone, timedelta
 from typing import List
 import jwt
 from azure.communication.email import EmailClient
-from azure.identity import DefaultAzureCredential
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from azure.servicebus import ServiceBusMessage
+from azure.identity.aio import DefaultAzureCredential
+from azure.servicebus.aio import ServiceBusClient
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission
+from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission, OutboxEvent
 from provisioning_service.Schemas import TenantRequest, LoginRequest, LoginResponse
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token
 from provisioning_service.utils.metrics import req_total
@@ -231,15 +232,25 @@ async def create_tenant(
         db.commit()
         db.refresh(tenant)
 
-        # PRODUCE EVENT (Offload the rest)
-        # We pass the original request data + the generated tenant_id
+        # Create outbox event record so worker can process and update status
         event_data = req.dict()
         event_data["tenant_id"] = str(tenant.tenant_id)
 
+        outbox = OutboxEvent(
+            tenant_id=tenant.tenant_id,
+            event_type="tenant.signup",
+            event_data=event_data,
+            status="pending",
+        )
+        db.add(outbox)
+        db.commit()
+        db.refresh(outbox)
+
+        # PRODUCE EVENT (Offload the rest) - send only the outbox id so worker uses DB record
         async with DefaultAzureCredential() as credential:
             async with ServiceBusClient(SB_NAMESPACE, credential) as client:
                 async with client.get_queue_sender(QUEUE_NAME) as sender:
-                    message = ServiceBusMessage(json.dumps(event_data))
+                    message = ServiceBusMessage(json.dumps({"outbox_id": str(outbox.id)}))
                     await sender.send_messages(message)
 
         return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}

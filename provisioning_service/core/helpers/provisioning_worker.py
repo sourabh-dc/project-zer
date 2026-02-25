@@ -5,6 +5,7 @@ import logging
 import bcrypt
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 # Add project root to path for direct script execution
 project_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -15,7 +16,9 @@ from azure.identity.aio import DefaultAzureCredential
 from azure.servicebus.aio import ServiceBusClient
 
 # Your internal imports
-from provisioning_service.Models import User, Role, Permission, RolePermission, UserRole
+from provisioning_service.Models import (
+    User, Role, Permission, RolePermission, UserRole, OutboxEvent
+)
 from provisioning_service.core.db_config import SessionLocal
 
 # Setup logging
@@ -24,6 +27,30 @@ logger = logging.getLogger("worker")
 
 SB_NAMESPACE = "zeroque.servicebus.windows.net"
 QUEUE_NAME = "tenant-signup-queue"
+
+
+def _decode_message_body(msg):
+    """Safely decode the service bus message body to a Python object.
+    Handles cases where `msg.body` yields an iterable of bytes/strings.
+    """
+    try:
+        # msg.body may be an iterable of bytes/parts
+        body_bytes = b""
+        if hasattr(msg, "body"):
+            for part in msg.body:
+                if isinstance(part, (bytes, bytearray)):
+                    body_bytes += bytes(part)
+                else:
+                    body_bytes += str(part).encode("utf-8")
+        else:
+            # fallback to str(msg)
+            body_bytes = str(msg).encode("utf-8")
+
+        text = body_bytes.decode("utf-8")
+        return json.loads(text)
+    except Exception as exc:
+        logger.error(f"Failed to decode message body: {exc}")
+        return None
 
 
 async def process_signup():
@@ -36,29 +63,70 @@ async def process_signup():
         async with receiver:
             logger.info("Worker started. Listening for messages...")
             async for msg in receiver:
-                # 1. Load data from message
-                data = json.loads(str(msg))
                 db = SessionLocal()
 
                 try:
-                    tenant_id = data.get("tenant_id")
-                    logger.info(f"Processing signup for tenant: {tenant_id}")
+                    data = _decode_message_body(msg)
+                    if not data:
+                        logger.error("Empty/invalid message body; completing message")
+                        await receiver.complete_message(msg)
+                        continue
 
-                    # 2. Re-create the logic using 'data' dictionary instead of 'req'
-                    password_raw = data.get("password")
+                    outbox_id = data.get("outbox_id") or data.get("id")
+                    if not outbox_id:
+                        logger.error("No outbox_id found in message; completing message")
+                        await receiver.complete_message(msg)
+                        continue
+
+                    try:
+                        outbox_uuid = uuid.UUID(outbox_id)
+                    except Exception:
+                        logger.error("Invalid outbox_id format; completing message")
+                        await receiver.complete_message(msg)
+                        continue
+
+                    outbox = db.query(OutboxEvent).filter(OutboxEvent.id == outbox_uuid).first()
+                    if not outbox:
+                        logger.error(f"Outbox event not found for id {outbox_id}; completing message")
+                        await receiver.complete_message(msg)
+                        continue
+
+                    # Skip if already processed
+                    if outbox.status in ("completed", "failed"):
+                        logger.info(f"Outbox {outbox_id} already processed with status={outbox.status}; completing message")
+                        await receiver.complete_message(msg)
+                        continue
+
+                    # mark processing
+                    outbox.status = "processing"
+                    outbox.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+
+                    # event payload
+                    payload = outbox.event_data or {}
+
+                    tenant_id = payload.get("tenant_id")
+                    logger.info(f"Processing signup for tenant: {tenant_id} (outbox={outbox_id})")
+
+                    # 2. Re-create the logic using 'payload' dictionary
+                    password_raw = payload.get("password")
+                    if not password_raw:
+                        # no password provided -> generate random temporary password
+                        password_raw = uuid.uuid4().hex[:12]
+
                     password_hash = bcrypt.hashpw(
                         password_raw.encode("utf-8"),
                         bcrypt.gensalt(12)
                     ).decode("utf-8")
 
-                    # create user
+                    # create user (admin)
                     user = User(
                         user_id=uuid.uuid4(),
                         tenant_id=tenant_id,
-                        first_name=data.get("admin_firstname"),
-                        last_name=data.get("admin_lastname"),
-                        display_name=f"{data.get('admin_firstname')} {data.get('admin_lastname')}",
-                        email=data.get("admin_email"),
+                        first_name=payload.get("admin_firstname") or payload.get("first_name") or "Admin",
+                        last_name=payload.get("admin_lastname") or payload.get("last_name") or "",
+                        display_name=f"{payload.get('admin_firstname', '')} {payload.get('admin_lastname', '')}".strip(),
+                        email=payload.get("admin_email") or payload.get("email"),
                         password_hash=password_hash
                     )
                     db.add(user)
@@ -70,7 +138,7 @@ async def process_signup():
                         db.add(role)
                         db.flush()
 
-                    # ensure core permissions exist
+                    # ensure core permissions exist and role-permission mappings
                     core_permissions = [
                         ("tenant.admin", "Full tenant administration"),
                         ("users.manage", "Create and manage users"),
@@ -108,15 +176,42 @@ async def process_signup():
                     # Final Commit
                     db.commit()
 
-                    # 3. Mark message as finished in Service Bus
+                    # update outbox status
+                    outbox.status = "completed"
+                    outbox.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+
+                    # Mark message as finished in Service Bus
                     await receiver.complete_message(msg)
-                    logger.info(f"Successfully set up tenant {tenant_id}")
+                    logger.info(f"Successfully set up tenant {tenant_id} (outbox={outbox_id})")
 
                 except Exception as e:
-                    db.rollback()
-                    logger.error(f"Error processing message: {str(e)}")
-                    # Message will return to queue for retry automatically
-                    # because we didn't call complete_message()
+                    # Attempt retry logic
+                    try:
+                        db.rollback()
+                        # reload outbox in case of state change
+                        if 'outbox' in locals() and outbox:
+                            outbox.retry_count = (outbox.retry_count or 0) + 1
+                            outbox.updated_at = datetime.now(timezone.utc)
+                            if outbox.retry_count >= (outbox.max_retries or 3):
+                                outbox.status = "failed"
+                                db.commit()
+                                logger.error(f"Outbox {outbox_id} failed after max retries: {e}")
+                                await receiver.complete_message(msg)
+                            else:
+                                db.commit()
+                                logger.error(f"Transient error processing outbox {outbox_id}, abandoning message for retry: {e}")
+                                await receiver.abandon_message(msg)
+                        else:
+                            logger.error(f"Error processing message (no outbox): {e}")
+                            await receiver.complete_message(msg)
+                    except Exception as inner_exc:
+                        logger.error(f"Error during error handling: {inner_exc}")
+                        # complete the message to avoid poison messages
+                        try:
+                            await receiver.complete_message(msg)
+                        except Exception:
+                            pass
                 finally:
                     db.close()
 
