@@ -6,16 +6,13 @@ from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from starlette.responses import  Response
-import json
-from azure.servicebus import ServiceBusMessage
-from azure.identity.aio import DefaultAzureCredential
-from azure.servicebus.aio import ServiceBusClient
+from starlette.responses import Response
 
 from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
     SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
-    CostCenterBudget, VendorUser, OutboxEvent
+    CostCenterBudget, VendorUser
+from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
@@ -60,10 +57,10 @@ async def list_tenants(
         offset: int = Query(0, ge=0)
 ):
     """List all tenants with pagination"""
-    total = db.query(Tenant).filter(Tenant.active == True).count()
+    total = db.query(Tenant).filter(Tenant.status != "deleted").count()
     tenants = (
         db.query(Tenant)
-        .filter(Tenant.active == True)
+        .filter(Tenant.status != "deleted")
         .order_by(Tenant.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -129,7 +126,6 @@ async def update_tenant(
         # Update fields
         print(req.active.lower())
         if req.name:
-            # Check if new name conflicts
             existing = db.query(Tenant).filter(
                 Tenant.tenant_name == req.name,
                 Tenant.tenant_id != uuid.UUID(req.tenant_id)
@@ -142,6 +138,15 @@ async def update_tenant(
             tenant.active = True if req.active.lower() == "true" else False
             tenant.phone = req.phone
             tenant.updated_at = datetime.now(timezone.utc)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant.tenant_id,
+            aggregate_type="tenant",
+            aggregate_id=tenant.tenant_id,
+            event_type="tenant.updated",
+            payload={"tenant_id": str(tenant.tenant_id), "name": tenant.tenant_name, "active": tenant.active},
+        )
         db.commit()
         db.refresh(tenant)
 
@@ -152,7 +157,8 @@ async def update_tenant(
             except Exception as e:
                 logger.warning(f"Cache clear failed: {e}")
 
-        logger.info(f"✅ Updated tenant: {tenant.tenant_id}")
+        logger.info(f"Updated tenant: {tenant.tenant_id}")
+        await notify_outbox(str(outbox.id))
 
         return {
             "tenant_id": str(tenant.tenant_id),
@@ -170,7 +176,7 @@ async def update_tenant(
     except Exception as e:
         db.rollback()
         req_total.labels(operation="update_tenant", status="error").inc()
-        logger.error(f"❌ Update tenant failed: {e}")
+        logger.error(f"Update tenant failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -223,11 +229,20 @@ async def create_site(
             tenant_id=uuid.UUID(req.tenant_id)
         )
         db.add(site_tenant)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="site",
+            aggregate_id=site.site_id,
+            event_type="site.created",
+            payload={"site_id": str(site.site_id), "name": site.name, "tenant_id": req.tenant_id},
+        )
         db.commit()
         db.refresh(site)
         
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "sites.manage", count=1)
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
@@ -282,16 +297,25 @@ async def add_tenant_to_site(
         if existing:
             raise HTTPException(status_code=409, detail="Site is already associated with this tenant")
         
-        # Create association
         site_tenant = SiteTenant(
             id=uuid.uuid4(),
             site_id=uuid.UUID(site_id),
             tenant_id=uuid.UUID(tenant_id)
         )
         db.add(site_tenant)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(tenant_id),
+            aggregate_type="site",
+            aggregate_id=uuid.UUID(site_id),
+            event_type="site.tenant_added",
+            payload={"site_id": site_id, "tenant_id": tenant_id},
+        )
         db.commit()
+        await notify_outbox(str(outbox.id))
         
-        logger.info(f"✅ Added tenant {tenant_id} to site {site_id}")
+        logger.info(f"Added tenant {tenant_id} to site {site_id}")
         
         return {
             "site_id": site_id,
@@ -375,9 +399,19 @@ async def remove_tenant_from_site(
             raise HTTPException(status_code=400, detail="Cannot remove the only tenant from a site")
 
         db.delete(site_tenant)
-        db.commit()
 
-        logger.info(f"✅ Removed tenant {tenant_id} from site {site_id}")
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(tenant_id),
+            aggregate_type="site",
+            aggregate_id=uuid.UUID(site_id),
+            event_type="site.tenant_removed",
+            payload={"site_id": site_id, "tenant_id": tenant_id},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        logger.info(f"Removed tenant {tenant_id} from site {site_id}")
 
         return Response(status_code=204)
     except ValueError:
@@ -386,7 +420,7 @@ async def remove_tenant_from_site(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Remove tenant from site failed: {e}")
+        logger.error(f"Remove tenant from site failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
         
 @router.get("/sites")
@@ -399,8 +433,9 @@ async def list_sites(
 ):
     """List sites with optional tenant filtering"""
     try:
-        # Start with SiteTenant join to support many-to-many
-        q = db.query(Site).join(SiteTenant, Site.site_id == SiteTenant.site_id)
+        q = db.query(Site).join(SiteTenant, Site.site_id == SiteTenant.site_id).filter(
+            Site.status != "deleted"
+        )
         
         # If tenant_id provided, filter by it; otherwise filter by user's tenant
         # ctx can be a dict from check_user_authorization; support both
@@ -482,11 +517,20 @@ async def create_store(
             inventory_policy=getattr(req, "inventory_policy", None)
         )
         db.add(store)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="store",
+            aggregate_id=store.store_id,
+            event_type="store.created",
+            payload={"store_id": str(store.store_id), "name": store.name, "tenant_id": req.tenant_id},
+        )
         db.commit()
         db.refresh(store)
         
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "stores.manage", count=1)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="create_store", status="success").inc()
         req_duration.labels(operation="create_store").observe(
@@ -554,15 +598,25 @@ async def update_store(
             raise HTTPException(status_code=400, detail="No fields provided to update")
 
         store.updated_at = datetime.now(timezone.utc)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=store.tenant_id,
+            aggregate_type="store",
+            aggregate_id=store.store_id,
+            event_type="store.updated",
+            payload={"store_id": str(store.store_id), "name": store.name},
+        )
         db.commit()
         db.refresh(store)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="update_store", status="success").inc()
         req_duration.labels(operation="update_store").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Updated store: {store.store_id} ({store.name})")
+        logger.info(f"Updated store: {store.store_id} ({store.name})")
 
         return {
             "store_id": str(store.store_id),
@@ -597,7 +651,7 @@ async def list_stores(
     """List stores with optional site filtering"""
     try:
         ctx_tenant = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
-        q = db.query(Store).filter(Store.tenant_id == ctx_tenant)  # Always filter by user's tenant
+        q = db.query(Store).filter(Store.tenant_id == ctx_tenant, Store.status != "deleted")
         
         if site_id:
             # Verify site access before filtering stores
@@ -684,39 +738,26 @@ async def create_user(
         )
 
         db.add(user)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="user",
+            aggregate_id=user.user_id,
+            event_type="user.created",
+            payload={
+                "user_id": str(user.user_id),
+                "tenant_id": req.tenant_id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
         db.commit()
         db.refresh(user)
 
-        # Create outbox event for post-create processing (e.g., aiFi sync) and send outbox_id to queue
-        from provisioning_service.Models import OutboxEvent
-
-        event_data = {
-            "user_id": str(user.user_id),
-            "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name
-        }
-
-        outbox = OutboxEvent(
-            tenant_id=user.tenant_id,
-            event_type="user.created",
-            event_data=event_data,
-            status="pending",
-        )
-        db.add(outbox)
-        db.commit()
-        db.refresh(outbox)
-
-        try:
-            from provisioning_service.core.sb_client import messaging_service
-            await messaging_service.send_outbox_message(str(outbox.id))
-        except Exception as e:
-            # The "Relay" will pick this up later if the notify fails.
-            logger.warning(f"Failed to notify Service Bus: {e}")
-
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "users.manage", count=1)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="create_user", status="success").inc()
         req_duration.labels(operation="create_user").observe(
@@ -760,7 +801,7 @@ async def list_users(
     """List users with optional tenant filtering"""
     try:
         ctx_tenant = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
-        q = db.query(User).filter(User.is_active == True)
+        q = db.query(User).filter(User.status != "deleted")
         if tenant_id:
             q = q.filter(User.tenant_id == uuid.UUID(tenant_id))
         else:
@@ -819,11 +860,20 @@ async def create_vendor(
             status="active"
         )
         db.add(vendor)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="vendor",
+            aggregate_id=vendor.vendor_id,
+            event_type="vendor.created",
+            payload={"vendor_id": str(vendor.vendor_id), "name": vendor.name, "tenant_id": req.tenant_id},
+        )
         db.commit()
         db.refresh(vendor)
         
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "vendors.manage", count=1)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="create_vendor", status="success").inc()
         req_duration.labels(operation="create_vendor").observe(
@@ -884,7 +934,7 @@ def list_vendor_users(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    q = db.query(VendorUser)
+    q = db.query(VendorUser).filter(VendorUser.status != "deleted")
     if vendor_id:
         q = q.filter(VendorUser.vendor_id == vendor_id)
     items = q.order_by(VendorUser.created_at.desc()).limit(limit).offset(offset).all()
@@ -905,13 +955,29 @@ def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Sessio
     return obj
 
 @router.delete("/{user_id}")
-def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
-    obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
+async def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    obj = db.query(VendorUser).filter(
+        VendorUser.user_id == user_id,
+        VendorUser.status != "deleted"
+    ).first()
     if not obj:
         raise HTTPException(status_code=404, detail="vendor user not found")
-    db.delete(obj)
+
+    obj.status = "deleted"
+    obj.active = False
+    obj.updated_at = func.now()
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
+        aggregate_type="vendor_user",
+        aggregate_id=user_id,
+        event_type="vendor_user.deleted",
+        payload={"user_id": str(user_id), "vendor_id": str(obj.vendor_id)},
+    )
     db.commit()
-    return True
+    await notify_outbox(str(outbox.id))
+    return {"deleted": True, "user_id": str(user_id)}
 
 @router.get("/vendors")
 async def list_vendors(
@@ -921,8 +987,8 @@ async def list_vendors(
         offset: int = Query(0, ge=0)
 ):
     """List vendors with optional tenant filtering"""
-    q = db.query(Vendor)
-    
+    q = db.query(Vendor).filter(Vendor.status != "deleted")
+
     if tenant_id:
         q = q.filter(Vendor.tenant_id == uuid.UUID(tenant_id))
 
@@ -996,11 +1062,26 @@ async def create_cost_centre(
                                      remaining_to_allocate_minor=req.budget_amount_minor,status="active",
                                      created_by=req.created_by)
         db.add(cc_budget)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="cost_centre",
+            aggregate_id=cc.cost_centre_id,
+            event_type="cost_centre.created",
+            payload={
+                "cost_centre_id": str(cc.cost_centre_id),
+                "name": cc.name,
+                "code": cc.code,
+                "tenant_id": req.tenant_id,
+                "budget_amount_minor": req.budget_amount_minor,
+            },
+        )
         db.commit()
         db.refresh(cc_budget)
 
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="create_cost_centre", status="success").inc()
         req_duration.labels(operation="create_cost_centre").observe(
@@ -1033,8 +1114,7 @@ async def list_cost_centres(
         offset: int = Query(0, ge=0)
 ):
     """List cost centres with optional tenant filtering"""
-    # Use boolean is_active on the model
-    q = db.query(CostCentre).filter(CostCentre.is_active == True)
+    q = db.query(CostCentre).filter(CostCentre.status != "deleted")
 
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
@@ -1435,7 +1515,6 @@ async def create_role(
             if existing:
                 raise HTTPException(status_code=409, detail="Role code already exists")
 
-        # Create role
         role = Role(
             role_id=uuid.uuid4(),
             code=req.code,
@@ -1450,7 +1529,7 @@ async def create_role(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Created role: {role.role_id} ({role.code})")
+        logger.info(f"Created role: {role.role_id} ({role.code})")
 
         return {
             "role_id": str(role.role_id),
@@ -1658,8 +1737,18 @@ async def create_tenant_role(
         description=req.description
     )
     db.add(role)
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID(str(tenant_id)),
+        aggregate_type="tenant_role",
+        aggregate_id=role.role_id,
+        event_type="tenant_role.created",
+        payload={"role_id": str(role.role_id), "code": req.code, "tenant_id": str(tenant_id)},
+    )
     db.commit()
     db.refresh(role)
+    await notify_outbox(str(outbox.id))
     return {"role_id": str(role.role_id), "code": role.code, "description": role.description}
 
 
@@ -1692,7 +1781,17 @@ async def add_permission_to_tenant_role(
         permission_code=req.permission_code
     )
     db.add(trp)
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID(str(tenant_id)),
+        aggregate_type="tenant_role",
+        aggregate_id=role.role_id,
+        event_type="tenant_role.permission_added",
+        payload={"role_id": str(role.role_id), "permission_code": req.permission_code},
+    )
     db.commit()
+    await notify_outbox(str(outbox.id))
     return {"role_id": str(role.role_id), "permission_code": req.permission_code, "assigned": True}
 
 
@@ -1726,7 +1825,17 @@ async def assign_tenant_role_to_user(
         tenant_role_id=role.role_id
     )
     db.add(tur)
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID(str(tenant_id)),
+        aggregate_type="user",
+        aggregate_id=user.user_id,
+        event_type="user.tenant_role_assigned",
+        payload={"user_id": str(user.user_id), "role_id": str(role.role_id), "role_code": role.code},
+    )
     db.commit()
+    await notify_outbox(str(outbox.id))
     return {"status": "ok", "user_id": str(user.user_id), "role_id": str(role.role_id)}
 
 
@@ -1775,7 +1884,6 @@ async def assign_role_to_user(
         if existing:
             return {"status": "ok", "message": "Role already assigned", "user_id": user_id, "role_id": str(existing.role_id)}
 
-        # Create assignment with tenant_id from user
         user_role = UserRole(
             id=uuid.uuid4(),
             tenant_id=user.tenant_id,
@@ -1783,8 +1891,18 @@ async def assign_role_to_user(
             role_id=uuid.UUID(req.role_id)
         )
         db.add(user_role)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=user.tenant_id,
+            aggregate_type="user",
+            aggregate_id=uuid.UUID(user_id),
+            event_type="user.role_assigned",
+            payload={"user_id": user_id, "role_id": req.role_id, "role_code": role.code},
+        )
         db.commit()
         db.refresh(user_role)
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="assign_role", status="success").inc()
         req_duration.labels(operation="assign_role").observe(
@@ -1880,15 +1998,26 @@ async def remove_role_from_user(
             raise HTTPException(status_code=404, detail="Role assignment not found")
 
         user = db.query(User).filter(User.user_id == user_role.user_id).first()
+        tenant_id = user.tenant_id if user else user_role.tenant_id
         db.delete(user_role)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id,
+            aggregate_type="user",
+            aggregate_id=uuid.UUID(user_id),
+            event_type="user.role_removed",
+            payload={"user_id": user_id, "role_id": role_id},
+        )
         db.commit()
+        await notify_outbox(str(outbox.id))
 
         req_total.labels(operation="remove_role", status="success").inc()
         req_duration.labels(operation="remove_role").observe(
             (datetime.now() - start).total_seconds()
         )
 
-        logger.info(f"✅ Removed role {role_id} from user {user_id}")
+        logger.info(f"Removed role {role_id} from user {user_id}")
 
         return {
             "user_id": user_id,
@@ -1958,8 +2087,24 @@ async def create_org_unit(
         )
 
         db.add(ou)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(req.tenant_id),
+            aggregate_type="org_unit",
+            aggregate_id=ou.org_unit_id,
+            event_type="org_unit.created",
+            payload={
+                "org_unit_id": str(ou.org_unit_id),
+                "name": ou.name,
+                "type": ou.type,
+                "tenant_id": req.tenant_id,
+                "parent_org_unit_id": str(parent_id) if parent_id else None,
+            },
+        )
         db.commit()
         db.refresh(ou)
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Created org unit: {ou.org_unit_id} ({ou.name}) for tenant: {req.tenant_id}")
 
@@ -1995,11 +2140,10 @@ async def update_org_unit(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid org_unit_id format")
 
-        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_id).first()
+        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_id, OrgUnit.status != "deleted").first()
         if not ou:
             raise HTTPException(status_code=404, detail="Org unit not found")
 
-        # Ensure tenant matches
         if str(ou.tenant_id) != req.tenant_id:
             raise HTTPException(status_code=403, detail="Tenant mismatch")
 
@@ -2039,8 +2183,17 @@ async def update_org_unit(
 
         ou.updated_at = datetime.now(timezone.utc)
 
+        outbox = append_outbox_event(
+            db,
+            tenant_id=ou.tenant_id,
+            aggregate_type="org_unit",
+            aggregate_id=ou.org_unit_id,
+            event_type="org_unit.updated",
+            payload={"org_unit_id": str(ou.org_unit_id), "name": ou.name, "type": ou.type, "status": ou.status},
+        )
         db.commit()
         db.refresh(ou)
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Updated org unit: {ou.org_unit_id}")
 
@@ -2073,20 +2226,33 @@ async def delete_org_unit(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid org_unit_id format")
 
-        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_id).first()
+        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_id, OrgUnit.status != "deleted").first()
         if not ou:
             raise HTTPException(status_code=404, detail="Org unit not found")
 
-        # If children exist, prevent delete unless forced - simple safety
-        children_count = db.query(OrgUnit).filter(OrgUnit.parent_org_unit_id == ou_id).count()
+        children_count = db.query(OrgUnit).filter(
+            OrgUnit.parent_org_unit_id == ou_id,
+            OrgUnit.status != "deleted"
+        ).count()
         if children_count > 0:
             raise HTTPException(status_code=400, detail="Org unit has child units; remove or reparent before delete")
 
-        # Perform delete (hard delete here - cascade will handle relations)
-        db.delete(ou)
-        db.commit()
+        tenant_id = ou.tenant_id
+        ou.status = "deleted"
+        ou.updated_at = func.now()
 
-        logger.info(f"Deleted org unit: {org_unit_id}")
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id,
+            aggregate_type="org_unit",
+            aggregate_id=ou_id,
+            event_type="org_unit.deleted",
+            payload={"org_unit_id": str(ou_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        logger.info(f"Soft-deleted org unit: {org_unit_id}")
         return Response(status_code=204)
     except HTTPException:
         raise
@@ -2167,7 +2333,6 @@ async def assign_user_to_org_unit(
                 "message": "Assignment updated"
             }
 
-        # Create new assignment
         assignment = UserOrgAssignment(
             user_id=user_uuid,
             org_unit_id=org_unit_uuid,
@@ -2175,8 +2340,23 @@ async def assign_user_to_org_unit(
             assigned_by=assigned_by_uuid
         )
         db.add(assignment)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=user.tenant_id,
+            aggregate_type="org_unit",
+            aggregate_id=org_unit_uuid,
+            event_type="org_unit.user_assigned",
+            payload={
+                "org_unit_id": str(org_unit_uuid),
+                "user_id": str(user_uuid),
+                "role_id": str(role_uuid),
+                "role_code": role.code,
+            },
+        )
         db.commit()
         db.refresh(assignment)
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Assigned user {user_uuid} to org unit {org_unit_uuid} with role {role_uuid}")
 
@@ -2216,8 +2396,10 @@ async def get_org_unit_users(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid org_unit_id format")
 
-        # Verify org unit exists
-        org_unit = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou_uuid).first()
+        org_unit = db.query(OrgUnit).filter(
+            OrgUnit.org_unit_id == ou_uuid,
+            OrgUnit.status != "deleted"
+        ).first()
         if not org_unit:
             raise HTTPException(status_code=404, detail="Org unit not found")
 
@@ -2228,7 +2410,8 @@ async def get_org_unit_users(
             # Get all child org units recursively
             def get_children_ids(parent_id):
                 children = db.query(OrgUnit.org_unit_id).filter(
-                    OrgUnit.parent_org_unit_id == parent_id
+                    OrgUnit.parent_org_unit_id == parent_id,
+                    OrgUnit.status != "deleted"
                 ).all()
                 child_ids = [c[0] for c in children]
                 for child_id in child_ids:
@@ -2368,11 +2551,23 @@ async def remove_user_from_org_unit(
         if not assignment:
             raise HTTPException(status_code=404, detail="Assignment not found")
 
+        user_obj = db.query(User).filter(User.user_id == assignment.user_id).first()
+        tenant_id = user_obj.tenant_id if user_obj else uuid.UUID("00000000-0000-0000-0000-000000000000")
         user_id = assignment.user_id
         org_unit_id = assignment.org_unit_id
 
         db.delete(assignment)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id,
+            aggregate_type="org_unit",
+            aggregate_id=org_unit_id,
+            event_type="org_unit.user_removed",
+            payload={"org_unit_id": str(org_unit_id), "user_id": str(user_id)},
+        )
         db.commit()
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Removed user {user_id} from org unit {org_unit_id}")
         return Response(status_code=204)
@@ -2409,8 +2604,21 @@ async def remove_user_from_org_unit_by_ids(
         if not assignment:
             raise HTTPException(status_code=404, detail="Assignment not found")
 
+        user_obj = db.query(User).filter(User.user_id == user_uuid).first()
+        tenant_id = user_obj.tenant_id if user_obj else uuid.UUID("00000000-0000-0000-0000-000000000000")
+
         db.delete(assignment)
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id,
+            aggregate_type="org_unit",
+            aggregate_id=ou_uuid,
+            event_type="org_unit.user_removed",
+            payload={"org_unit_id": org_unit_id, "user_id": user_id},
+        )
         db.commit()
+        await notify_outbox(str(outbox.id))
 
         logger.info(f"Removed user {user_id} from org unit {org_unit_id}")
         return Response(status_code=204)

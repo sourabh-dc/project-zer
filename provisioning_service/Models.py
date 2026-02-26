@@ -19,7 +19,8 @@ class Tenant(Base):
     tenant_name = Column(String, nullable=False, index=True)
     tenant_type = Column(String, nullable=False)  # retailer/brand/franchisee
     email = Column(String, nullable=False, index=True)
-    active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     registration_number = Column(String, nullable=True)
     phone = Column(String, nullable=True)
@@ -45,7 +46,8 @@ class Site(Base):
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
     site_type = Column(String, nullable=False)  # mall/campus/DC/online-hub
-    active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     currency = Column(String(3), nullable=True)
     timezone = Column(String, nullable=True)
@@ -75,7 +77,8 @@ class Store(Base):
 
     name = Column(String, nullable=False)
     store_type = Column(String, nullable=False)  # physical/online/kiosk/darkstore
-    active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     currency = Column(String(3), nullable=True)
     timezone = Column(String, nullable=True)
@@ -104,7 +107,8 @@ class User(Base):
     password_hash = Column(String, nullable=False)  # required
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
-    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     display_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
@@ -209,7 +213,7 @@ class OrgUnit(Base):
 
     name = Column(String, nullable=False)
     type = Column(String, nullable=False, index=True)  # department/division/team
-    status = Column(String, nullable=False, index=True)  # active/archived
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
 
     parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
     code = Column(String, nullable=True)
@@ -248,7 +252,7 @@ class Vendor(Base):
     name = Column(String(255), nullable=False)
     contact_email = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
-    status = Column(String(50), default="active", index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -298,7 +302,8 @@ class Fit(Base):
 
     fit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False, index=True)
-    active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -329,7 +334,8 @@ class CostCentre(Base):
     description = Column(String(500), nullable=True)
     owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
-    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -444,7 +450,8 @@ class Feature(Base):
     max_unit = Column(String(50), nullable=True)  # reports, users, GB, requests
     reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
     
-    active = Column(Boolean, default=True, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -537,7 +544,8 @@ class Category(Base):
     code = Column(String(100), nullable=False, index=True)
     description = Column(String(500), nullable=True)
     parent_category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
-    active = Column(Boolean, default=True, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -623,7 +631,8 @@ class Product(Base):
     restricted = Column(Boolean, nullable=False, default=False, index=True)  # Restricted product flag
     product_metadata = Column(JSONB, nullable=True)  # Flexible JSON for extra data
     comments = Column(Text, nullable=True)  # Free-text notes/comments
-    active = Column(Boolean, nullable=False, default=True, index=True)  # Active/inactive flag
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
     deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete timestamp
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=True)
@@ -660,7 +669,8 @@ class Variant(Base):
     currency = Column(String(3), default="GBP", nullable=False)
     stock_quantity = Column(Integer, default=0, nullable=False)
     low_stock_threshold = Column(Integer, default=10, nullable=False)
-    active = Column(Boolean, default=True, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -711,7 +721,8 @@ class VendorUser(Base):
     password_hash = Column(String(255), nullable=False)
     first_name = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="vendor_staff")  # vendor_admin / vendor_staff
-    active = Column(Boolean, nullable=False, default=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -721,18 +732,145 @@ class VendorUser(Base):
     )
 
 
+# ==================================================================================
+# CARRIER & GOVERNANCE MODELS
+# ==================================================================================
+
+class Carrier(Base):
+    """Carrier / logistics provider — global entity"""
+    __tablename__ = "carriers"
+
+    carrier_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, index=True)
+    code = Column(String(50), nullable=True, unique=True, index=True)
+    carrier_type = Column(String(50), nullable=True)  # parcel / freight / courier / marketplace
+    tracking_url_template = Column(String(500), nullable=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class TenantCarrier(Base):
+    """Tenant ↔ Carrier mapping (ALLOWS_CARRIER edge in graph)"""
+    __tablename__ = "tenant_carriers"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    carrier_id = Column(SQLUUID(as_uuid=True), ForeignKey("carriers.carrier_id", ondelete="CASCADE"), nullable=False, index=True)
+    relationship_type = Column(String(50), nullable=False, default="approved")  # preferred / approved / blocked
+    integration_type = Column(String(50), nullable=True)  # api / edi / email / marketplace / manual
+    account_number = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_tenant_carrier_unique', 'tenant_id', 'carrier_id', unique=True),
+    )
+
+
+class UserApprover(Base):
+    """User ↔ CostCentre approval mapping (IS_APPROVER_FOR edge in graph)"""
+    __tablename__ = "user_approvers"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    approval_limit_minor = Column(BigInteger, nullable=False)
+    currency = Column(String(3), nullable=False, default="GBP")
+    rule_set_id = Column(SQLUUID(as_uuid=True), nullable=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_user_approver_unique', 'user_id', 'cost_centre_id', unique=True),
+    )
+
+
+# ==================================================================================
+# APPROVED RANGE MODELS
+# ==================================================================================
+
+class ApprovedRange(Base):
+    """A curated basket of products, controlled by tenant admin, scoped to org units"""
+    __tablename__ = "approved_ranges"
+
+    approved_range_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    is_universal = Column(Boolean, nullable=False, default=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_approved_range_tenant_name', 'tenant_id', 'name', unique=True),
+    )
+
+
+class ApprovedRangeOrgUnit(Base):
+    """Maps an approved range to an org unit (many-to-many)"""
+    __tablename__ = "approved_range_org_units"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approved_range_id = Column(SQLUUID(as_uuid=True), ForeignKey("approved_ranges.approved_range_id", ondelete="CASCADE"), nullable=False, index=True)
+    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_ar_org_unit_unique', 'approved_range_id', 'org_unit_id', unique=True),
+    )
+
+
+class ApprovedRangeProduct(Base):
+    """Maps a product into an approved range (many-to-many)"""
+    __tablename__ = "approved_range_products"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approved_range_id = Column(SQLUUID(as_uuid=True), ForeignKey("approved_ranges.approved_range_id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
+    added_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_ar_product_unique', 'approved_range_id', 'product_id', unique=True),
+    )
+
+
+# ==================================================================================
+# OUTBOX & AUDIT MODELS
+# ==================================================================================
+
 class OutboxEvent(Base):
     __tablename__ = 'outbox_events'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    event_type: Mapped[str] = mapped_column(nullable=False)
-    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(default='pending')
-    retry_count: Mapped[int] = mapped_column(default=0)
-    max_retries: Mapped[int] = mapped_column(default=3)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default='pending', nullable=False, index=True)
+    retry_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    max_retries: Mapped[int] = mapped_column(default=3, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index('ix_outbox_relay_poll', 'processed_at', 'created_at',
+              postgresql_nulls_not_distinct=False),
+        Index('ix_outbox_aggregate', 'aggregate_type', 'aggregate_id', 'created_at'),
+    )
 
 
 class AuditLog(Base):

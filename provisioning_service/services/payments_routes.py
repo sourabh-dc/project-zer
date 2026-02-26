@@ -5,11 +5,13 @@ from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from sqlalchemy.orm import Session
 
+import uuid as _uuid
 from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice
 from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.helpers.outbox import append_outbox_event
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -139,6 +141,20 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
         sub.is_active = is_active
         sub.payment_method = payment_method
         sub.status = status
+
+        append_outbox_event(
+            db,
+            tenant_id=_uuid.UUID(tenant_id),
+            aggregate_type="subscription",
+            aggregate_id=sub.id if sub.id else _uuid.uuid4(),
+            event_type="subscription.activated" if is_active else "subscription.deactivated",
+            payload={
+                "tenant_id": tenant_id,
+                "plan_code": plan_code,
+                "billing_cycle": billing_cycle,
+                "is_active": is_active,
+            },
+        )
         db.commit()
         return {"status": "ok"}
 

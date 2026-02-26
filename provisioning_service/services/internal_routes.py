@@ -166,14 +166,14 @@ async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session 
 
 @router.delete("/plans/{plan_code}", status_code=204)
 async def delete_plan(plan_code: str, db: Session = Depends(get_db)):
-    """Deactivate a plan (soft delete)."""
+    """Soft-delete a plan by deactivating it."""
     plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
     if not plan:
         raise HTTPException(404, "Plan not found")
 
     plan.is_active = False
     db.commit()
-    logger.info(f"Deactivated plan: {plan_code}")
+    logger.info(f"Soft-deleted plan: {plan_code}")
     return None
 
 
@@ -217,7 +217,7 @@ async def list_features(
     db: Session = Depends(get_db)
 ):
     """List all features with optional filters."""
-    q = db.query(Feature)
+    q = db.query(Feature).filter(Feature.status != "deleted")
     if active is not None:
         q = q.filter(Feature.active == active)
     if cluster:
@@ -288,14 +288,15 @@ async def update_feature(feature_code: str, req: FeatureRequest, db: Session = D
 
 @router.delete("/features/{feature_code}", status_code=204)
 async def delete_feature(feature_code: str, db: Session = Depends(get_db)):
-    """Deactivate a feature (soft delete)."""
+    """Soft-delete a feature."""
     feature = db.query(Feature).filter_by(code=feature_code).first()
     if not feature:
         raise HTTPException(404, "Feature not found")
 
+    feature.status = "deleted"
     feature.active = False
     db.commit()
-    logger.info(f"Deactivated feature: {feature_code}")
+    logger.info(f"Soft-deleted feature: {feature_code}")
     return None
 
 

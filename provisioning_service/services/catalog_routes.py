@@ -10,7 +10,8 @@ import pandas as pd
 
 from provisioning_service.Models import (
     Tenant, Category, Product, Variant, StoreProduct, Store, Vendor,
-    Colour, Size, Fit, UosLabel
+    Colour, Size, Fit, UosLabel,
+    ApprovedRange, ApprovedRangeOrgUnit, ApprovedRangeProduct, User,
 )
 from provisioning_service.Schemas import (
     CategoryRequest, ProductRequest, VariantRequest, StoreProductRequest,
@@ -20,6 +21,7 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.utils.logger import logger
 
 
@@ -82,11 +84,25 @@ async def create_category(
         active=True
     )
     db.add(category)
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID(req.tenant_id),
+        aggregate_type="category",
+        aggregate_id=category.category_id,
+        event_type="category.created",
+        payload={
+            "category_id": str(category.category_id),
+            "name": category.name,
+            "code": category.code,
+            "tenant_id": req.tenant_id,
+        },
+    )
     try:
         db.commit()
         db.refresh(category)
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "categories", count=1)
+        await notify_outbox(str(outbox.id))
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Category code conflict")
@@ -111,7 +127,7 @@ async def list_categories(
 ):
     q = db.query(Category).filter(
         Category.tenant_id == ctx["tenant_id"],
-        Category.active == True
+        Category.status != "deleted"
     )
 
     if active is not None:
@@ -135,7 +151,7 @@ async def list_categories(
                 "active": c.active,
                 "has_children": db.query(Category).filter(
                     Category.parent_category_id == c.category_id,
-                    Category.active == True
+                    Category.status != "deleted"
                 ).count() > 0
             }
             for c in items
@@ -251,7 +267,7 @@ async def create_product(
             fit_id = UUID(req.fit_id)
         except ValueError:
             raise HTTPException(400, "Invalid fit_id")
-        if not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
+        if not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.status != "deleted").first():
             raise HTTPException(404, "Fit not found")
 
     # Validate UOS labels
@@ -322,6 +338,20 @@ async def create_product(
         active=True
     )
     db.add(product)
+
+    outbox = append_outbox_event(
+        db,
+        tenant_id=uuid.UUID(req.tenant_id),
+        aggregate_type="product",
+        aggregate_id=product.product_id,
+        event_type="product.created",
+        payload={
+            "product_id": str(product.product_id),
+            "sku": product.sku,
+            "display_name": product.display_name,
+            "tenant_id": req.tenant_id,
+        },
+    )
     try:
         db.commit()
         db.refresh(product)
@@ -337,10 +367,10 @@ async def create_product(
             product.aifi_product_id = aifi_product.get("id")
             db.commit()
         except Exception as e:
-            logger.warning(f"❌ AiFi product sync failed, continuing: {e}")
+            logger.warning(f"AiFi product sync failed, continuing: {e}")
             db.rollback()
-        # Record feature usage
         record_feature_usage(db, req.tenant_id, "products", count=1)
+        await notify_outbox(str(outbox.id))
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(409, "SKU or EAN conflict")
@@ -356,6 +386,58 @@ async def create_product(
     }
 
 
+def _is_tenant_admin(ctx) -> bool:
+    """Check if the current user is a tenant admin (bypasses approved range filtering)."""
+    perms = ctx.get("permissions") if isinstance(ctx, dict) else getattr(ctx, "permissions", None)
+    if isinstance(perms, list) and "*" in perms:
+        return True
+    roles = ctx.get("roles") if isinstance(ctx, dict) else getattr(ctx, "roles", None)
+    if isinstance(roles, list) and "tenant_admin" in roles:
+        return True
+    return False
+
+
+def _get_approved_product_ids(db: Session, tenant_id, user_id) -> Optional[set]:
+    """Return the set of product IDs visible to a non-admin user via approved ranges.
+
+    Returns None if the user has no org unit (fallback: show nothing outside universal).
+    """
+    user = db.query(User).filter(User.user_id == user_id).first()
+    user_org_unit_id = user.home_org_unit_id if user else None
+
+    # Universal ranges — always included
+    universal_range_ids = [
+        r[0] for r in db.query(ApprovedRange.approved_range_id).filter(
+            ApprovedRange.tenant_id == tenant_id,
+            ApprovedRange.is_universal == True,
+            ApprovedRange.status != "deleted",
+        ).all()
+    ]
+
+    # Org-unit-specific ranges
+    ou_range_ids = []
+    if user_org_unit_id:
+        ou_range_ids = [
+            r[0] for r in db.query(ApprovedRangeOrgUnit.approved_range_id).filter(
+                ApprovedRangeOrgUnit.org_unit_id == user_org_unit_id,
+            ).join(ApprovedRange, ApprovedRange.approved_range_id == ApprovedRangeOrgUnit.approved_range_id).filter(
+                ApprovedRange.tenant_id == tenant_id,
+                ApprovedRange.status != "deleted",
+            ).all()
+        ]
+
+    all_range_ids = set(universal_range_ids + ou_range_ids)
+    if not all_range_ids:
+        return set()
+
+    product_ids = {
+        r[0] for r in db.query(ApprovedRangeProduct.product_id).filter(
+            ApprovedRangeProduct.approved_range_id.in_(all_range_ids)
+        ).all()
+    }
+    return product_ids
+
+
 @router.get("/products")
 async def list_products(
     category_id: Optional[str] = None,
@@ -367,10 +449,26 @@ async def list_products(
     db: Session = Depends(get_db),
     ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
+    tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+    user_id = ctx["user_id"] if isinstance(ctx, dict) else ctx.user_id
+
     q = db.query(Product).filter(
-        Product.tenant_id == ctx["tenant_id"],
-        Product.active == True
+        Product.tenant_id == tenant_id,
+        Product.status != "deleted"
     )
+
+    # Approved range filtering: non-admin users only see products in their ranges
+    if not _is_tenant_admin(ctx):
+        has_any_ranges = db.query(ApprovedRange).filter(
+            ApprovedRange.tenant_id == tenant_id,
+            ApprovedRange.status != "deleted",
+        ).first()
+        if has_any_ranges:
+            approved_ids = _get_approved_product_ids(db, tenant_id, user_id)
+            if approved_ids:
+                q = q.filter(Product.product_id.in_(approved_ids))
+            else:
+                q = q.filter(Product.product_id == None)
 
     if category_id:
         q = q.filter(Product.category_id == UUID(category_id))
@@ -751,7 +849,7 @@ async def bulk_upload_products(
                 continue
 
             category_id = get_uuid('category_id')
-            if category_id and not db.query(Category).filter(Category.category_id == category_id, Category.tenant_id == tenant_id, Category.active == True).first():
+            if category_id and not db.query(Category).filter(Category.category_id == category_id, Category.tenant_id == tenant_id, Category.status != "deleted").first():
                 errors.append({"row": row_num, "error": f"Category ID not found: {category_id}"})
                 continue
 
@@ -766,7 +864,7 @@ async def bulk_upload_products(
                 continue
 
             fit_id = get_uuid('fit_id')
-            if fit_id and not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
+            if fit_id and not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.status != "deleted").first():
                 errors.append({"row": row_num, "error": f"Fit ID not found: {fit_id}"})
                 continue
 
@@ -831,6 +929,21 @@ async def bulk_upload_products(
             )
 
             db.add(product)
+
+            append_outbox_event(
+                db,
+                tenant_id=uuid.UUID(str(tenant_id)),
+                aggregate_type="product",
+                aggregate_id=product.product_id,
+                event_type="product.created",
+                payload={
+                    "product_id": str(product.product_id),
+                    "sku": product.sku,
+                    "display_name": product.display_name,
+                    "tenant_id": str(tenant_id),
+                },
+            )
+
             created_products.append({
                 "row": row_num,
                 "product_id": str(product.product_id),
@@ -842,11 +955,9 @@ async def bulk_upload_products(
             logger.error(f"Error processing row {row_num}: {e}")
             errors.append({"row": row_num, "error": str(e)})
 
-    # Commit all products at once
     if created_products:
         try:
             db.commit()
-            # Record feature usage for all created products
             record_feature_usage(db, str(tenant_id), "products", count=len(created_products))
         except IntegrityError as e:
             db.rollback()
