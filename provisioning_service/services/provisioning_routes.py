@@ -20,6 +20,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
 
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.utils.logger import logger
 from provisioning_service.utils.metrics import req_total, req_duration
@@ -185,6 +186,7 @@ async def create_site(
         req: SiteRequest,
         db: Session = Depends(get_db),
         # ctx = Depends(check_user_authorization("sites.manage"))
+        policy = Depends(require_policy("site.create")),
 ):
     """Create a new site and associate it with a tenant"""
     try:
@@ -472,7 +474,8 @@ async def list_sites(
 async def create_store(
         req: StoreRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("stores.manage"))
+        ctx = Depends(check_user_authorization("stores.manage")),
+        policy = Depends(require_policy("store.create")),
 ):
     """Create a new store under a site for the user's tenant"""
     start = datetime.now()
@@ -694,7 +697,8 @@ async def list_stores(
 async def create_user(
         req: UserRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("users.manage"))
+        ctx = Depends(check_user_authorization("users.manage")),
+        policy = Depends(require_policy("user.create")),
 ):
     """Create a new user"""
     start = datetime.now()
@@ -835,7 +839,8 @@ async def list_users(
 async def create_vendor(
         req: VendorRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("vendors.manage"))
+        ctx = Depends(check_user_authorization("vendors.manage")),
+        policy = Depends(require_policy("vendor.create")),
 ):
     """Create a new vendor"""
     start = datetime.now()
@@ -1015,7 +1020,8 @@ async def list_vendors(
 async def create_cost_centre(
         req: CostCentreRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("costcentre.manage"))
+        ctx = Depends(check_user_authorization("costcentre.manage")),
+        policy = Depends(require_policy("cost_centre.create")),
 ):
     """Create a new cost centre"""
     start = datetime.now()
@@ -2041,7 +2047,8 @@ async def remove_role_from_user(
 async def create_org_unit(
         req: OrgUnitRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy = Depends(require_policy("org_unit.create")),
 ):
     """Create a new organisational unit"""
     try:
