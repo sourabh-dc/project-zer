@@ -115,7 +115,8 @@ async def get_tenant(
 @router.put("/tenants/{tenant_id}")
 async def update_tenant(
         req: TenantUpdateRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        policy=Depends(require_policy("tenant.update")),
 ):
     """Update a tenant's information"""
     try:
@@ -185,7 +186,7 @@ async def update_tenant(
 async def create_site(
         req: SiteRequest,
         db: Session = Depends(get_db),
-        # ctx = Depends(check_user_authorization("sites.manage"))
+        ctx = Depends(check_user_authorization("sites.manage")),
         policy = Depends(require_policy("site.create")),
 ):
     """Create a new site and associate it with a tenant"""
@@ -276,7 +277,8 @@ async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
     db: Session = Depends(get_db),
-    user = Depends(check_user_authorization('tenant.admin'))
+    user=Depends(check_user_authorization('tenant.admin')),
+    policy=Depends(require_policy("site.add_tenant", resource_from="none")),
 ):
     """Allow a site to be managed by an additional tenant"""
     try:
@@ -379,7 +381,8 @@ async def list_site_tenants(
 async def remove_tenant_from_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    policy=Depends(require_policy("site.remove_tenant", resource_from="none")),
 ):
     """Remove a tenant from a site"""
     try:
@@ -469,6 +472,138 @@ async def list_sites(
     except Exception as e:
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/sites/{site_id}")
+async def update_site(
+        site_id: str,
+        name: Optional[str] = Query(None),
+        site_type: Optional[str] = Query(None),
+        currency: Optional[str] = Query(None),
+        timezone: Optional[str] = Query(None),
+        language: Optional[str] = Query(None),
+        phone: Optional[str] = Query(None),
+        email: Optional[str] = Query(None),
+        url: Optional[str] = Query(None),
+        primary_billing_address: Optional[str] = Query(None),
+        primary_shipping_address: Optional[str] = Query(None),
+        geo: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("sites.manage")),
+        policy = Depends(require_policy("site.update")),
+):
+    try:
+        site = db.query(Site).filter(
+            Site.site_id == uuid.UUID(site_id),
+            Site.status != "deleted"
+        ).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        site_tenant = db.query(SiteTenant).filter(
+            SiteTenant.site_id == site.site_id
+        ).first()
+        tenant_id = site_tenant.tenant_id if site_tenant else None
+
+        if name is not None:
+            site.name = name
+        if site_type is not None:
+            site.site_type = site_type
+        if currency is not None:
+            site.currency = currency
+        if timezone is not None:
+            site.timezone = timezone
+        if language is not None:
+            site.language = language
+        if phone is not None:
+            site.phone = phone
+        if email is not None:
+            site.email = email
+        if url is not None:
+            site.url = url
+        if primary_billing_address is not None:
+            site.primary_billing_address = primary_billing_address
+        if primary_shipping_address is not None:
+            site.primary_shipping_address = primary_shipping_address
+        if geo is not None:
+            site.geo = geo
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id or uuid.UUID("00000000-0000-0000-0000-000000000000"),
+            aggregate_type="site",
+            aggregate_id=site.site_id,
+            event_type="site.updated",
+            payload={
+                "site_id": str(site.site_id),
+                "name": site.name,
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            },
+        )
+        db.commit()
+        db.refresh(site)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "site_id": str(site.site_id),
+            "name": site.name,
+            "site_type": site.site_type,
+            "updated_at": site.updated_at.isoformat() if site.updated_at else None
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/sites/{site_id}", status_code=200)
+async def delete_site(
+        site_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("sites.manage")),
+        policy = Depends(require_policy("site.delete", resource_from="none")),
+):
+    try:
+        site = db.query(Site).filter(
+            Site.site_id == uuid.UUID(site_id),
+            Site.status != "deleted"
+        ).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        site_tenant = db.query(SiteTenant).filter(
+            SiteTenant.site_id == site.site_id
+        ).first()
+        tenant_id = site_tenant.tenant_id if site_tenant else None
+
+        site.status = "deleted"
+        site.active = False
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=tenant_id or uuid.UUID("00000000-0000-0000-0000-000000000000"),
+            aggregate_type="site",
+            aggregate_id=site.site_id,
+            event_type="site.deleted",
+            payload={"site_id": str(site.site_id), "tenant_id": str(tenant_id) if tenant_id else None},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "site_id": site_id}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.post("/stores", status_code=201)
 async def create_store(
@@ -573,7 +708,8 @@ async def update_store(
     name: Optional[str] = Query(None, description="New store name"),
     store_type: Optional[str] = Query(None, description="New store type"),
     geo: Optional[str] = Query(None, description="New geo location"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    policy = Depends(require_policy("store.update"))
 ):
     """Update store information"""
     start = datetime.now()
@@ -835,6 +971,126 @@ async def list_users(
         logger.error(f"❌ List users failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+@router.put("/users/{user_id}")
+async def update_user(
+        user_id: str,
+        first_name: Optional[str] = Query(None),
+        last_name: Optional[str] = Query(None),
+        display_name: Optional[str] = Query(None),
+        phone: Optional[str] = Query(None),
+        position: Optional[str] = Query(None),
+        profile_image: Optional[str] = Query(None),
+        home_site_id: Optional[str] = Query(None),
+        home_store_id: Optional[str] = Query(None),
+        home_org_unit_id: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("users.manage")),
+        policy = Depends(require_policy("user.update")),
+):
+    try:
+        user = db.query(User).filter(
+            User.user_id == uuid.UUID(user_id),
+            User.status != "deleted"
+        ).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if first_name is not None:
+            user.first_name = first_name
+        if last_name is not None:
+            user.last_name = last_name
+        if display_name is not None:
+            user.display_name = display_name
+        if phone is not None:
+            user.phone = phone
+        if position is not None:
+            user.position = position
+        if profile_image is not None:
+            user.profile_image = profile_image
+        if home_site_id is not None:
+            user.home_site_id = uuid.UUID(home_site_id) if home_site_id else None
+        if home_store_id is not None:
+            user.home_store_id = uuid.UUID(home_store_id) if home_store_id else None
+        if home_org_unit_id is not None:
+            user.home_org_unit_id = uuid.UUID(home_org_unit_id) if home_org_unit_id else None
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=user.tenant_id,
+            aggregate_type="user",
+            aggregate_id=user.user_id,
+            event_type="user.updated",
+            payload={
+                "user_id": str(user.user_id),
+                "tenant_id": str(user.tenant_id),
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+        db.commit()
+        db.refresh(user)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "user_id": str(user.user_id),
+            "tenant_id": str(user.tenant_id),
+            "email": user.email,
+            "display_name": user.display_name,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update user failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/users/{user_id}", status_code=200)
+async def delete_user(
+        user_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("users.manage")),
+        policy = Depends(require_policy("user.delete", resource_from="none")),
+):
+    try:
+        user = db.query(User).filter(
+            User.user_id == uuid.UUID(user_id),
+            User.status != "deleted"
+        ).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user.status = "deleted"
+        user.is_active = False
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=user.tenant_id,
+            aggregate_type="user",
+            aggregate_id=user.user_id,
+            event_type="user.deleted",
+            payload={"user_id": str(user.user_id), "tenant_id": str(user.tenant_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "user_id": user_id}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete user failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
@@ -910,7 +1166,7 @@ async def create_vendor(
 
 
 @router.post("/vendor-user")
-def create_vendor_user(payload: VendorUserCreate, db: Session = Depends(get_db)):
+def create_vendor_user(payload: VendorUserCreate, db: Session = Depends(get_db), policy = Depends(require_policy("vendor_user.create"))):
     # uniqueness check (vendor + email)
     existing = (
         db.query(VendorUser)
@@ -946,7 +1202,13 @@ def list_vendor_users(
     return items
 
 @router.put("/{user_id}")
-def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Session = Depends(get_db)):
+def update_vendor_user(
+    user_id: uuid.UUID,
+    payload: VendorUserUpdate,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor_user.update")),
+):
     obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="vendor user not found")
@@ -960,7 +1222,7 @@ def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Sessio
     return obj
 
 @router.delete("/{user_id}")
-async def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+async def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db), policy = Depends(require_policy("vendor_user.delete", resource_from="none"))):
     obj = db.query(VendorUser).filter(
         VendorUser.user_id == user_id,
         VendorUser.status != "deleted"
@@ -1015,6 +1277,105 @@ async def list_vendors(
         "limit": limit,
         "offset": offset
     }
+
+
+@router.put("/vendors/{vendor_id}")
+async def update_vendor(
+        vendor_id: str,
+        name: Optional[str] = Query(None),
+        contact_email: Optional[str] = Query(None),
+        description: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("vendors.manage")),
+        policy = Depends(require_policy("vendor.update")),
+):
+    try:
+        vendor = db.query(Vendor).filter(
+            Vendor.vendor_id == uuid.UUID(vendor_id),
+            Vendor.status != "deleted"
+        ).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        if name is not None:
+            vendor.name = name
+        if contact_email is not None:
+            vendor.contact_email = contact_email
+        if description is not None:
+            vendor.description = description
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=vendor.tenant_id,
+            aggregate_type="vendor",
+            aggregate_id=vendor.vendor_id,
+            event_type="vendor.updated",
+            payload={
+                "vendor_id": str(vendor.vendor_id),
+                "name": vendor.name,
+                "tenant_id": str(vendor.tenant_id),
+            },
+        )
+        db.commit()
+        db.refresh(vendor)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "vendor_id": str(vendor.vendor_id),
+            "tenant_id": str(vendor.tenant_id),
+            "name": vendor.name,
+            "contact_email": vendor.contact_email,
+            "description": vendor.description,
+            "status": vendor.status,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/vendors/{vendor_id}", status_code=200)
+async def delete_vendor(
+        vendor_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("vendors.manage")),
+        policy = Depends(require_policy("vendor.delete", resource_from="none")),
+):
+    try:
+        vendor = db.query(Vendor).filter(
+            Vendor.vendor_id == uuid.UUID(vendor_id),
+            Vendor.status != "deleted"
+        ).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        vendor.status = "deleted"
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=vendor.tenant_id,
+            aggregate_type="vendor",
+            aggregate_id=vendor.vendor_id,
+            event_type="vendor.deleted",
+            payload={"vendor_id": str(vendor.vendor_id), "tenant_id": str(vendor.tenant_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "vendor_id": vendor_id}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.post("/cost-centres", status_code=201)
 async def create_cost_centre(
@@ -1147,6 +1508,111 @@ async def list_cost_centres(
         "offset": offset
     }
 
+
+@router.put("/cost-centres/{cost_centre_id}")
+async def update_cost_centre(
+        cost_centre_id: str,
+        code: Optional[str] = Query(None),
+        name: Optional[str] = Query(None),
+        description: Optional[str] = Query(None),
+        owner_user_id: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("costcentre.manage")),
+        policy = Depends(require_policy("cost_centre.update")),
+):
+    try:
+        cc = db.query(CostCentre).filter(
+            CostCentre.cost_centre_id == uuid.UUID(cost_centre_id),
+            CostCentre.status != "deleted"
+        ).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
+        if code is not None:
+            cc.code = code
+        if name is not None:
+            cc.name = name
+        if description is not None:
+            cc.description = description
+        if owner_user_id is not None:
+            cc.owner_user_id = uuid.UUID(owner_user_id) if owner_user_id else None
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=cc.tenant_id,
+            aggregate_type="cost_centre",
+            aggregate_id=cc.cost_centre_id,
+            event_type="cost_centre.updated",
+            payload={
+                "cost_centre_id": str(cc.cost_centre_id),
+                "name": cc.name,
+                "code": cc.code,
+                "tenant_id": str(cc.tenant_id),
+            },
+        )
+        db.commit()
+        db.refresh(cc)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "cost_centre_id": str(cc.cost_centre_id),
+            "tenant_id": str(cc.tenant_id),
+            "code": cc.code,
+            "name": cc.name,
+            "description": cc.description,
+            "owner_user_id": str(cc.owner_user_id) if cc.owner_user_id else None,
+            "is_active": cc.is_active,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cost centre ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update cost centre failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/cost-centres/{cost_centre_id}", status_code=200)
+async def delete_cost_centre(
+        cost_centre_id: str,
+        db: Session = Depends(get_db),
+        ctx = Depends(check_user_authorization("costcentre.manage")),
+        policy = Depends(require_policy("cost_centre.delete", resource_from="none")),
+):
+    try:
+        cc = db.query(CostCentre).filter(
+            CostCentre.cost_centre_id == uuid.UUID(cost_centre_id),
+            CostCentre.status != "deleted"
+        ).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
+        cc.status = "deleted"
+        cc.is_active = False
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=cc.tenant_id,
+            aggregate_type="cost_centre",
+            aggregate_id=cc.cost_centre_id,
+            event_type="cost_centre.deleted",
+            payload={"cost_centre_id": str(cc.cost_centre_id), "tenant_id": str(cc.tenant_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "cost_centre_id": cost_centre_id}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cost centre ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete cost centre failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # ==================================================================================
 # USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
 # ==================================================================================
@@ -1158,7 +1624,8 @@ async def assign_user_to_cost_centre(
     allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
     recurring_budget_minor: int = Query(0, description="Recurring budget amount for resets"),
     recurring_period: str = Query("none", description="Recurring period: none/daily/weekly/monthly/yearly"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    policy=Depends(require_policy("cost_centre.assign_user")),
 ):
     """Assign a user to a cost centre with optional budget allocation (enforces remaining CC budget)"""
     try:
@@ -1338,7 +1805,8 @@ async def get_user_budget(
 @router.post("/budgets/renew", status_code=200)
 async def renew_budgets(
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("budgets.manage"))
+    ctx=Depends(check_user_authorization("budgets.manage")),
+    policy=Depends(require_policy("budget.renew", resource_from="none")),
 ):
     """Renew cost centre and user budgets that are due based on recurring settings."""
     today = date.today()
@@ -1725,7 +2193,8 @@ async def get_role_permissions(
 async def create_tenant_role(
     req: TenantRoleRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx=Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("tenant_role.create")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     if not tenant_id:
@@ -1763,7 +2232,8 @@ async def add_permission_to_tenant_role(
     role_id: str,
     req: TenantRolePermissionRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx=Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("tenant_role.add_permission")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     role = db.query(TenantRole).filter(
@@ -1806,7 +2276,8 @@ async def assign_tenant_role_to_user(
     user_id: str,
     req: TenantRoleAssignRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("users.manage"))
+    ctx=Depends(check_user_authorization("users.manage")),
+    policy=Depends(require_policy("tenant_role.assign")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     role = db.query(TenantRole).filter(
@@ -1863,7 +2334,8 @@ async def list_tenant_roles(
 async def assign_role_to_user(
         user_id: str,
         req: AssignRoleRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        policy = Depends(require_policy("role.assign"))
 ):
     """Assign a role to a user"""
     start = datetime.now()
@@ -1987,7 +2459,8 @@ async def get_user_roles(
 async def remove_role_from_user(
         user_id: str,
         role_id: str,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        policy = Depends(require_policy("role.remove", resource_from="none"))
 ):
     """Remove a role from a user"""
     start = datetime.now()
@@ -2138,7 +2611,8 @@ async def update_org_unit(
         org_unit_id: str,
         req: OrgUnitRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy = Depends(require_policy("org_unit.update"))
 ):
     """Update an existing organisational unit"""
     try:
@@ -2224,7 +2698,8 @@ async def update_org_unit(
 async def delete_org_unit(
         org_unit_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy = Depends(require_policy("org_unit.delete", resource_from="none"))
 ):
     """Delete an organisational unit (soft delete by default)"""
     try:
@@ -2277,7 +2752,8 @@ async def delete_org_unit(
 async def assign_user_to_org_unit(
         req: OrgUnitAssignmentRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx = Depends(check_user_authorization("org_units.assign")),
+        policy = Depends(require_policy("org_unit.assign_user"))
 ):
     """
     Assign a user to an organisational unit with a specific role.
@@ -2540,7 +3016,8 @@ async def get_user_org_units(
 async def remove_user_from_org_unit(
         assignment_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx = Depends(check_user_authorization("org_units.assign")),
+        policy = Depends(require_policy("org_unit.remove_user", resource_from="none"))
 ):
     """
     Remove a user's assignment from an organisational unit.
@@ -2591,7 +3068,8 @@ async def remove_user_from_org_unit_by_ids(
         org_unit_id: str,
         user_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx=Depends(check_user_authorization("org_units.assign")),
+        policy=Depends(require_policy("org_unit.remove_user", resource_from="none")),
 ):
     """
     Remove a user's assignment from an organisational unit by org_unit_id and user_id.

@@ -7,32 +7,29 @@ variables (Production). Fully independent of provisioning_service.
 from typing import Optional
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-# --- Key Vault / env bootstrap ---
 keyvault_name = os.getenv("KEYVAULT_NAME")
-vault_url = f"https://{keyvault_name}.vault.azure.net"
-
-credential = DefaultAzureCredential()
-kv_client = SecretClient(vault_url=vault_url, credential=credential)
-
 environment = os.getenv("ENVIRONMENT", "Development")
 
-if environment == "Development":
+if keyvault_name and environment == "Development":
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
+    vault_url = f"https://{keyvault_name}.vault.azure.net"
+    credential = DefaultAzureCredential()
+    kv_client = SecretClient(vault_url=vault_url, credential=credential)
     db_name = kv_client.get_secret("dbName").value
     db_password = kv_client.get_secret("dbPassword").value
     db_host = kv_client.get_secret("dbHost").value
     db_username = kv_client.get_secret("dbUsername").value
 else:
-    db_name = os.getenv("POSTGRES_DB")
-    db_password = os.getenv("POSTGRES_PASSWORD")
-    db_host = os.getenv("POSTGRES_HOST")
-    db_username = os.getenv("POSTGRES_USER")
+    db_name = os.getenv("POSTGRES_DB", "zeroque_dev")
+    db_password = os.getenv("POSTGRES_PASSWORD", "zeroque_dev_password")
+    db_host = os.getenv("POSTGRES_HOST", "localhost")
+    db_username = os.getenv("POSTGRES_USER", "zeroque")
 
 
 class PolicySettings(BaseSettings):
@@ -48,6 +45,11 @@ class PolicySettings(BaseSettings):
     )
     PORT: int = Field(default=8004, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
+
+    # JWT auth (same secret/algo as provisioning_service)
+    JWT_SECRET: str = Field(default="", description="JWT signing secret")
+    JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
+    JWT_EXPIRY_MINUTES: int = Field(default=60, description="JWT expiry in minutes")
 
     # Connection pool
     CONNECTION_POOL_SIZE: int = 20

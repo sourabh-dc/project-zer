@@ -2,11 +2,13 @@
 Policy Master — CRUD endpoints for policies, versions, rules, assignments.
 Also includes seed and decision-log endpoints.
 """
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
 from policy_service.Models import (
@@ -18,6 +20,8 @@ from policy_service.Schemas import (
     PolicyAssignmentCreate,
 )
 from policy_service.core.db_config import get_db
+from policy_service.core.auth import require_policy_admin
+from policy_service.core.cache import invalidate_policies
 from policy_service.utils.logger import logger
 
 router = APIRouter(tags=["Policy Management"])
@@ -26,6 +30,25 @@ router = APIRouter(tags=["Policy Management"])
 # =====================================================================
 # Helpers
 # =====================================================================
+
+def _emit_policy_event(db: Session, tenant_id, aggregate_type: str, aggregate_id, event_type: str, payload: dict):
+    """Insert an outbox event for policy changes."""
+    import uuid as _uuid
+    db.execute(
+        text("""
+            INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload, status, retry_count, max_retries, created_at)
+            VALUES (:id, :tid, :atype, :aid, :etype, CAST(:payload AS jsonb), 'pending', 0, 3, NOW())
+        """),
+        {
+            "id": _uuid.uuid4(),
+            "tid": tenant_id or _uuid.UUID('00000000-0000-0000-0000-000000000000'),
+            "atype": aggregate_type,
+            "aid": aggregate_id,
+            "etype": event_type,
+            "payload": json.dumps(payload, default=str),
+        }
+    )
+
 
 def _get_current_version(db: Session, policy_id: uuid.UUID) -> Optional[PolicyVersion]:
     """Return the current (open) version for a policy (effective_until IS NULL)."""
@@ -95,7 +118,7 @@ def _policy_to_response(policy: Policy) -> dict:
 # =====================================================================
 
 @router.post("/policies", status_code=201)
-async def create_policy(req: PolicyCreate, db: Session = Depends(get_db)):
+async def create_policy(req: PolicyCreate, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Create a policy with an initial version and rules."""
     try:
         # Uniqueness check (tenant_id + code)
@@ -157,9 +180,16 @@ async def create_policy(req: PolicyCreate, db: Session = Depends(get_db)):
         # Store denormalised copy
         version.rules_json = rules_json
 
+        _emit_policy_event(
+            db, tenant_id=policy.tenant_id, aggregate_type="policy",
+            aggregate_id=policy.policy_id, event_type="policy.created",
+            payload={"code": policy.code, "name": policy.name, "policy_type": policy.policy_type, "tenant_id": str(policy.tenant_id) if policy.tenant_id else None},
+        )
+
         db.commit()
         db.refresh(policy)
 
+        invalidate_policies(str(policy.tenant_id) if policy.tenant_id else "*", str(policy.policy_id))
         logger.info(f"Created policy {policy.code} ({policy.policy_id})")
         return _policy_to_response(policy)
 
@@ -229,7 +259,7 @@ async def get_policy(policy_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/policies/{policy_id}")
-async def update_policy(policy_id: str, req: PolicyUpdate, db: Session = Depends(get_db)):
+async def update_policy(policy_id: str, req: PolicyUpdate, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Update policy metadata. If `rules` is provided, a new version is created."""
     policy = db.query(Policy).filter(Policy.policy_id == uuid.UUID(policy_id)).first()
     if not policy:
@@ -290,14 +320,21 @@ async def update_policy(policy_id: str, req: PolicyUpdate, db: Session = Depends
             })
         new_ver.rules_json = rules_json
 
+    _emit_policy_event(
+        db, tenant_id=policy.tenant_id, aggregate_type="policy",
+        aggregate_id=policy.policy_id, event_type="policy.updated",
+        payload={"code": policy.code, "name": policy.name, "policy_type": policy.policy_type, "tenant_id": str(policy.tenant_id) if policy.tenant_id else None},
+    )
+
     db.commit()
     db.refresh(policy)
 
+    invalidate_policies(str(policy.tenant_id) if policy.tenant_id else "*", str(policy.policy_id))
     return _policy_to_response(policy)
 
 
 @router.delete("/policies/{policy_id}", status_code=200)
-async def delete_policy(policy_id: str, db: Session = Depends(get_db)):
+async def delete_policy(policy_id: str, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Soft-delete a policy (archive it)."""
     policy = db.query(Policy).filter(Policy.policy_id == uuid.UUID(policy_id)).first()
     if not policy:
@@ -305,8 +342,16 @@ async def delete_policy(policy_id: str, db: Session = Depends(get_db)):
 
     policy.status = "archived"
     policy.is_active = False
+
+    _emit_policy_event(
+        db, tenant_id=policy.tenant_id, aggregate_type="policy",
+        aggregate_id=policy.policy_id, event_type="policy.deleted",
+        payload={"code": policy.code, "tenant_id": str(policy.tenant_id) if policy.tenant_id else None},
+    )
+
     db.commit()
 
+    invalidate_policies(str(policy.tenant_id) if policy.tenant_id else "*", str(policy.policy_id))
     logger.info(f"Archived policy {policy.code} ({policy.policy_id})")
     return {"policy_id": str(policy.policy_id), "status": "archived"}
 
@@ -316,7 +361,7 @@ async def delete_policy(policy_id: str, db: Session = Depends(get_db)):
 # =====================================================================
 
 @router.post("/policies/{policy_id}/rules", status_code=201)
-async def add_rule(policy_id: str, req: PolicyRuleCreate, db: Session = Depends(get_db)):
+async def add_rule(policy_id: str, req: PolicyRuleCreate, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Add a rule to the current version of a policy."""
     version = _get_current_version(db, uuid.UUID(policy_id))
     if not version:
@@ -335,6 +380,13 @@ async def add_rule(policy_id: str, req: PolicyRuleCreate, db: Session = Depends(
         is_active=req.is_active,
     )
     db.add(rule)
+
+    _emit_policy_event(
+        db, tenant_id=None, aggregate_type="policy_rule",
+        aggregate_id=rule.rule_id, event_type="policy_rule.created",
+        payload={"policy_id": str(version.policy_id), "rule_name": rule.name},
+    )
+
     db.commit()
     db.refresh(rule)
 
@@ -348,7 +400,7 @@ async def add_rule(policy_id: str, req: PolicyRuleCreate, db: Session = Depends(
 
 
 @router.put("/policies/{policy_id}/rules/{rule_id}")
-async def update_rule(policy_id: str, rule_id: str, req: PolicyRuleUpdate, db: Session = Depends(get_db)):
+async def update_rule(policy_id: str, rule_id: str, req: PolicyRuleUpdate, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Update a single rule."""
     rule = db.query(PolicyRule).filter(PolicyRule.rule_id == uuid.UUID(rule_id)).first()
     if not rule:
@@ -357,6 +409,12 @@ async def update_rule(policy_id: str, rule_id: str, req: PolicyRuleUpdate, db: S
     update_data = req.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(rule, key, value)
+
+    _emit_policy_event(
+        db, tenant_id=None, aggregate_type="policy_rule",
+        aggregate_id=rule.rule_id, event_type="policy_rule.updated",
+        payload={"policy_id": str(policy_id), "rule_name": rule.name},
+    )
 
     db.commit()
     db.refresh(rule)
@@ -370,13 +428,20 @@ async def update_rule(policy_id: str, rule_id: str, req: PolicyRuleUpdate, db: S
 
 
 @router.delete("/policies/{policy_id}/rules/{rule_id}", status_code=200)
-async def delete_rule(policy_id: str, rule_id: str, db: Session = Depends(get_db)):
+async def delete_rule(policy_id: str, rule_id: str, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Soft-delete a rule (deactivate it)."""
     rule = db.query(PolicyRule).filter(PolicyRule.rule_id == uuid.UUID(rule_id)).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
     rule.is_active = False
+
+    _emit_policy_event(
+        db, tenant_id=None, aggregate_type="policy_rule",
+        aggregate_id=rule.rule_id, event_type="policy_rule.deleted",
+        payload={"policy_id": str(policy_id), "rule_name": rule.name},
+    )
+
     db.commit()
     return {"rule_id": str(rule.rule_id), "is_active": False}
 
@@ -386,7 +451,7 @@ async def delete_rule(policy_id: str, rule_id: str, db: Session = Depends(get_db
 # =====================================================================
 
 @router.post("/policies/{policy_id}/assignments", status_code=201)
-async def create_assignment(policy_id: str, req: PolicyAssignmentCreate, db: Session = Depends(get_db)):
+async def create_assignment(policy_id: str, req: PolicyAssignmentCreate, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Create a policy assignment (scoping)."""
     policy = db.query(Policy).filter(Policy.policy_id == uuid.UUID(policy_id)).first()
     if not policy:
@@ -404,6 +469,13 @@ async def create_assignment(policy_id: str, req: PolicyAssignmentCreate, db: Ses
         valid_until=req.valid_until,
     )
     db.add(assignment)
+
+    _emit_policy_event(
+        db, tenant_id=policy.tenant_id, aggregate_type="policy_assignment",
+        aggregate_id=assignment.assignment_id, event_type="policy_assignment.created",
+        payload={"policy_id": str(policy.policy_id), "scope_type": assignment.scope_type, "action_pattern": assignment.action_pattern},
+    )
+
     db.commit()
     db.refresh(assignment)
 
@@ -444,7 +516,7 @@ async def list_assignments(policy_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/policies/{policy_id}/assignments/{assignment_id}", status_code=200)
-async def delete_assignment(policy_id: str, assignment_id: str, db: Session = Depends(get_db)):
+async def delete_assignment(policy_id: str, assignment_id: str, db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Deactivate a policy assignment."""
     assignment = db.query(PolicyAssignment).filter(
         PolicyAssignment.assignment_id == uuid.UUID(assignment_id),
@@ -454,6 +526,13 @@ async def delete_assignment(policy_id: str, assignment_id: str, db: Session = De
         raise HTTPException(status_code=404, detail="Assignment not found")
 
     assignment.is_active = False
+
+    _emit_policy_event(
+        db, tenant_id=None, aggregate_type="policy_assignment",
+        aggregate_id=assignment.assignment_id, event_type="policy_assignment.deleted",
+        payload={"policy_id": str(policy_id), "assignment_id": str(assignment.assignment_id)},
+    )
+
     db.commit()
     return {"assignment_id": str(assignment.assignment_id), "is_active": False}
 
@@ -578,11 +657,27 @@ _DEFAULT_POLICIES: List[Dict[str, Any]] = [
         "rules": [{"name": "Cross-tenant access", "condition": "subject.tenant_id != resource.tenant_id", "effect": "deny", "reason": "Cross-tenant access is not allowed"}],
         "action_pattern": "*",
     },
+    {
+        "code": "product.visibility",
+        "name": "Product Visibility — Approved Range",
+        "policy_type": "access",
+        "priority": 5,
+        "rules": [{"name": "Product not in approved range", "condition": "subject.approved_product_ids != '__all__' and not resource.product_id in subject.approved_product_ids", "effect": "deny", "reason": "This product is not in your approved range"}],
+        "action_pattern": "product.search",
+    },
+    {
+        "code": "vendor.portal_access",
+        "name": "Vendor Portal Access Control",
+        "policy_type": "access",
+        "priority": 5,
+        "rules": [{"name": "Non-vendor portal access", "condition": "resource.portal == 'vendor' and not 'vendor_admin' in subject.roles and not 'vendor_staff' in subject.roles", "effect": "deny", "reason": "Only vendor users can access the vendor portal"}],
+        "action_pattern": "vendor.*",
+    },
 ]
 
 
 @router.post("/policies/seed")
-async def seed_default_policies(db: Session = Depends(get_db)):
+async def seed_default_policies(db: Session = Depends(get_db), auth=Depends(require_policy_admin())):
     """Seed the default (global) policies. Idempotent — skips existing codes."""
     seeded = 0
     skipped = 0
@@ -645,7 +740,14 @@ async def seed_default_policies(db: Session = Depends(get_db)):
         seeded += 1
         details.append(f"Seeded: {defn['code']}")
 
+    _emit_policy_event(
+        db, tenant_id=None, aggregate_type="policy",
+        aggregate_id=uuid.uuid4(), event_type="policy.seed_completed",
+        payload={"seeded": seeded, "skipped": skipped},
+    )
+
     db.commit()
+    invalidate_policies()
     logger.info(f"Policy seed: seeded={seeded}, skipped={skipped}")
     return {"seeded": seeded, "skipped": skipped, "details": details}
 

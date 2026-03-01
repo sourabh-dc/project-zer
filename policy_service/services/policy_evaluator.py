@@ -20,6 +20,7 @@ from policy_service.Schemas import EvaluateRequest, EvaluateResponse
 from policy_service.core.db_config import get_db
 from policy_service.core.expression_parser import evaluate_condition, PolicyEvaluationError
 from policy_service.core.context_enricher import enrich_subject
+from policy_service.core.cache import cache_get, cache_set, USER_CONTEXT_TTL, POLICY_TTL
 from policy_service.utils.logger import logger
 
 router = APIRouter(prefix="/evaluate", tags=["Policy Evaluation"])
@@ -166,7 +167,7 @@ def _evaluate_policies(
                 # Interpolate context values into reason string
                 try:
                     reason = reason.format(**context.get("subject", {}), **context.get("resource", {}))
-                except (KeyError, IndexError, ValueError):
+                except (KeyError, IndexError, ValueError, TypeError):
                     pass
                 matched.append(match_info)
                 return {"decision": "deny", "reason": reason, "matched": matched}
@@ -175,7 +176,7 @@ def _evaluate_policies(
                 reason = rule.denial_reason or f"Approval required by policy {policy.code}: {rule.name}"
                 try:
                     reason = reason.format(**context.get("subject", {}), **context.get("resource", {}))
-                except (KeyError, IndexError, ValueError):
+                except (KeyError, IndexError, ValueError, TypeError):
                     pass
                 require_approval_reasons.append(reason)
                 require_approval_info.append(match_info)
@@ -215,11 +216,14 @@ async def _do_evaluate(req: EvaluateRequest, db: Session, dry_run: bool) -> dict
     start = time.perf_counter()
 
     try:
-        # 1. Enrich subject context from DB
+        # 1. Enrich subject context (check cache first, then DB)
         user_id = req.subject.get("user_id")
         if user_id:
-            enriched = enrich_subject(db, user_id, str(req.tenant_id))
-            # merge: request subject values override enriched (caller can override)
+            cache_key = f"user_context:{user_id}"
+            enriched = cache_get(cache_key)
+            if enriched is None:
+                enriched = enrich_subject(db, user_id, str(req.tenant_id))
+                cache_set(cache_key, enriched, ttl=USER_CONTEXT_TTL)
             merged_subject = {**enriched, **req.subject}
         else:
             merged_subject = req.subject
@@ -232,9 +236,10 @@ async def _do_evaluate(req: EvaluateRequest, db: Session, dry_run: bool) -> dict
         # 2. Fetch applicable policies
         applicable = _fetch_applicable_policies(db, req.action, req.tenant_id)
 
-        # 3. Evaluate
+        # 3. Evaluate — default-deny per governance-first engineering doctrine
+        # Per engineering doc §1.5.1: "If no departments or no approvals → return empty set"
         if not applicable:
-            result = {"decision": "allow", "reason": "No applicable policies found", "matched": []}
+            result = {"decision": "deny", "reason": "No applicable policies found — denied by default (governance-first)", "matched": []}
         else:
             result = _evaluate_policies(applicable, context)
 

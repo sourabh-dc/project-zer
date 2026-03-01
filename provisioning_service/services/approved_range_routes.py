@@ -14,6 +14,7 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.utils.logger import logger
 
@@ -30,6 +31,7 @@ async def create_approved_range(
     req: ApprovedRangeCreateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.create")),
 ):
     """Create a new approved range for the tenant."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -172,6 +174,7 @@ async def update_approved_range(
     req: ApprovedRangeUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.update")),
 ):
     """Update an approved range's name, description, or universal flag."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -228,6 +231,7 @@ async def delete_approved_range(
     approved_range_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.delete", resource_from="none")),
 ):
     """Soft-delete an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -267,6 +271,7 @@ async def map_org_units_to_range(
     req: ApprovedRangeOrgUnitRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.map_org_unit")),
 ):
     """Map one or more org units to an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -335,6 +340,7 @@ async def remove_org_unit_from_range(
     org_unit_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.unmap_org_unit", resource_from="none")),
 ):
     """Remove an org unit mapping from an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -415,6 +421,7 @@ async def add_products_to_range(
     req: ApprovedRangeProductRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.add_products")),
 ):
     """Add one or more products to an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
@@ -460,6 +467,17 @@ async def add_products_to_range(
         added.append(pid_str)
 
     if added:
+        product_details = {}
+        for pid_str in added:
+            p = db.query(Product).filter(Product.product_id == uuid.UUID(pid_str)).first()
+            if p:
+                product_details[pid_str] = {
+                    "display_name": p.display_name,
+                    "sku": getattr(p, "sku", ""),
+                    "item_code": getattr(p, "item_code", ""),
+                    "category_id": str(p.category_id) if p.category_id else None,
+                }
+
         outbox = append_outbox_event(
             db,
             tenant_id=tenant_id,
@@ -469,6 +487,8 @@ async def add_products_to_range(
             payload={
                 "approved_range_id": str(ar.approved_range_id),
                 "product_ids": added,
+                "product_details": product_details,
+                "tenant_id": str(tenant_id),
             },
         )
         db.commit()
@@ -485,6 +505,7 @@ async def remove_product_from_range(
     product_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("approved_range.remove_product", resource_from="none")),
 ):
     """Remove a product from an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id

@@ -11,6 +11,7 @@ from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox import append_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -47,7 +48,8 @@ def _period_end(start: datetime, cycle: str) -> datetime:
 async def create_checkout_session(
     data: CheckoutRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx = Depends(check_user_authorization("tenant.admin")),
+    policy = Depends(require_policy("payment.create_checkout_session"))
 ):
     try:
         if not SETTINGS.STRIPE_SECRET_KEY:
@@ -97,7 +99,8 @@ async def create_checkout_session(
 @router.post("/create-portal-session")
 async def create_portal_session(
     cust_id: str,
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx = Depends(check_user_authorization("tenant.admin")),
+    policy = Depends(require_policy("payment.create_portal_session"))
 ):
     try:
         session = stripe.billing_portal.Session.create(

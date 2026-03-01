@@ -1,40 +1,35 @@
 from typing import Optional
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 from dotenv import load_dotenv
 import os
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Get values from environment
 keyvault_name = os.getenv("KEYVAULT_NAME")
-vault_url = f"https://{keyvault_name}.vault.azure.net"
-
-# Authenticate using App Registration credentials
-credential = DefaultAzureCredential()
-client = SecretClient(vault_url=vault_url, credential=credential)
-
 environment = os.getenv("ENVIRONMENT", "Development")
-# Retrieve the secret
-if environment == "Development":
-    db_name = client.get_secret("dbName").value
-    db_password = client.get_secret("dbPassword").value
-    db_host = client.get_secret("dbHost").value
-    db_username = client.get_secret("dbUsername").value
-    stripe_secret_key = client.get_secret("stripeSecretKey").value
-    stripe_webhook_secret = client.get_secret("stripeWebhookSecret").value
-    email_conn_string = client.get_secret("azure-email").value
+
+if keyvault_name and environment == "Development":
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
+    vault_url = f"https://{keyvault_name}.vault.azure.net"
+    credential = DefaultAzureCredential()
+    _kv_client = SecretClient(vault_url=vault_url, credential=credential)
+    db_name = _kv_client.get_secret("dbName").value
+    db_password = _kv_client.get_secret("dbPassword").value
+    db_host = _kv_client.get_secret("dbHost").value
+    db_username = _kv_client.get_secret("dbUsername").value
+    stripe_secret_key = _kv_client.get_secret("stripeSecretKey").value
+    stripe_webhook_secret = _kv_client.get_secret("stripeWebhookSecret").value
+    email_conn_string = _kv_client.get_secret("azure-email").value
 else:
-    db_name = os.getenv("POSTGRES_DB")
-    db_password = os.getenv("POSTGRES_PASSWORD")
-    db_host = os.getenv("POSTGRES_HOST")
-    db_username = os.getenv("POSTGRES_USER")
-    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
-    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-    email_conn_string = os.getenv("AZURE_EMAIL_CONNECTION_STRING")
+    db_name = os.getenv("POSTGRES_DB", "zeroque_dev")
+    db_password = os.getenv("POSTGRES_PASSWORD", "zeroque_dev_password")
+    db_host = os.getenv("POSTGRES_HOST", "localhost")
+    db_username = os.getenv("POSTGRES_USER", "zeroque")
+    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", "")
+    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    email_conn_string = os.getenv("AZURE_EMAIL_CONNECTION_STRING", "")
 
 
 class Settings(BaseSettings):

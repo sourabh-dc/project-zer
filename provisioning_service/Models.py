@@ -19,6 +19,7 @@ class Tenant(Base):
     tenant_name = Column(String, nullable=False, index=True)
     tenant_type = Column(String, nullable=False)  # retailer/brand/franchisee
     email = Column(String, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     registration_number = Column(String, nullable=True)
@@ -45,6 +46,7 @@ class Site(Base):
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
     site_type = Column(String, nullable=False)  # mall/campus/DC/online-hub
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     currency = Column(String(3), nullable=True)
@@ -75,6 +77,7 @@ class Store(Base):
 
     name = Column(String, nullable=False)
     store_type = Column(String, nullable=False)  # physical/online/kiosk/darkstore
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     currency = Column(String(3), nullable=True)
@@ -104,6 +107,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)  # required
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     display_name = Column(String, nullable=True)
@@ -209,6 +213,7 @@ class OrgUnit(Base):
 
     name = Column(String, nullable=False)
     type = Column(String, nullable=False, index=True)  # department/division/team
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
 
     parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
     code = Column(String, nullable=True)
@@ -247,6 +252,7 @@ class Vendor(Base):
     name = Column(String(255), nullable=False)
     contact_email = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -296,6 +302,7 @@ class Fit(Base):
 
     fit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -327,6 +334,7 @@ class CostCentre(Base):
     description = Column(String(500), nullable=True)
     owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -442,6 +450,7 @@ class Feature(Base):
     max_unit = Column(String(50), nullable=True)  # reports, users, GB, requests
     reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
 
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -535,6 +544,7 @@ class Category(Base):
     code = Column(String(100), nullable=False, index=True)
     description = Column(String(500), nullable=True)
     parent_category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -621,6 +631,7 @@ class Product(Base):
     restricted = Column(Boolean, nullable=False, default=False, index=True)  # Restricted product flag
     product_metadata = Column(JSONB, nullable=True)  # Flexible JSON for extra data
     comments = Column(Text, nullable=True)  # Free-text notes/comments
+    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
     active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
     deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete timestamp
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)

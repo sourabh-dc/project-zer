@@ -21,6 +21,7 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.utils.logger import logger
 
@@ -35,7 +36,8 @@ router = APIRouter(prefix="/catalog", tags=["Catalog"])
 async def create_category(
     req: CategoryRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("category.create")),
 ):
     try:
         tenant_id = ctx.tenant_id if hasattr(ctx, 'tenant_id') else ctx.get('tenant_id')
@@ -159,6 +161,133 @@ async def list_categories(
     }
 
 
+@router.put("/categories/{category_id}")
+async def update_category(
+    category_id: str,
+    name: Optional[str] = Query(None),
+    code: Optional[str] = Query(None),
+    description: Optional[str] = Query(None),
+    parent_category_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("category.update")),
+):
+    try:
+        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+
+        category = db.query(Category).filter(
+            Category.category_id == UUID(category_id),
+            Category.tenant_id == tenant_id,
+            Category.status != "deleted"
+        ).first()
+        if not category:
+            raise HTTPException(404, "Category not found")
+
+        if name is not None:
+            category.name = name.strip()
+        if code is not None:
+            existing = db.query(Category).filter(
+                Category.tenant_id == tenant_id,
+                Category.code == code.strip(),
+                Category.category_id != category.category_id,
+                Category.active == True
+            ).first()
+            if existing:
+                raise HTTPException(409, "Category code already exists")
+            category.code = code.strip()
+        if description is not None:
+            category.description = description
+        if parent_category_id is not None:
+            if parent_category_id == "":
+                category.parent_category_id = None
+            else:
+                try:
+                    pid = UUID(parent_category_id)
+                except ValueError:
+                    raise HTTPException(400, "Invalid parent_category_id format")
+                parent = db.query(Category).filter(
+                    Category.category_id == pid,
+                    Category.tenant_id == tenant_id,
+                    Category.active == True
+                ).first()
+                if not parent:
+                    raise HTTPException(404, "Parent category not found")
+                category.parent_category_id = pid
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            aggregate_type="category",
+            aggregate_id=category.category_id,
+            event_type="category.updated",
+            payload={
+                "category_id": str(category.category_id),
+                "name": category.name,
+                "code": category.code,
+                "tenant_id": str(tenant_id),
+            },
+        )
+        db.commit()
+        db.refresh(category)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "category_id": str(category.category_id),
+            "name": category.name,
+            "code": category.code,
+            "description": category.description,
+            "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
+            "active": category.active,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update category failed: {e}")
+        raise HTTPException(500, f"Internal server error")
+
+
+@router.delete("/categories/{category_id}", status_code=200)
+async def delete_category(
+    category_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("category.delete", resource_from="none")),
+):
+    try:
+        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+
+        category = db.query(Category).filter(
+            Category.category_id == UUID(category_id),
+            Category.tenant_id == tenant_id,
+            Category.status != "deleted"
+        ).first()
+        if not category:
+            raise HTTPException(404, "Category not found")
+
+        category.status = "deleted"
+        category.active = False
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            aggregate_type="category",
+            aggregate_id=category.category_id,
+            event_type="category.deleted",
+            payload={"category_id": str(category.category_id), "tenant_id": str(tenant_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "category_id": category_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete category failed: {e}")
+        raise HTTPException(500, "Internal server error")
+
+
 # =============================================================================
 # PRODUCT ENDPOINTS
 # =============================================================================
@@ -167,7 +296,8 @@ async def list_categories(
 async def create_product(
     req: ProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.create")),
 ):
     if str(ctx["tenant_id"]) != req.tenant_id:
         raise HTTPException(403, "Tenant mismatch")
@@ -447,7 +577,8 @@ async def list_products(
     limit: int = Query(100, le=500),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.search", resource_from="none")),
 ):
     tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
     user_id = ctx["user_id"] if isinstance(ctx, dict) else ctx.user_id
@@ -509,6 +640,174 @@ async def list_products(
     }
 
 
+@router.put("/products/{product_id}")
+async def update_product(
+    product_id: str,
+    display_name: Optional[str] = Query(None),
+    sales_description: Optional[str] = Query(None),
+    purchase_description: Optional[str] = Query(None),
+    purchase_price_minor: Optional[int] = Query(None),
+    restricted: Optional[bool] = Query(None),
+    active: Optional[bool] = Query(None),
+    category_id: Optional[str] = Query(None),
+    vendor_id: Optional[str] = Query(None),
+    web_display_name: Optional[str] = Query(None),
+    detailed_description: Optional[str] = Query(None),
+    weight: Optional[float] = Query(None),
+    weight_unit: Optional[str] = Query(None),
+    currency: Optional[str] = Query(None),
+    tax_rate: Optional[int] = Query(None),
+    search_keywords: Optional[str] = Query(None),
+    comments: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.update")),
+):
+    try:
+        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+
+        product = db.query(Product).filter(
+            Product.product_id == UUID(product_id),
+            Product.tenant_id == tenant_id,
+            Product.status != "deleted"
+        ).first()
+        if not product:
+            raise HTTPException(404, "Product not found")
+
+        if display_name is not None:
+            product.display_name = display_name.strip()
+        if sales_description is not None:
+            product.sales_description = sales_description
+        if purchase_description is not None:
+            product.purchase_description = purchase_description
+        if purchase_price_minor is not None:
+            product.purchase_price_minor = purchase_price_minor
+        if restricted is not None:
+            product.restricted = restricted
+        if active is not None:
+            product.active = active
+        if category_id is not None:
+            if category_id == "":
+                product.category_id = None
+            else:
+                try:
+                    cat_uuid = UUID(category_id)
+                except ValueError:
+                    raise HTTPException(400, "Invalid category_id")
+                if not db.query(Category).filter(
+                    Category.category_id == cat_uuid,
+                    Category.tenant_id == tenant_id,
+                    Category.active == True
+                ).first():
+                    raise HTTPException(404, "Category not found")
+                product.category_id = cat_uuid
+        if vendor_id is not None:
+            if vendor_id == "":
+                product.vendor_id = None
+            else:
+                try:
+                    v_uuid = UUID(vendor_id)
+                except ValueError:
+                    raise HTTPException(400, "Invalid vendor_id")
+                if not db.query(Vendor).filter(
+                    Vendor.vendor_id == v_uuid,
+                    Vendor.tenant_id == tenant_id
+                ).first():
+                    raise HTTPException(404, "Vendor not found")
+                product.vendor_id = v_uuid
+        if web_display_name is not None:
+            product.web_display_name = web_display_name
+        if detailed_description is not None:
+            product.detailed_description = detailed_description
+        if weight is not None:
+            product.weight = weight
+        if weight_unit is not None:
+            product.weight_unit = weight_unit
+        if currency is not None:
+            product.currency = currency
+        if tax_rate is not None:
+            product.tax_rate = tax_rate
+        if search_keywords is not None:
+            product.search_keywords = search_keywords
+        if comments is not None:
+            product.comments = comments
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            aggregate_type="product",
+            aggregate_id=product.product_id,
+            event_type="product.updated",
+            payload={
+                "product_id": str(product.product_id),
+                "sku": product.sku,
+                "display_name": product.display_name,
+                "tenant_id": str(tenant_id),
+            },
+        )
+        db.commit()
+        db.refresh(product)
+        await notify_outbox(str(outbox.id))
+
+        return {
+            "product_id": str(product.product_id),
+            "sku": product.sku,
+            "ean": product.ean,
+            "display_name": product.display_name,
+            "purchase_price_minor": product.purchase_price_minor,
+            "active": product.active,
+            "category_id": str(product.category_id) if product.category_id else None,
+            "vendor_id": str(product.vendor_id) if product.vendor_id else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update product failed: {e}")
+        raise HTTPException(500, "Internal server error")
+
+
+@router.delete("/products/{product_id}", status_code=200)
+async def delete_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.delete", resource_from="none")),
+):
+    try:
+        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+
+        product = db.query(Product).filter(
+            Product.product_id == UUID(product_id),
+            Product.tenant_id == tenant_id,
+            Product.status != "deleted"
+        ).first()
+        if not product:
+            raise HTTPException(404, "Product not found")
+
+        product.status = "deleted"
+        product.active = False
+
+        outbox = append_outbox_event(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            aggregate_type="product",
+            aggregate_id=product.product_id,
+            event_type="product.deleted",
+            payload={"product_id": str(product.product_id), "tenant_id": str(tenant_id)},
+        )
+        db.commit()
+        await notify_outbox(str(outbox.id))
+
+        return {"deleted": True, "product_id": product_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete product failed: {e}")
+        raise HTTPException(500, "Internal server error")
+
+
 # =============================================================================
 # VARIANT ENDPOINTS
 # =============================================================================
@@ -517,7 +816,8 @@ async def list_products(
 async def create_variant(
     req: VariantRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("variant.create")),
 ):
     # Check entitlement limit
     check_feature_limit(db, str(ctx.tenant_id), "variants", count=1)
@@ -573,7 +873,8 @@ async def create_variant(
 async def add_product_to_store(
     req: StoreProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("stores.manage"))
+    ctx: UserContext = Depends(check_user_authorization("stores.manage")),
+    policy=Depends(require_policy("store_product.create")),
 ):
     # Check entitlement limit
     check_feature_limit(db, str(ctx["tenant_id"]), "store_products", count=1)
@@ -742,7 +1043,8 @@ async def list_store_products(
 async def bulk_upload_products(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.bulk_upload")),
 ):
     """
     Bulk upload products from an Excel file.

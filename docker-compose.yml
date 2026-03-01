@@ -1,7 +1,7 @@
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (with pgvector extension)
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: zeroque-postgres
     environment:
       POSTGRES_USER: zeroque
@@ -31,16 +31,37 @@ services:
       timeout: 5s
       retries: 5
 
-  # Provisioning Service
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5-community
+    container_name: zeroque-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/zeroque_graph_password
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p zeroque_graph_password 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # Provisioning Service (port 8000)
   provisioning:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        SERVICE: provisioning_service
     container_name: zeroque-provisioning
     environment:
       DATABASE_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
       REDIS_URL: redis://redis:6379/0
-      PORT: 8000
+      POLICY_ENGINE_URL: http://policy:8004
+      PORT: "8000"
       LOG_LEVEL: INFO
       ALLOW_ORIGINS: "*"
     ports:
@@ -52,8 +73,118 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Policy Service (port 8004)
+  policy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: policy_service
+    container_name: zeroque-policy
+    environment:
+      DATABASE_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      REDIS_URL: redis://redis:6379/1
+      JWT_SECRET: mock-secret
+      JWT_ALGORITHM: HS256
+      PORT: "8004"
+      LOG_LEVEL: INFO
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Graph Service — Neo4j projection (port 8005)
+  graph:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: graph_service
+    container_name: zeroque-graph
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: zeroque_graph_password
+      NEO4J_DATABASE: neo4j
+      POSTGRES_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      PORT: "8005"
+      LOG_LEVEL: INFO
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Vector Service — pgvector projection (port 8006)
+  vector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: vector_service
+    container_name: zeroque-vector
+    environment:
+      POSTGRES_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      GRAPH_SERVICE_URL: http://graph:8005
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-06-01}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
+      PORT: "8006"
+      LOG_LEVEL: INFO
+    ports:
+      - "8006:8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      graph:
+        condition: service_started
+    restart: unless-stopped
+
+  # Intelligence Service — GraphRAG query layer (port 8007)
+  intelligence:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: intelligence_service
+    container_name: zeroque-intelligence
+    environment:
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-06-01}
+      AZURE_OPENAI_LLM_DEPLOYMENT: ${AZURE_OPENAI_LLM_DEPLOYMENT:-gpt-5-nano}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
+      POSTGRES_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: zeroque_graph_password
+      NEO4J_DATABASE: neo4j
+      GRAPH_SERVICE_URL: http://graph:8005
+      VECTOR_SERVICE_URL: http://vector:8006
+      PORT: "8007"
+      LOG_LEVEL: INFO
+    ports:
+      - "8007:8007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      graph:
+        condition: service_started
+      vector:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
-
-
+  neo4j_data:
