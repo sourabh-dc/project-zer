@@ -6,16 +6,12 @@ from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from starlette.responses import  Response
-import json
-from azure.servicebus import ServiceBusMessage
-from azure.identity.aio import DefaultAzureCredential
-from azure.servicebus.aio import ServiceBusClient
+from starlette.responses import Response
 
 from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
     SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
-    CostCenterBudget, VendorUser, OutboxEvent
+    CostCenterBudget, VendorUser
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
@@ -558,6 +554,18 @@ async def update_site(
         db.commit()
         db.refresh(site)
 
+        # Outbox audit event
+        try:
+            _st = db.query(SiteTenant).filter(SiteTenant.site_id == site.site_id).first()
+            _tid = _st.tenant_id if _st else uuid.uuid4()
+            create_outbox_event(
+                db, _tid, "site.updated",
+                {"site_id": str(site.site_id), "name": site.name, "updated_fields": list(update_data.keys())},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for site.updated: {_oe}")
+
         logger.info(f"✅ Updated site: {site.site_id}")
         return {
             "site_id": str(site.site_id),
@@ -596,6 +604,15 @@ async def delete_site(
         site.active = False
         site.updated_at = datetime.now(timezone.utc)
         db.commit()
+
+        # Outbox audit event
+        try:
+            _st = db.query(SiteTenant).filter(SiteTenant.site_id == site.site_id).first()
+            _tid = _st.tenant_id if _st else uuid.uuid4()
+            create_outbox_event(db, _tid, "site.deleted", {"site_id": site_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for site.deleted: {_oe}")
 
         logger.info(f"✅ Soft-deleted site: {site_id}")
         return Response(status_code=204)
@@ -664,6 +681,16 @@ async def create_store(
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "stores.manage", count=1)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, req.tenant_id, "store.created",
+                {"store_id": str(store.store_id), "name": store.name, "tenant_id": req.tenant_id},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for store.created: {_oe}")
+
         req_total.labels(operation="create_store", status="success").inc()
         req_duration.labels(operation="create_store").observe(
             (datetime.now() - start).total_seconds()
@@ -725,6 +752,16 @@ async def update_store(
         store.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(store)
+
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, store.tenant_id, "store.updated",
+                {"store_id": str(store.store_id), "name": store.name, "updated_fields": list(update_data.keys())},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for store.updated: {_oe}")
 
         req_total.labels(operation="update_store", status="success").inc()
         req_duration.labels(operation="update_store").observe(
@@ -861,6 +898,13 @@ async def delete_store(
         store.updated_at = datetime.now(timezone.utc)
         db.commit()
 
+        # Outbox audit event
+        try:
+            create_outbox_event(db, store.tenant_id, "store.deleted", {"store_id": store_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for store.deleted: {_oe}")
+
         logger.info(f"✅ Soft-deleted store: {store_id}")
         return Response(status_code=204)
     except ValueError:
@@ -925,8 +969,6 @@ async def create_user(
         db.refresh(user)
 
         # Create outbox event for post-create processing (e.g., aiFi sync) and send outbox_id to queue
-        from provisioning_service.Models import OutboxEvent
-
         event_data = {
             "user_id": str(user.user_id),
             "tenant_id": str(user.tenant_id),
@@ -934,22 +976,14 @@ async def create_user(
             "first_name": user.first_name,
             "last_name": user.last_name
         }
-
-        outbox = OutboxEvent(
-            tenant_id=user.tenant_id,
-            event_type="user.created",
-            event_data=event_data,
-            status="pending",
-        )
-        db.add(outbox)
+        outbox = create_outbox_event(db, user.tenant_id, "user.created", event_data, status="pending")
         db.commit()
-        db.refresh(outbox)
 
         try:
             from provisioning_service.core.sb_client import messaging_service
             await messaging_service.send_outbox_message(str(outbox.id))
         except Exception as e:
-            # The "Relay" will pick this up later if the notify fails.
+            # The outbox worker will pick this up later if the notify fails.
             logger.warning(f"Failed to notify Service Bus: {e}")
 
         # Record feature usage
@@ -1095,6 +1129,16 @@ async def update_user(
         db.commit()
         db.refresh(user)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, user.tenant_id, "user.updated",
+                {"user_id": str(user.user_id), "updated_fields": list(update_data.keys())},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for user.updated: {_oe}")
+
         logger.info(f"✅ Updated user: {user.user_id}")
         return {
             "user_id": str(user.user_id),
@@ -1129,6 +1173,13 @@ async def delete_user(
         user.is_active = False
         user.updated_at = datetime.now(timezone.utc)
         db.commit()
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, user.tenant_id, "user.deleted", {"user_id": user_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for user.deleted: {_oe}")
 
         logger.info(f"✅ Soft-deleted user: {user_id}")
         return Response(status_code=204)
@@ -1176,6 +1227,16 @@ async def create_vendor(
         
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "vendors.manage", count=1)
+
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, req.tenant_id, "vendor.created",
+                {"vendor_id": str(vendor.vendor_id), "name": vendor.name, "tenant_id": req.tenant_id},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for vendor.created: {_oe}")
 
         req_total.labels(operation="create_vendor", status="success").inc()
         req_duration.labels(operation="create_vendor").observe(
@@ -1348,6 +1409,16 @@ async def update_vendor(
         db.commit()
         db.refresh(vendor)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, vendor.tenant_id, "vendor.updated",
+                {"vendor_id": str(vendor.vendor_id), "updated_fields": list(update_data.keys())},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for vendor.updated: {_oe}")
+
         logger.info(f"✅ Updated vendor: {vendor.vendor_id}")
         return {
             "vendor_id": str(vendor.vendor_id),
@@ -1381,6 +1452,13 @@ async def delete_vendor(
         vendor.status = "inactive"
         vendor.updated_at = datetime.now(timezone.utc)
         db.commit()
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, vendor.tenant_id, "vendor.deleted", {"vendor_id": vendor_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for vendor.deleted: {_oe}")
 
         logger.info(f"✅ Soft-deleted vendor: {vendor_id}")
         return Response(status_code=204)
@@ -1450,6 +1528,21 @@ async def create_cost_centre(
 
         # Record feature usage
         record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
+
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, req.tenant_id, "cost_centre.created",
+                {
+                    "cost_centre_id": str(cc.cost_centre_id),
+                    "name": cc.name,
+                    "budget_minor": cc_budget.budget_amount_minor,
+                    "tenant_id": req.tenant_id,
+                },
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for cost_centre.created: {_oe}")
 
         req_total.labels(operation="create_cost_centre", status="success").inc()
         req_duration.labels(operation="create_cost_centre").observe(
@@ -1565,6 +1658,16 @@ async def update_cost_centre(
         db.commit()
         db.refresh(cc)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, cc.tenant_id, "cost_centre.updated",
+                {"cost_centre_id": str(cc.cost_centre_id), "updated_fields": list(update_data.keys())},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for cost_centre.updated: {_oe}")
+
         logger.info(f"✅ Updated cost centre: {cc.cost_centre_id}")
         return {
             "cost_centre_id": str(cc.cost_centre_id),
@@ -1610,6 +1713,13 @@ async def delete_cost_centre(
         cc.is_active = False
         cc.updated_at = datetime.now(timezone.utc)
         db.commit()
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, cc.tenant_id, "cost_centre.deleted", {"cost_centre_id": cost_centre_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for cost_centre.deleted: {_oe}")
 
         logger.info(f"✅ Soft-deleted cost centre: {cost_centre_id}")
         return Response(status_code=204)
@@ -1738,6 +1848,22 @@ async def assign_user_to_cost_centre(
         db.commit()
         db.refresh(user_cc)
         db.refresh(cc_budget)
+
+        # Outbox audit event
+        try:
+            user_obj = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+            _tid = user_obj.tenant_id if user_obj else uuid.uuid4()
+            create_outbox_event(
+                db, _tid, "user_cost_centre.assigned",
+                {
+                    "user_id": user_id,
+                    "cost_centre_id": cost_centre_id,
+                    "allocated_minor": allocated_budget_minor,
+                },
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for user_cost_centre.assigned: {_oe}")
 
         logger.info(f"✅ Assigned user {user_id} to cost centre {cost_centre_id} with budget {allocated_budget_minor}")
 
@@ -2011,6 +2137,16 @@ async def create_role(
         req_duration.labels(operation="create_role").observe(
             (datetime.now() - start).total_seconds()
         )
+
+        # Outbox audit event (system-level: no tenant scope → use role_id as surrogate)
+        try:
+            create_outbox_event(
+                db, uuid.uuid4(), "role.created",
+                {"role_id": str(role.role_id), "code": role.code},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for role.created: {_oe}")
 
         logger.info(f"✅ Created role: {role.role_id} ({role.code})")
 
@@ -2348,6 +2484,16 @@ async def assign_role_to_user(
         db.commit()
         db.refresh(user_role)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, user.tenant_id, "user_role.assigned",
+                {"user_id": user_id, "role_id": req.role_id, "role_code": role.code},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for user_role.assigned: {_oe}")
+
         req_total.labels(operation="assign_role", status="success").inc()
         req_duration.labels(operation="assign_role").observe(
             (datetime.now() - start).total_seconds()
@@ -2444,6 +2590,14 @@ async def remove_role_from_user(
         user = db.query(User).filter(User.user_id == user_role.user_id).first()
         db.delete(user_role)
         db.commit()
+
+        # Outbox audit event
+        try:
+            _tid = user.tenant_id if user else uuid.uuid4()
+            create_outbox_event(db, _tid, "user_role.removed", {"user_id": user_id, "role_id": role_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for user_role.removed: {_oe}")
 
         req_total.labels(operation="remove_role", status="success").inc()
         req_duration.labels(operation="remove_role").observe(
@@ -2609,6 +2763,16 @@ async def create_org_unit(
         db.commit()
         db.refresh(ou)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, req.tenant_id, "org_unit.created",
+                {"org_unit_id": str(ou.org_unit_id), "name": ou.name, "type": ou.type},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for org_unit.created: {_oe}")
+
         logger.info(f"Created org unit: {ou.org_unit_id} ({ou.name}) for tenant: {req.tenant_id}")
 
         return {
@@ -2690,6 +2854,16 @@ async def update_org_unit(
         db.commit()
         db.refresh(ou)
 
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, ou.tenant_id, "org_unit.updated",
+                {"org_unit_id": str(ou.org_unit_id), "name": ou.name},
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for org_unit.updated: {_oe}")
+
         logger.info(f"Updated org unit: {ou.org_unit_id}")
 
         return {
@@ -2731,8 +2905,16 @@ async def delete_org_unit(
             raise HTTPException(status_code=400, detail="Org unit has child units; remove or reparent before delete")
 
         # Perform delete (hard delete here - cascade will handle relations)
+        _tid = ou.tenant_id
         db.delete(ou)
         db.commit()
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, _tid, "org_unit.deleted", {"org_unit_id": org_unit_id})
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for org_unit.deleted: {_oe}")
 
         logger.info(f"Deleted org unit: {org_unit_id}")
         return Response(status_code=204)
@@ -2825,6 +3007,20 @@ async def assign_user_to_org_unit(
         db.add(assignment)
         db.commit()
         db.refresh(assignment)
+
+        # Outbox audit event
+        try:
+            create_outbox_event(
+                db, user.tenant_id, "org_unit_assignment.created",
+                {
+                    "user_id": req.user_id,
+                    "org_unit_id": req.org_unit_id,
+                    "role_id": req.role_id,
+                },
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for org_unit_assignment.created: {_oe}")
 
         logger.info(f"Assigned user {user_uuid} to org unit {org_unit_uuid} with role {role_uuid}")
 

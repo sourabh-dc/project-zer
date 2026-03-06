@@ -21,6 +21,16 @@ from provisioning_service.utils.logger import logger
 router = APIRouter(prefix="/approved-ranges", tags=["Approved Ranges"])
 
 
+def require_policy(action: str, resource_from: str = "path"):
+    """
+    Placeholder policy guard.  Returns a no-op FastAPI dependency until a
+    full policy enforcement layer is wired in.
+    """
+    async def _noop():
+        return None
+    return _noop
+
+
 # =============================================================================
 # APPROVED RANGE CRUD
 # =============================================================================

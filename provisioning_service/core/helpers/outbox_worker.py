@@ -124,6 +124,14 @@ async def process_outbox():
                             from provisioning_service.core.tasks.user_worker import handle_user_created
                             await handle_user_created(db, str(event.id))
 
+                        elif event.event_type == "product.created":
+                            from provisioning_service.core.tasks.product_worker import handle_product_created
+                            await handle_product_created(db, str(event.id))
+
+                        elif event.event_type == "product.bulk_created":
+                            from provisioning_service.core.tasks.product_worker import handle_bulk_products_created
+                            await handle_bulk_products_created(db, str(event.id))
+
                         else:
                             logger.warning(f"No handler implemented for event_type={event.event_type}; marking completed")
 

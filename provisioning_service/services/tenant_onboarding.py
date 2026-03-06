@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission, OutboxEvent
+from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission
 from provisioning_service.Schemas import TenantRequest, LoginRequest, LoginResponse
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.metrics import req_total
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
@@ -230,21 +231,14 @@ async def create_tenant(
         event_data = req.dict()
         event_data["tenant_id"] = str(tenant.tenant_id)
 
-        outbox = OutboxEvent(
-            tenant_id=tenant.tenant_id,
-            event_type="tenant.signup",
-            event_data=event_data,
-            status="pending",
-        )
-        db.add(outbox)
+        outbox = create_outbox_event(db, tenant.tenant_id, "tenant.signup", event_data, status="pending")
         db.commit()
-        db.refresh(outbox)
 
         try:
             from provisioning_service.core.sb_client import messaging_service
             await messaging_service.send_outbox_message(str(outbox.id))
         except Exception as e:
-            # The "Relay" will pick this up later if the notify fails.
+            # The outbox worker will pick this up later if the notify fails.
             logger.warning(f"Failed to notify Service Bus: {e}")
 
         return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}

@@ -353,7 +353,22 @@ async def cancel_subscription(
     
     db.commit()
     logger.info(f"Canceled subscription for tenant {req.tenant_id}")
-    
+
+    # Outbox audit event
+    try:
+        create_outbox_event(
+            db, req.tenant_id, "subscription.cancelled",
+            {
+                "tenant_id": str(req.tenant_id),
+                "subscription_id": str(req.subscription_id),
+                "cancel_immediately": req.cancel_immediately,
+                "reason": req.reason,
+            },
+        )
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox event failed for subscription.cancelled: {_oe}")
+
     return {
         "tenant_id": str(req.tenant_id),
         "status": "Cancelled",

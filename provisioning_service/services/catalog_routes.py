@@ -1,6 +1,6 @@
 import uuid
 import io
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -9,7 +9,7 @@ from uuid import UUID
 import pandas as pd
 
 from provisioning_service.Models import (
-    Tenant, Category, Product, Variant, StoreProduct, Store, Vendor,
+    Category, Product, Variant, StoreProduct, Store, Vendor,
     Colour, Size, Fit, UosLabel
 )
 from provisioning_service.Schemas import (
@@ -848,6 +848,21 @@ async def bulk_upload_products(
             db.commit()
             # Record feature usage for all created products
             record_feature_usage(db, str(tenant_id), "products", count=len(created_products))
+            # Single outbox event for the entire batch – the product worker will
+            # iterate the product_ids list and sync each one to AiFi asynchronously.
+            product_ids = [p["product_id"] for p in created_products]
+            bulk_outbox = create_outbox_event(
+                db, tenant_id, "product.bulk_created",
+                {
+                    "product_ids": product_ids,
+                    "tenant_id": str(tenant_id),
+                    "count": len(product_ids),
+                },
+                status="pending",
+            )
+            db.commit()
+            # Dispatch to queue for async AiFi sync
+            await dispatch_outbox_to_queue(bulk_outbox)
         except IntegrityError as e:
             db.rollback()
             logger.error(f"Database error during bulk commit: {e}")
