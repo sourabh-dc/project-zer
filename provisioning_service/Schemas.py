@@ -602,3 +602,31 @@ class SubscribeRequest(BaseModel):
     billing_cycle: str = Field(default="monthly", description="monthly, quarterly, or yearly")
     start_trial: bool = Field(default=True, description="Start with 7-day free trial")
 
+
+# ==================================================================================
+# APPROVED RANGE SCHEMAS
+# ==================================================================================
+
+class ApprovedRangeCreateRequest(BaseModel):
+    """Create an approved range"""
+    name: str = Field(min_length=1, max_length=255, description="Range name")
+    description: Optional[str] = Field(None, max_length=1000, description="Range description")
+    is_universal: bool = Field(default=False, description="If true, applies to all org units")
+
+
+class ApprovedRangeUpdateRequest(BaseModel):
+    """Update an approved range"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Range name")
+    description: Optional[str] = Field(None, max_length=1000, description="Range description")
+    is_universal: Optional[bool] = Field(None, description="If true, applies to all org units")
+
+
+class ApprovedRangeOrgUnitRequest(BaseModel):
+    """Map approved range to org unit(s)"""
+    org_unit_ids: List[str] = Field(min_length=1, description="List of org unit IDs to map")
+
+
+class ApprovedRangeProductRequest(BaseModel):
+    """Add product(s) to an approved range"""
+    product_ids: List[str] = Field(min_length=1, description="List of product IDs to add")
+

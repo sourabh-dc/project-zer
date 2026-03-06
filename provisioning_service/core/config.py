@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     SB_NAMESPACE: str = "zeroque.servicebus.windows.net"
     QUEUE_NAME: str = "outbox-task-queue"
 
+    # Policy Engine integration
+    POLICY_ENGINE_URL: str = Field(default="http://localhost:8004", description="Policy Engine base URL")
+    POLICY_EVALUATE_TIMEOUT: float = Field(default=5.0, description="Timeout in seconds for policy evaluation calls")
+
     EMAIL_CONNECTION_STRING: str = email_conn_string
 
     model_config = ConfigDict(env_file=".env", extra="ignore")

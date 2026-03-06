@@ -18,8 +18,10 @@ from provisioning_service.services.plan_routes import router as plan_router
 from provisioning_service.services.subscriptions_routes import router as subscriptions_router
 from provisioning_service.services.tenant_onboarding import router as onboarding_router
 from provisioning_service.services.payments_routes import router as payments_router
+from provisioning_service.services.approved_range_routes import router as approved_range_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
+from provisioning_service.core.policy_client import policy_client
 
 
 @asynccontextmanager
@@ -55,12 +57,17 @@ async def lifespan(app: FastAPI):
         yield
 
     finally:
-        # Shutdown - stop messaging service cleanly
+        # Shutdown - stop messaging service and policy client cleanly
         try:
             await messaging_service.stop()
             logger.info("✅ Messaging service stopped")
         except Exception as ex:
             logger.warning(f"Messaging service stop failed: {ex}")
+        try:
+            await policy_client.close()
+            logger.info("✅ Policy client closed")
+        except Exception as ex:
+            logger.warning(f"Policy client close failed: {ex}")
 
 
 app = FastAPI(title="Provisioning Service", version="1.0.0", lifespan=lifespan)
@@ -90,6 +97,7 @@ app.include_router(provisioning_router)
 app.include_router(catalog_router)
 app.include_router(plan_router)
 app.include_router(subscriptions_router)
+app.include_router(approved_range_router)
 
 
 @app.get("/health")
