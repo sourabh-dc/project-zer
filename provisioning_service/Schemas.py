@@ -262,6 +262,79 @@ class OrgUnitAssignmentRequest(BaseModel):
     assigned_by: Optional[str] = Field(None, description="Assigned by user ID (UUID, optional)")
 
 
+class SiteUpdateRequest(BaseModel):
+    """Site update request — all fields optional"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    site_type: Optional[str] = Field(None)
+    active: Optional[bool] = None
+    currency: Optional[str] = Field(None, max_length=3)
+    timezone: Optional[str] = None
+    language: Optional[str] = None
+    phone: Optional[str] = None
+    fax: Optional[str] = None
+    email: Optional[str] = None
+    url: Optional[str] = None
+    logo_url: Optional[str] = None
+    primary_billing_address: Optional[Dict[str, Any]] = None
+    primary_shipping_address: Optional[Dict[str, Any]] = None
+    shipping_addresses: Optional[List[Dict[str, Any]]] = None
+    geo: Optional[Dict[str, Any]] = None
+    external_id: Optional[str] = None
+    is_headquarter: Optional[bool] = None
+
+
+class StoreUpdateRequest(BaseModel):
+    """Store update request — all fields optional"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    store_type: Optional[str] = None
+    active: Optional[bool] = None
+    site_id: Optional[str] = None
+    currency: Optional[str] = Field(None, max_length=3)
+    timezone: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    url: Optional[str] = None
+    logo_url: Optional[str] = None
+    primary_shipping_address: Optional[Dict[str, Any]] = None
+    pickup_address: Optional[Dict[str, Any]] = None
+    geo: Optional[Dict[str, Any]] = None
+    external_id: Optional[str] = None
+    fulfillment_mode: Optional[str] = None
+    inventory_policy: Optional[str] = None
+
+
+class UserUpdateRequest(BaseModel):
+    """User update request — all fields optional"""
+    first_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    last_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    phone: Optional[str] = None
+    position: Optional[str] = None
+    profile_image: Optional[str] = None
+    is_sso_enabled: Optional[bool] = None
+    home_site_id: Optional[str] = None
+    home_store_id: Optional[str] = None
+    home_org_unit_id: Optional[str] = None
+    all_locations: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class VendorUpdateRequest(BaseModel):
+    """Vendor update request — all fields optional"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    contact_email: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=500)
+    status: Optional[str] = None
+
+
+class CostCentreUpdateRequest(BaseModel):
+    """Cost centre update request — all fields optional"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    code: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+    owner_user_id: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class LoginRequest(BaseModel):
     """Login request"""
     email: EmailStr = Field(description="User email")

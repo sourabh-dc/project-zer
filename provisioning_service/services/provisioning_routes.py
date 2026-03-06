@@ -19,7 +19,8 @@ from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store,
 from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
-    VendorUserCreate, VendorUserUpdate
+    VendorUserCreate, VendorUserUpdate, \
+    SiteUpdateRequest, StoreUpdateRequest, UserUpdateRequest, VendorUpdateRequest, CostCentreUpdateRequest
 
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
@@ -171,6 +172,65 @@ async def update_tenant(
         db.rollback()
         req_total.labels(operation="update_tenant", status="error").inc()
         logger.error(f"❌ Update tenant failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/tenants/{tenant_id}", status_code=204)
+async def delete_tenant(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("tenants.create")),
+):
+    """Soft-delete a tenant (deactivate). Cascades deactivation to sites, stores and users."""
+    try:
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(tenant_id)).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        tenant.active = False
+        tenant.updated_at = datetime.now(timezone.utc)
+
+        # Deactivate all sites linked to this tenant
+        site_ids = [
+            st.site_id
+            for st in db.query(SiteTenant).filter(SiteTenant.tenant_id == uuid.UUID(tenant_id)).all()
+        ]
+        if site_ids:
+            db.query(Site).filter(Site.site_id.in_(site_ids)).update(
+                {"active": False, "updated_at": datetime.now(timezone.utc)},
+                synchronize_session="fetch",
+            )
+
+        # Deactivate all stores for this tenant
+        db.query(Store).filter(Store.tenant_id == uuid.UUID(tenant_id)).update(
+            {"active": False, "updated_at": datetime.now(timezone.utc)},
+            synchronize_session="fetch",
+        )
+
+        # Deactivate all users for this tenant
+        db.query(User).filter(User.tenant_id == uuid.UUID(tenant_id)).update(
+            {"is_active": False, "updated_at": datetime.now(timezone.utc)},
+            synchronize_session="fetch",
+        )
+
+        db.commit()
+
+        # Clear cache
+        if redis_client:
+            try:
+                redis_client.delete(f"tenant:{tenant_id}")
+            except Exception:
+                pass
+
+        logger.info(f"✅ Soft-deleted tenant {tenant_id} and cascaded deactivation")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete tenant failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -433,6 +493,122 @@ async def list_sites(
         logger.error(f"❌ List sites failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+@router.get("/sites/{site_id}")
+async def get_site(site_id: str, db: Session = Depends(get_db)):
+    """Get a single site by ID"""
+    try:
+        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+        return {
+            "site_id": str(site.site_id),
+            "name": site.name,
+            "site_type": site.site_type,
+            "active": site.active,
+            "currency": site.currency,
+            "timezone": site.timezone,
+            "language": site.language,
+            "phone": site.phone,
+            "fax": site.fax,
+            "email": site.email,
+            "url": site.url,
+            "logo_url": site.logo_url,
+            "primary_billing_address": site.primary_billing_address,
+            "primary_shipping_address": site.primary_shipping_address,
+            "geo": site.geo,
+            "external_id": site.external_id,
+            "is_headquarter": site.is_headquarter,
+            "created_at": site.created_at.isoformat(),
+            "updated_at": site.updated_at.isoformat() if site.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/sites/{site_id}")
+async def update_site(
+    site_id: str,
+    req: SiteUpdateRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("sites.manage")),
+):
+    """Update an existing site"""
+    try:
+        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        update_data = req.model_dump(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        # Map schema field → model field
+        field_map = {"site_type": "site_type"}
+        for key, value in update_data.items():
+            model_key = field_map.get(key, key)
+            setattr(site, model_key, value)
+
+        site.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(site)
+
+        logger.info(f"✅ Updated site: {site.site_id}")
+        return {
+            "site_id": str(site.site_id),
+            "name": site.name,
+            "site_type": site.site_type,
+            "active": site.active,
+            "updated_at": site.updated_at.isoformat(),
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Update site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/sites/{site_id}", status_code=204)
+async def delete_site(
+    site_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("sites.manage")),
+):
+    """Soft-delete a site (deactivate it)"""
+    try:
+        site = db.query(Site).filter(Site.site_id == uuid.UUID(site_id)).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        # Check if stores are still linked
+        store_count = db.query(Store).filter(Store.site_id == site.site_id, Store.active == True).count()
+        if store_count > 0:
+            raise HTTPException(status_code=400, detail=f"Cannot delete site — {store_count} active store(s) still linked")
+
+        site.active = False
+        site.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        logger.info(f"✅ Soft-deleted site: {site_id}")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid site ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete site failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/stores", status_code=201)
 async def create_store(
         req: StoreRequest,
@@ -523,35 +699,28 @@ async def create_store(
 @router.put("/stores/{store_id}", status_code=200)
 async def update_store(
     store_id: str,
-    name: Optional[str] = Query(None, description="New store name"),
-    store_type: Optional[str] = Query(None, description="New store type"),
-    geo: Optional[str] = Query(None, description="New geo location"),
-    db: Session = Depends(get_db)
+    req: StoreUpdateRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("stores.manage")),
 ):
     """Update store information"""
     start = datetime.now()
     try:
         req_total.labels(operation="update_store", status="start").inc()
 
-        # Find store
         store = db.query(Store).filter(Store.store_id == uuid.UUID(store_id)).first()
         if not store:
             raise HTTPException(status_code=404, detail="Store not found")
 
-        # Update fields if provided
-        updated = False
-        if name is not None:
-            store.name = name
-            updated = True
-        if store_type is not None:
-            store.store_type = store_type
-            updated = True
-        if geo is not None:
-            store.geo = geo
-            updated = True
-
-        if not updated:
+        update_data = req.model_dump(exclude_unset=True)
+        if not update_data:
             raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        for key, value in update_data.items():
+            if key == "site_id" and value is not None:
+                setattr(store, key, uuid.UUID(value))
+            else:
+                setattr(store, key, value)
 
         store.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -566,11 +735,11 @@ async def update_store(
 
         return {
             "store_id": str(store.store_id),
-            "site_id": str(store.site_id),
+            "site_id": str(store.site_id) if store.site_id else None,
             "tenant_id": str(store.tenant_id),
             "name": store.name,
             "store_type": store.store_type,
-            "geo": store.geo,
+            "active": store.active,
             "updated_at": store.updated_at.isoformat()
         }
 
@@ -633,6 +802,74 @@ async def list_stores(
         raise HTTPException(status_code=400, detail="Invalid site ID format")
     except Exception as e:
         logger.error(f"❌ List stores failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/stores/{store_id}")
+async def get_store(store_id: str, db: Session = Depends(get_db)):
+    """Get a single store by ID"""
+    try:
+        store = db.query(Store).filter(Store.store_id == uuid.UUID(store_id)).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
+        return {
+            "store_id": str(store.store_id),
+            "tenant_id": str(store.tenant_id),
+            "site_id": str(store.site_id) if store.site_id else None,
+            "name": store.name,
+            "store_type": store.store_type,
+            "active": store.active,
+            "currency": store.currency,
+            "timezone": store.timezone,
+            "phone": store.phone,
+            "email": store.email,
+            "url": store.url,
+            "logo_url": store.logo_url,
+            "primary_shipping_address": store.primary_shipping_address,
+            "pickup_address": store.pickup_address,
+            "geo": store.geo,
+            "external_id": store.external_id,
+            "fulfillment_mode": store.fulfillment_mode,
+            "inventory_policy": store.inventory_policy,
+            "created_at": store.created_at.isoformat(),
+            "updated_at": store.updated_at.isoformat() if store.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid store ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get store failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+
+
+@router.delete("/stores/{store_id}", status_code=204)
+async def delete_store(
+    store_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("stores.manage")),
+):
+    """Soft-delete a store (deactivate it)"""
+    try:
+        store = db.query(Store).filter(Store.store_id == uuid.UUID(store_id)).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
+
+        store.active = False
+        store.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        logger.info(f"✅ Soft-deleted store: {store_id}")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid store ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete store failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -790,6 +1027,121 @@ async def list_users(
         logger.error(f"❌ List users failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+@router.get("/users/{user_id}")
+async def get_user(user_id: str, db: Session = Depends(get_db)):
+    """Get a single user by ID"""
+    try:
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "user_id": str(user.user_id),
+            "tenant_id": str(user.tenant_id),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "display_name": user.display_name,
+            "phone": user.phone,
+            "position": user.position,
+            "profile_image": user.profile_image,
+            "is_sso_enabled": user.is_sso_enabled,
+            "home_site_id": str(user.home_site_id) if user.home_site_id else None,
+            "home_store_id": str(user.home_store_id) if user.home_store_id else None,
+            "home_org_unit_id": str(user.home_org_unit_id) if user.home_org_unit_id else None,
+            "all_locations": user.all_locations,
+            "is_active": user.is_active,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "created_at": user.created_at.isoformat(),
+            "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get user failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/users/{user_id}")
+async def update_user(
+    user_id: str,
+    req: UserUpdateRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """Update an existing user"""
+    try:
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        update_data = req.model_dump(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        for key, value in update_data.items():
+            if key in ("home_site_id", "home_store_id", "home_org_unit_id") and value is not None:
+                setattr(user, key, uuid.UUID(value))
+            else:
+                setattr(user, key, value)
+
+        # Update display_name if first/last name changed
+        if "first_name" in update_data or "last_name" in update_data:
+            user.display_name = f"{user.first_name} {user.last_name}"
+
+        user.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(user)
+
+        logger.info(f"✅ Updated user: {user.user_id}")
+        return {
+            "user_id": str(user.user_id),
+            "tenant_id": str(user.tenant_id),
+            "email": user.email,
+            "display_name": user.display_name,
+            "is_active": user.is_active,
+            "updated_at": user.updated_at.isoformat(),
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Update user failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """Soft-delete a user (deactivate)"""
+    try:
+        user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user.is_active = False
+        user.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        logger.info(f"✅ Soft-deleted user: {user_id}")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete user failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/vendors", status_code=201)
 async def create_vendor(
         req: VendorRequest,
@@ -945,6 +1297,103 @@ async def list_vendors(
         "offset": offset
     }
 
+
+@router.get("/vendors/{vendor_id}")
+async def get_vendor(vendor_id: str, db: Session = Depends(get_db)):
+    """Get a single vendor by ID"""
+    try:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == uuid.UUID(vendor_id)).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        return {
+            "vendor_id": str(vendor.vendor_id),
+            "tenant_id": str(vendor.tenant_id),
+            "name": vendor.name,
+            "contact_email": vendor.contact_email,
+            "description": vendor.description,
+            "status": vendor.status,
+            "created_at": vendor.created_at.isoformat(),
+            "updated_at": vendor.updated_at.isoformat() if vendor.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/vendors/{vendor_id}")
+async def update_vendor(
+    vendor_id: str,
+    req: VendorUpdateRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+):
+    """Update an existing vendor"""
+    try:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == uuid.UUID(vendor_id)).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        update_data = req.model_dump(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        for key, value in update_data.items():
+            setattr(vendor, key, value)
+
+        vendor.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(vendor)
+
+        logger.info(f"✅ Updated vendor: {vendor.vendor_id}")
+        return {
+            "vendor_id": str(vendor.vendor_id),
+            "tenant_id": str(vendor.tenant_id),
+            "name": vendor.name,
+            "status": vendor.status,
+            "updated_at": vendor.updated_at.isoformat(),
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Update vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/vendors/{vendor_id}", status_code=204)
+async def delete_vendor(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+):
+    """Soft-delete a vendor (set status to inactive)"""
+    try:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == uuid.UUID(vendor_id)).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        vendor.status = "inactive"
+        vendor.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        logger.info(f"✅ Soft-deleted vendor: {vendor_id}")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete vendor failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/cost-centres", status_code=201)
 async def create_cost_centre(
         req: CostCentreRequest,
@@ -1060,6 +1509,119 @@ async def list_cost_centres(
         "limit": limit,
         "offset": offset
     }
+
+
+@router.get("/cost-centres/{cost_centre_id}")
+async def get_cost_centre(cost_centre_id: str, db: Session = Depends(get_db)):
+    """Get a single cost centre by ID"""
+    try:
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+        return {
+            "cost_centre_id": str(cc.cost_centre_id),
+            "tenant_id": str(cc.tenant_id),
+            "code": cc.code,
+            "name": cc.name,
+            "description": cc.description,
+            "owner_user_id": str(cc.owner_user_id) if cc.owner_user_id else None,
+            "is_active": bool(cc.is_active),
+            "created_at": cc.created_at.isoformat(),
+            "updated_at": cc.updated_at.isoformat() if cc.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cost centre ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get cost centre failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.put("/cost-centres/{cost_centre_id}")
+async def update_cost_centre(
+    cost_centre_id: str,
+    req: CostCentreUpdateRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("costcentre.manage")),
+):
+    """Update an existing cost centre"""
+    try:
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
+        update_data = req.model_dump(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        for key, value in update_data.items():
+            if key == "owner_user_id" and value is not None:
+                setattr(cc, key, uuid.UUID(value))
+            else:
+                setattr(cc, key, value)
+
+        cc.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(cc)
+
+        logger.info(f"✅ Updated cost centre: {cc.cost_centre_id}")
+        return {
+            "cost_centre_id": str(cc.cost_centre_id),
+            "tenant_id": str(cc.tenant_id),
+            "code": cc.code,
+            "name": cc.name,
+            "is_active": bool(cc.is_active),
+            "updated_at": cc.updated_at.isoformat(),
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Update cost centre failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/cost-centres/{cost_centre_id}", status_code=204)
+async def delete_cost_centre(
+    cost_centre_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("costcentre.manage")),
+):
+    """Soft-delete a cost centre (deactivate)"""
+    try:
+        cc = db.query(CostCentre).filter(CostCentre.cost_centre_id == uuid.UUID(cost_centre_id)).first()
+        if not cc:
+            raise HTTPException(status_code=404, detail="Cost centre not found")
+
+        # Check if users are still assigned
+        assigned_count = db.query(UserCostCentre).filter(
+            UserCostCentre.cost_centre_id == cc.cost_centre_id,
+            UserCostCentre.is_blocked == False,
+        ).count()
+        if assigned_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete cost centre — {assigned_count} active user assignment(s) remain",
+            )
+
+        cc.is_active = False
+        cc.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        logger.info(f"✅ Soft-deleted cost centre: {cost_centre_id}")
+        return Response(status_code=204)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cost centre ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Delete cost centre failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 # ==================================================================================
 # USER BUDGET ENDPOINTS - Cost Centre Assignments & Budget Info
@@ -1905,6 +2467,92 @@ async def remove_role_from_user(
         db.rollback()
         req_total.labels(operation="remove_role", status="error").inc()
         logger.error(f"❌ Remove role failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/org_units")
+async def list_org_units(
+    tenant_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    parent_org_unit_id: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000, ge=1),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List organisational units with optional filters"""
+    try:
+        q = db.query(OrgUnit)
+
+        if tenant_id:
+            q = q.filter(OrgUnit.tenant_id == uuid.UUID(tenant_id))
+        if status:
+            q = q.filter(OrgUnit.status == status)
+        if parent_org_unit_id:
+            q = q.filter(OrgUnit.parent_org_unit_id == uuid.UUID(parent_org_unit_id))
+
+        total = q.count()
+        org_units = q.order_by(OrgUnit.created_at.desc()).limit(limit).offset(offset).all()
+
+        return {
+            "org_units": [
+                {
+                    "org_unit_id": str(ou.org_unit_id),
+                    "tenant_id": str(ou.tenant_id),
+                    "name": ou.name,
+                    "type": ou.type,
+                    "status": ou.status,
+                    "parent_org_unit_id": str(ou.parent_org_unit_id) if ou.parent_org_unit_id else None,
+                    "code": ou.code,
+                    "description": ou.description,
+                    "manager_user_id": str(ou.manager_user_id) if ou.manager_user_id else None,
+                    "external_id": ou.external_id,
+                    "path": ou.path,
+                    "depth": ou.depth,
+                    "created_at": ou.created_at.isoformat(),
+                    "updated_at": ou.updated_at.isoformat() if ou.updated_at else None,
+                }
+                for ou in org_units
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except Exception as e:
+        logger.error(f"❌ List org units failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/org_units/{org_unit_id}")
+async def get_org_unit(org_unit_id: str, db: Session = Depends(get_db)):
+    """Get a single organisational unit by ID"""
+    try:
+        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == uuid.UUID(org_unit_id)).first()
+        if not ou:
+            raise HTTPException(status_code=404, detail="Org unit not found")
+        return {
+            "org_unit_id": str(ou.org_unit_id),
+            "tenant_id": str(ou.tenant_id),
+            "name": ou.name,
+            "type": ou.type,
+            "status": ou.status,
+            "parent_org_unit_id": str(ou.parent_org_unit_id) if ou.parent_org_unit_id else None,
+            "code": ou.code,
+            "description": ou.description,
+            "manager_user_id": str(ou.manager_user_id) if ou.manager_user_id else None,
+            "external_id": ou.external_id,
+            "path": ou.path,
+            "depth": ou.depth,
+            "created_at": ou.created_at.isoformat(),
+            "updated_at": ou.updated_at.isoformat() if ou.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid org unit ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get org unit failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
