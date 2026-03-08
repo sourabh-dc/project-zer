@@ -703,3 +703,281 @@ class ApprovedRangeProductRequest(BaseModel):
     """Add product(s) to an approved range"""
     product_ids: List[str] = Field(min_length=1, description="List of product IDs to add")
 
+
+# ==================================================================================
+# FINANCIAL CALENDAR SCHEMAS
+# ==================================================================================
+
+class FinancialCalendarCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    calendar_type: str = Field(default="gregorian", description="gregorian | 445 | 454 | 444 | custom")
+    start_month: int = Field(default=1, ge=1, le=12, description="First month of the financial year (1=Jan)")
+    currency: Optional[str] = Field("GBP", max_length=3)
+    is_default: bool = Field(default=False)
+
+    @field_validator("calendar_type")
+    @classmethod
+    def validate_calendar_type(cls, v):
+        allowed = {"gregorian", "445", "454", "444", "custom"}
+        if v not in allowed:
+            raise ValueError(f"calendar_type must be one of {allowed}")
+        return v
+
+
+class FinancialCalendarUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_default: Optional[bool] = None
+
+
+class FinancialYearCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=50, description="e.g. 'FY2025' or 'FY2025-Part1'")
+    start_date: date
+    end_date: date
+    year_type: str = Field(default="full", description="full | part | adjusted")
+    total_budget_minor: Optional[int] = Field(None, ge=0, description="Optional company-wide cap for this year")
+    notes: Optional[str] = None
+
+    @field_validator("year_type")
+    @classmethod
+    def validate_year_type(cls, v):
+        if v not in {"full", "part", "adjusted"}:
+            raise ValueError("year_type must be full | part | adjusted")
+        return v
+
+
+class PeriodGenerationRequest(BaseModel):
+    """Ask the system to auto-generate FinancialPeriod rows for a FinancialYear."""
+    period_type: str = Field(default="month", description="month | quarter | week")
+
+    @field_validator("period_type")
+    @classmethod
+    def validate_period_type(cls, v):
+        if v not in {"month", "quarter", "week"}:
+            raise ValueError("period_type must be month | quarter | week")
+        return v
+
+
+class FinancialPeriodCreate(BaseModel):
+    """Manually create a single FinancialPeriod (for custom calendars)."""
+    period_number: int = Field(ge=1)
+    label: str = Field(min_length=1, max_length=50)
+    period_type: str = Field(default="month")
+    start_date: date
+    end_date: date
+
+
+# ==================================================================================
+# BUDGET SCHEMAS
+# ==================================================================================
+
+class CompanyBudgetCapCreate(BaseModel):
+    year_id: str = Field(description="FinancialYear UUID")
+    calendar_id: str = Field(description="FinancialCalendar UUID")
+    currency: str = Field(default="GBP", max_length=3)
+    total_budget_minor: int = Field(ge=0, description="Total company budget in minor units")
+    hard_cap: bool = Field(default=False, description="If True, system blocks any breach")
+    notes: Optional[str] = None
+
+
+class CompanyBudgetCapUpdate(BaseModel):
+    total_budget_minor: Optional[int] = Field(None, ge=0)
+    hard_cap: Optional[bool] = None
+    notes: Optional[str] = None
+    override_reason: Optional[str] = Field(None, description="Required when soft-cap is breached")
+
+
+class CCBudgetVersionCreate(BaseModel):
+    cost_centre_id: str
+    year_id: str
+    period_id: Optional[str] = Field(None, description="NULL = annual allocation")
+    currency: str = Field(default="GBP", max_length=3)
+    budget_minor: int = Field(ge=0)
+    override_reason: Optional[str] = None
+
+
+class CCBudgetVersionUpdate(BaseModel):
+    budget_minor: Optional[int] = Field(None, ge=0)
+    status: Optional[str] = None
+    override_reason: Optional[str] = None
+
+
+class BudgetReallocationRequest(BaseModel):
+    """Transfer or add budget between two CC versions."""
+    source_version_id: Optional[str] = Field(None, description="NULL for additive top-up from central pool")
+    target_version_id: str
+    amount_minor: int = Field(gt=0)
+    note: Optional[str] = None
+
+
+class BringForwardRequest(BaseModel):
+    """Pull future-period budget into current period."""
+    cost_centre_id: str
+    from_version_id: str = Field(description="Future period CC budget version UUID")
+    to_version_id: str = Field(description="Current period CC budget version UUID")
+    amount_minor: int = Field(gt=0)
+    justification: str = Field(min_length=5, max_length=1000)
+
+
+class BudgetChangeDecision(BaseModel):
+    decision: str = Field(description="approved | rejected")
+    note: Optional[str] = None
+
+    @field_validator("decision")
+    @classmethod
+    def validate_decision(cls, v):
+        if v not in {"approved", "rejected"}:
+            raise ValueError("decision must be 'approved' or 'rejected'")
+        return v
+
+
+# ==================================================================================
+# USER BUDGET SCHEMAS
+# ==================================================================================
+
+class UserCCAssignmentCreate(BaseModel):
+    user_id: str
+    cost_centre_id: str
+    is_primary: bool = Field(default=False)
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+
+
+class UserBudgetLimitCreate(BaseModel):
+    user_id: str
+    cost_centre_id: str
+    year_id: str
+    period_id: Optional[str] = None
+    limit_type: str = Field(description="requester | approver")
+    window_type: str = Field(description="transaction | week | month | quarter | year")
+    limit_amount_minor: int = Field(ge=0, description="0 = always requires approval")
+    carry_forward_enabled: bool = Field(default=False)
+    window_start: Optional[date] = None
+    window_end: Optional[date] = None
+
+    @field_validator("limit_type")
+    @classmethod
+    def validate_limit_type(cls, v):
+        if v not in {"requester", "approver"}:
+            raise ValueError("limit_type must be 'requester' or 'approver'")
+        return v
+
+    @field_validator("window_type")
+    @classmethod
+    def validate_window_type(cls, v):
+        if v not in {"transaction", "week", "month", "quarter", "year"}:
+            raise ValueError("window_type must be transaction | week | month | quarter | year")
+        return v
+
+
+class UserBudgetLimitUpdate(BaseModel):
+    limit_amount_minor: Optional[int] = Field(None, ge=0)
+    carry_forward_enabled: Optional[bool] = None
+    window_start: Optional[date] = None
+    window_end: Optional[date] = None
+    is_active: Optional[bool] = None
+
+
+# ==================================================================================
+# APPROVAL POLICY SCHEMAS
+# ==================================================================================
+
+class StageConditionCreate(BaseModel):
+    field: str = Field(description="amount | cost_centre | category | vendor")
+    operator: str = Field(description="gte | lte | eq | in | neq")
+    value: Any = Field(description="Scalar or list value to compare against")
+    logic: str = Field(default="AND", description="AND | OR (how this condition combines with others)")
+
+    @field_validator("logic")
+    @classmethod
+    def validate_logic(cls, v):
+        if v not in {"AND", "OR"}:
+            raise ValueError("logic must be AND or OR")
+        return v
+
+
+class StageApproverCreate(BaseModel):
+    approver_type: str = Field(
+        description="user | org_unit_manager | hierarchy_traversal | role"
+    )
+    approver_user_id: Optional[str] = None
+    org_unit_id: Optional[str] = None
+    role_code: Optional[str] = None
+
+
+class ApprovalStageCreate(BaseModel):
+    stage_order: int = Field(ge=1)
+    name: Optional[str] = None
+    parallel_allowed: bool = Field(default=False)
+    min_approvers: int = Field(default=1, ge=1)
+    escalation_timeout_hours: Optional[int] = Field(None, ge=1)
+    conditions: List[StageConditionCreate] = Field(default_factory=list)
+    approvers: List[StageApproverCreate] = Field(default_factory=list)
+
+
+class ApprovalPolicyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    cost_centre_id: Optional[str] = Field(None, description="NULL = tenant-wide policy")
+    routing_mode: str = Field(default="hierarchical", description="broadcast | hierarchical")
+    broadcast_n: int = Field(default=3, ge=1)
+    sox_sod_enforced: bool = Field(default=True)
+    partial_approval_mode: str = Field(default="block", description="block | partial | force_top_up")
+    zero_value_mode: str = Field(default="auto", description="auto | require_approval")
+    stages: List[ApprovalStageCreate] = Field(default_factory=list)
+
+    @field_validator("routing_mode")
+    @classmethod
+    def validate_routing_mode(cls, v):
+        if v not in {"broadcast", "hierarchical"}:
+            raise ValueError("routing_mode must be broadcast or hierarchical")
+        return v
+
+
+# ==================================================================================
+# PURCHASE REQUEST SCHEMAS
+# ==================================================================================
+
+class PurchaseRequestCreate(BaseModel):
+    cost_centre_id: str
+    vendor_id: Optional[str] = None
+    category_id: Optional[str] = None
+    description: Optional[str] = None
+    line_items: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="[{product_id, qty, unit_price_minor, description}]"
+    )
+    amount_minor: int = Field(gt=0)
+    currency: str = Field(default="GBP", max_length=3)
+    notes: Optional[str] = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str = Field(description="approve | reject | escalate")
+    note: Optional[str] = None
+
+    @field_validator("decision")
+    @classmethod
+    def validate_decision(cls, v):
+        if v not in {"approve", "reject", "escalate"}:
+            raise ValueError("decision must be approve | reject | escalate")
+        return v
+
+
+class PurchaseRequestResponse(BaseModel):
+    request_id: str
+    tenant_id: str
+    requester_id: str
+    cost_centre_id: str
+    amount_minor: int
+    currency: str
+    status: str
+    approval_mode: Optional[str]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+

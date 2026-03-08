@@ -19,6 +19,12 @@ from provisioning_service.services.subscriptions_routes import router as subscri
 from provisioning_service.services.tenant_onboarding import router as onboarding_router
 from provisioning_service.services.payments_routes import router as payments_router
 from provisioning_service.services.approved_range_routes import router as approved_range_router
+from provisioning_service.services.calendar_routes import router as calendar_router
+from provisioning_service.services.budget_routes import router as budget_router
+from provisioning_service.services.user_budget_routes import router as user_budget_router
+from provisioning_service.services.approval_policy_routes import router as approval_policy_router
+from provisioning_service.services.purchase_request_routes import router as purchase_request_router
+from provisioning_service.services.budget_change_request_routes import router as budget_change_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 from provisioning_service.core.policy_client import policy_client
@@ -98,6 +104,12 @@ app.include_router(catalog_router)
 app.include_router(plan_router)
 app.include_router(subscriptions_router)
 app.include_router(approved_range_router)
+app.include_router(calendar_router)
+app.include_router(budget_router)
+app.include_router(user_budget_router)
+app.include_router(approval_policy_router)
+app.include_router(purchase_request_router)
+app.include_router(budget_change_router)
 
 
 @app.get("/health")
