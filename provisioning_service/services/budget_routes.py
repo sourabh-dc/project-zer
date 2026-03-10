@@ -211,6 +211,7 @@ async def create_cc_budget_version(
         created_by=user_id,
     )
     db.add(version)
+    db.flush()  # Ensure version row exists for FK in budget_transactions
 
     # Record ledger transaction
     _record_txn(db, tenant_id, "allocation", None, version.version_id,

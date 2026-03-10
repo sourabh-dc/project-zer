@@ -21,6 +21,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 from provisioning_service.utils.metrics import req_total, req_duration
 from provisioning_service.utils.redis_client import redis_client

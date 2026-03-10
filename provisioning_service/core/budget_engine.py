@@ -67,9 +67,9 @@ def check_request_headroom(
     Returns a BudgetCheckResult.  The caller uses ``can_self_approve`` to decide
     whether to skip the approval workflow.
     """
-        from provisioning_service.Models import (
-            CompanyBudgetCap, UserBudgetLimit,
-        )
+    from provisioning_service.Models import (
+        CompanyBudgetCap, UserBudgetLimit,
+    )
 
     today = as_of or date.today()
     result = BudgetCheckResult(can_self_approve=False, needs_approval=True, is_blocked=False)
@@ -217,7 +217,7 @@ def commit_cc_budget(
     Increase the committed_minor bucket on the active CC budget version.
     Also updates the CompanyBudgetCap.committed_minor.
     """
-        from provisioning_service.Models import CompanyBudgetCap
+    from provisioning_service.Models import CompanyBudgetCap
 
     today = as_of or date.today()
     version = _resolve_cc_version(db, cost_centre_id, year_id, period_id, today)
