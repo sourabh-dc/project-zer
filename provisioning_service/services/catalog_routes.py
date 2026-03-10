@@ -19,6 +19,7 @@ from provisioning_service.Schemas import (
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event, dispatch_outbox_to_queue
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.utils.logger import logger
 
@@ -90,6 +91,18 @@ async def create_category(
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Category code conflict")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "category.created", {
+            "category_id": str(category.category_id),
+            "name": category.name,
+            "code": category.code,
+            "parent_category_id": str(parent_id) if parent_id else None,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for category.created: {_oe}")
 
     return {
         "category_id": str(category.category_id),
@@ -345,6 +358,20 @@ async def create_product(
         db.rollback()
         raise HTTPException(409, "SKU or EAN conflict")
 
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "product.created", {
+            "product_id": str(product.product_id),
+            "sku": product.sku,
+            "ean": product.ean,
+            "display_name": product.display_name,
+            "matrix_type": product.matrix_type,
+            "purchase_price_minor": product.purchase_price_minor,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for product.created: {_oe}")
+
     return {
         "product_id": str(product.product_id),
         "sku": product.sku,
@@ -461,10 +488,22 @@ async def create_variant(
         db.commit()
         # Record feature usage
         record_feature_usage(db, str(ctx.tenant_id), "variants", count=1)
-        return {"variant_id": str(variant.variant_id), "sku": variant.sku}
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Variant SKU conflict")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, ctx.tenant_id, "variant.created", {
+            "variant_id": str(variant.variant_id),
+            "sku": variant.sku,
+            "product_id": str(product.product_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for variant.created: {_oe}")
+
+    return {"variant_id": str(variant.variant_id), "sku": variant.sku}
 
 
 # =============================================================================
@@ -523,6 +562,17 @@ async def add_product_to_store(
     
     # Record feature usage
     record_feature_usage(db, str(ctx["tenant_id"]), "store_products", count=1)
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, ctx["tenant_id"], "store_product.created", {
+            "store_product_id": str(sp.id),
+            "product_id": str(product_id),
+            "store_id": str(store_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for store_product.created: {_oe}")
 
     return {
         "store_product_id": str(sp.id),

@@ -10,6 +10,7 @@ from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -84,6 +85,19 @@ async def create_checkout_session(
             cancel_url="http://127.0.0.1:8000/payments/cancel",
             metadata=metadata
         )
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, data.tenant_id, "payment.checkout_session.created", {
+                "tenant_id": data.tenant_id,
+                "plan_code": data.plan_code,
+                "billing_cycle": data.billing_cycle or "monthly",
+                "session_id": session.id,
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for payment.checkout_session.created: {_oe}")
+
         return {"checkout_url": session.url, "session_id": session.id}
     except HTTPException:
         raise
@@ -95,6 +109,7 @@ async def create_checkout_session(
 @router.post("/create-portal-session")
 async def create_portal_session(
     cust_id: str,
+    db: Session = Depends(get_db),
     ctx = Depends(check_user_authorization("tenant.admin"))
 ):
     try:
@@ -102,6 +117,17 @@ async def create_portal_session(
             customer=cust_id,
             return_url="http://localhost:8000"
         )
+
+        # Outbox audit event
+        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
+        try:
+            create_outbox_event(db, tenant_id, "payment.portal_session.created", {
+                "stripe_customer_id": cust_id,
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for payment.portal_session.created: {_oe}")
+
         return {"portal_url": session.url}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -147,6 +173,19 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
         plan_code = data.get("metadata", {}).get("plan_code")
         billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
         upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "active", True, data.get("mode"))
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, tenant_id, "payment.checkout.completed", {
+                "tenant_id": tenant_id,
+                "plan_code": plan_code,
+                "billing_cycle": billing_cycle,
+                "stripe_session_id": data.get("id"),
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for payment.checkout.completed: {_oe}")
+
         return {"status": "ok"}
 
     if event_type == "invoice.payment_succeeded":

@@ -249,6 +249,13 @@ async def activate_year(
         raise HTTPException(400, "Year is already active")
     year.status = "active"
     db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "financial_year.activated", {"year_id": year_id})
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Outbox failed for financial_year.activated: {e}")
+
     return {"year_id": year_id, "status": "active"}
 
 
@@ -311,6 +318,15 @@ async def generate_periods(
         db.add(FinancialPeriod(**row))
     db.commit()
 
+    try:
+        create_outbox_event(db, tenant_id, "financial_periods.generated", {
+            "year_id": year_id,
+            "period_count": len(rows),
+        })
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Outbox failed for financial_periods.generated: {e}")
+
     periods = db.query(FinancialPeriod).filter(
         FinancialPeriod.year_id == year.year_id
     ).order_by(FinancialPeriod.period_number).all()
@@ -356,6 +372,17 @@ async def create_period(
     db.add(period)
     db.commit()
     db.refresh(period)
+
+    try:
+        create_outbox_event(db, tenant_id, "financial_period.created", {
+            "period_id": str(period.period_id),
+            "year_id": year_id,
+            "period_number": period.period_number,
+        })
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Outbox failed for financial_period.created: {e}")
+
     return _period_dict(period)
 
 

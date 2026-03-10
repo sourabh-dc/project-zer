@@ -12,9 +12,22 @@ from sqlalchemy.orm import Session
 from provisioning_service.Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
 from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest
 from provisioning_service.core.db_config import get_db
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/internal", tags=["internal"])
+
+# System-level tenant UUID for internal/admin audit events
+_SYSTEM_TENANT = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _internal_outbox(db, event_type: str, data: dict):
+    """Write an outbox event for internal/system operations."""
+    try:
+        create_outbox_event(db, _SYSTEM_TENANT, event_type, data)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Outbox failed for {event_type}: {e}")
 
 
 # Request schemas for endpoints that were using query params
@@ -64,6 +77,8 @@ async def create_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db
     )
     db.add(pricing)
     db.commit()
+
+    _internal_outbox(db, "plan.created", {"plan_code": plan.code, "name": plan.name})
 
     logger.info(f"Created plan: {plan.code}")
     return {
@@ -154,6 +169,7 @@ async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session 
         pricing.price_quarterly_minor = int((req.price_monthly_minor * 3) * (1 - req.quarterly_discount_pct / 100))
 
     db.commit()
+    _internal_outbox(db, "plan.updated", {"plan_code": plan.code, "name": plan.name})
     logger.info(f"Updated plan: {plan.code}")
 
     return {
@@ -173,6 +189,7 @@ async def delete_plan(plan_code: str, db: Session = Depends(get_db)):
 
     plan.is_active = False
     db.commit()
+    _internal_outbox(db, "plan.deactivated", {"plan_code": plan_code})
     logger.info(f"Deactivated plan: {plan_code}")
     return None
 
@@ -200,6 +217,8 @@ async def create_feature(req: FeatureRequest, db: Session = Depends(get_db)):
     )
     db.add(feature)
     db.commit()
+
+    _internal_outbox(db, "feature.created", {"feature_code": feature.code, "name": feature.name})
 
     logger.info(f"Created feature: {feature.code}")
     return {
@@ -276,6 +295,7 @@ async def update_feature(feature_code: str, req: FeatureRequest, db: Session = D
     feature.reset_period = req.reset_period or feature.reset_period
 
     db.commit()
+    _internal_outbox(db, "feature.updated", {"feature_code": feature_code})
     logger.info(f"Updated feature: {feature_code}")
 
     return {
@@ -295,6 +315,7 @@ async def delete_feature(feature_code: str, db: Session = Depends(get_db)):
 
     feature.active = False
     db.commit()
+    _internal_outbox(db, "feature.deactivated", {"feature_code": feature_code})
     logger.info(f"Deactivated feature: {feature_code}")
     return None
 
@@ -355,6 +376,7 @@ async def add_feature_to_plan(
         db.add(pf)
 
     db.commit()
+    _internal_outbox(db, "plan_feature.added", {"plan_code": plan_code, "feature_code": feature_code})
     logger.info(f"Added feature {feature_code} to plan {plan_code} with limits {pf.limits}")
     return {"plan_code": plan_code, "feature_code": feature_code, "enabled": True, "limits": pf.limits}
 
@@ -370,6 +392,7 @@ async def remove_feature_from_plan(plan_code: str, feature_code: str, db: Sessio
     if pf:
         pf.enabled = False
         db.commit()
+        _internal_outbox(db, "plan_feature.removed", {"plan_code": plan_code, "feature_code": feature_code})
         logger.info(f"Removed feature {feature_code} from plan {plan_code}")
 
     return None
@@ -429,6 +452,8 @@ async def create_role(req: RoleRequest, db: Session = Depends(get_db)):
         db.add(role)
         db.commit()
         db.refresh(role)
+
+        _internal_outbox(db, "role.created", {"role_code": role.code})
 
         logger.info(f"Created role: {role.code}")
         return {
@@ -499,6 +524,8 @@ async def add_permission_to_role_legacy(
         db.add(rp)
         db.commit()
 
+        _internal_outbox(db, "role_permission.added", {"role_code": role_code, "permission_code": permission_code})
+
         return {"message": "Permission added to role"}
     except HTTPException:
         raise
@@ -525,6 +552,7 @@ async def remove_permission_from_role_legacy(
 
     db.delete(assignment)
     db.commit()
+    _internal_outbox(db, "role_permission.removed", {"role_code": role_code, "permission_code": permission_code})
     return None
 
 
@@ -553,6 +581,7 @@ async def update_role(role_code: str, req: RoleRequest, db: Session = Depends(ge
 
     role.description = req.description or role.description
     db.commit()
+    _internal_outbox(db, "role.updated", {"role_code": role_code})
     logger.info(f"Updated role: {role_code}")
 
     return {
@@ -574,6 +603,7 @@ async def delete_role(role_code: str, db: Session = Depends(get_db)):
 
     db.delete(role)
     db.commit()
+    _internal_outbox(db, "role.deleted", {"role_code": role_code})
     logger.info(f"Deleted role: {role_code}")
     return None
 
@@ -598,6 +628,8 @@ async def create_permission(req: PermissionRequest, db: Session = Depends(get_db
         db.add(perm)
         db.commit()
         db.refresh(perm)
+
+        _internal_outbox(db, "permission.created", {"permission_code": perm.code})
 
         logger.info(f"Created permission: {perm.code}")
         return {
@@ -649,6 +681,7 @@ async def update_permission(permission_code: str, req: PermissionRequest, db: Se
 
     perm.description = req.description or perm.description
     db.commit()
+    _internal_outbox(db, "permission.updated", {"permission_code": permission_code})
     logger.info(f"Updated permission: {permission_code}")
 
     return {
@@ -670,6 +703,7 @@ async def delete_permission(permission_code: str, db: Session = Depends(get_db))
 
     db.delete(perm)
     db.commit()
+    _internal_outbox(db, "permission.deleted", {"permission_code": permission_code})
     logger.info(f"Deleted permission: {permission_code}")
     return None
 
@@ -706,6 +740,8 @@ async def add_permission_to_role(role_code: str, req: PermissionRequest, db: Ses
         db.add(rp)
         db.commit()
 
+        _internal_outbox(db, "role_permission.added", {"role_code": role_code, "permission_code": req.code})
+
         logger.info(f"Added permission {req.code} to role {role_code}")
         return {"role_code": role_code, "permission_code": req.code, "assigned": True}
     except HTTPException:
@@ -729,6 +765,7 @@ async def remove_permission_from_role(role_code: str, permission_code: str, db: 
 
     db.delete(assignment)
     db.commit()
+    _internal_outbox(db, "role_permission.removed", {"role_code": role_code, "permission_code": permission_code})
     logger.info(f"Removed permission {permission_code} from role {role_code}")
     return None
 
