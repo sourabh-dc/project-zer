@@ -17,6 +17,7 @@ from provisioning_service.Models import (
 from provisioning_service.Schemas import ApprovalPolicyCreate
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -28,6 +29,7 @@ async def create_policy(
     req: ApprovalPolicyCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("approval_policy.create")),
 ):
     """
     Create an N-level approval policy with stages, conditions, and approver specs.
@@ -131,6 +133,7 @@ async def deactivate_policy(
     policy_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("approval_policy.delete", resource_from="none")),
 ):
     tenant_id = _tid(ctx)
     policy = _get_policy_or_404(db, policy_id, tenant_id)

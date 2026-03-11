@@ -19,6 +19,7 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.period_calculator import build_financial_period_rows
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
@@ -35,6 +36,7 @@ async def create_calendar(
     req: FinancialCalendarCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.create")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     user_id   = uuid.UUID(ctx["user_id"] if isinstance(ctx, dict) else str(ctx.user_id))
@@ -110,6 +112,7 @@ async def update_calendar(
     req: FinancialCalendarUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.update")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     cal = _get_calendar_or_404(db, calendar_id, tenant_id)
@@ -147,6 +150,7 @@ async def delete_calendar(
     calendar_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.delete", resource_from="none")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     cal = _get_calendar_or_404(db, calendar_id, tenant_id)
@@ -179,6 +183,7 @@ async def create_year(
     req: FinancialYearCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.create_year")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     user_id   = uuid.UUID(ctx["user_id"] if isinstance(ctx, dict) else str(ctx.user_id))
@@ -241,6 +246,7 @@ async def activate_year(
     year_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.activate_year", resource_from="none")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     cal = _get_calendar_or_404(db, calendar_id, tenant_id)
@@ -265,6 +271,7 @@ async def close_year(
     year_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.close_year", resource_from="none")),
 ):
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
     cal = _get_calendar_or_404(db, calendar_id, tenant_id)
@@ -292,6 +299,7 @@ async def generate_periods(
     req: PeriodGenerationRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.generate_periods")),
 ):
     """Auto-generate FinancialPeriod rows for a year using the calendar's type."""
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))
@@ -345,6 +353,7 @@ async def create_period(
     req: FinancialPeriodCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("calendar.create_period")),
 ):
     """Manually create a period (for custom calendars)."""
     tenant_id = uuid.UUID(ctx["tenant_id"] if isinstance(ctx, dict) else str(ctx.tenant_id))

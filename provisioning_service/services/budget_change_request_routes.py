@@ -17,6 +17,7 @@ from provisioning_service.Models import (
 from provisioning_service.Schemas import BringForwardRequest, BudgetReallocationRequest, BudgetChangeDecision
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -32,6 +33,7 @@ async def request_bring_forward(
     req: BringForwardRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
+    policy=Depends(require_policy("budget_change.bring_forward")),
 ):
     """
     Request to pull future-period budget into the current period.
@@ -87,6 +89,7 @@ async def request_top_up(
     justification: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
+    policy=Depends(require_policy("budget_change.top_up", resource_from="none")),
 ):
     """Request additional budget for a CC period from the central pool."""
     tenant_id    = _tid(ctx)
@@ -127,6 +130,7 @@ async def request_reallocation(
     cost_centre_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
+    policy=Depends(require_policy("budget_change.reallocation")),
 ):
     """Request a transfer of budget from one CC version to another."""
     tenant_id    = _tid(ctx)
@@ -190,6 +194,7 @@ async def decide_change_request(
     req: BudgetChangeDecision,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget_change.decide")),
 ):
     """
     Approve or reject a budget change request.

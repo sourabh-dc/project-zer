@@ -20,6 +20,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
 
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
@@ -115,7 +116,8 @@ async def get_tenant(
 @router.put("/tenants/{tenant_id}")
 async def update_tenant(
         req: TenantUpdateRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        policy=Depends(require_policy("tenant.update")),
 ):
     """Update a tenant's information"""
     try:
@@ -177,6 +179,7 @@ async def delete_tenant(
     tenant_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("tenants.create")),
+    policy=Depends(require_policy("tenant.delete", resource_from="none")),
 ):
     """Soft-delete a tenant (deactivate). Cascades deactivation to sites, stores and users."""
     try:
@@ -235,7 +238,8 @@ async def delete_tenant(
 async def create_site(
         req: SiteRequest,
         db: Session = Depends(get_db),
-        # ctx = Depends(check_user_authorization("sites.manage"))
+        ctx = Depends(check_user_authorization("sites.manage")),
+        policy=Depends(require_policy("site.create")),
 ):
     """Create a new site and associate it with a tenant"""
     try:
@@ -316,7 +320,8 @@ async def add_tenant_to_site(
     site_id: str,
     tenant_id: str,
     db: Session = Depends(get_db),
-    user = Depends(check_user_authorization('tenant.admin'))
+    user = Depends(check_user_authorization('tenant.admin')),
+    policy=Depends(require_policy("site.assign_tenant", resource_from="none")),
 ):
     """Allow a site to be managed by an additional tenant"""
     try:
@@ -410,7 +415,9 @@ async def list_site_tenants(
 async def remove_tenant_from_site(
     site_id: str,
     tenant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("site.remove_tenant", resource_from="none")),
 ):
     """Remove a tenant from a site"""
     try:
@@ -534,6 +541,7 @@ async def update_site(
     req: SiteUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("sites.manage")),
+    policy=Depends(require_policy("site.update")),
 ):
     """Update an existing site"""
     try:
@@ -590,6 +598,7 @@ async def delete_site(
     site_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("sites.manage")),
+    policy=Depends(require_policy("site.delete", resource_from="none")),
 ):
     """Soft-delete a site (deactivate it)"""
     try:
@@ -631,7 +640,8 @@ async def delete_site(
 async def create_store(
         req: StoreRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("stores.manage"))
+        ctx = Depends(check_user_authorization("stores.manage")),
+        policy=Depends(require_policy("store.create")),
 ):
     """Create a new store under a site for the user's tenant"""
     start = datetime.now()
@@ -730,6 +740,7 @@ async def update_store(
     req: StoreUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("stores.manage")),
+    policy=Depends(require_policy("store.update")),
 ):
     """Update store information"""
     start = datetime.now()
@@ -888,6 +899,7 @@ async def delete_store(
     store_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("stores.manage")),
+    policy=Depends(require_policy("store.delete", resource_from="none")),
 ):
     """Soft-delete a store (deactivate it)"""
     try:
@@ -922,7 +934,8 @@ async def delete_store(
 async def create_user(
         req: UserRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("users.manage"))
+        ctx = Depends(check_user_authorization("users.manage")),
+        policy=Depends(require_policy("user.create")),
 ):
     """Create a new user"""
     start = datetime.now()
@@ -1105,6 +1118,7 @@ async def update_user(
     req: UserUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("users.manage")),
+    policy=Depends(require_policy("user.update")),
 ):
     """Update an existing user"""
     try:
@@ -1164,6 +1178,7 @@ async def delete_user(
     user_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("users.manage")),
+    policy=Depends(require_policy("user.delete", resource_from="none")),
 ):
     """Soft-delete a user (deactivate)"""
     try:
@@ -1198,7 +1213,8 @@ async def delete_user(
 async def create_vendor(
         req: VendorRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("vendors.manage"))
+        ctx = Depends(check_user_authorization("vendors.manage")),
+        policy=Depends(require_policy("vendor.create")),
 ):
     """Create a new vendor"""
     start = datetime.now()
@@ -1269,7 +1285,12 @@ async def create_vendor(
 
 
 @router.post("/vendor-user")
-def create_vendor_user(payload: VendorUserCreate, db: Session = Depends(get_db)):
+async def create_vendor_user(
+    payload: VendorUserCreate,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor_user.create")),
+):
     # uniqueness check (vendor + email)
     existing = (
         db.query(VendorUser)
@@ -1305,7 +1326,13 @@ def list_vendor_users(
     return items
 
 @router.put("/{user_id}")
-def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Session = Depends(get_db)):
+async def update_vendor_user(
+    user_id: uuid.UUID,
+    payload: VendorUserUpdate,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor_user.update")),
+):
     obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="vendor user not found")
@@ -1319,7 +1346,12 @@ def update_vendor_user(user_id: uuid.UUID, payload: VendorUserUpdate, db: Sessio
     return obj
 
 @router.delete("/{user_id}")
-def delete_vendor_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+async def delete_vendor_user(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor_user.delete", resource_from="none")),
+):
     obj = db.query(VendorUser).filter(VendorUser.user_id == user_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="vendor user not found")
@@ -1392,6 +1424,7 @@ async def update_vendor(
     req: VendorUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor.update")),
 ):
     """Update an existing vendor"""
     try:
@@ -1443,6 +1476,7 @@ async def delete_vendor(
     vendor_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("vendors.manage")),
+    policy=Depends(require_policy("vendor.delete", resource_from="none")),
 ):
     """Soft-delete a vendor (set status to inactive)"""
     try:
@@ -1477,7 +1511,8 @@ async def delete_vendor(
 async def create_cost_centre(
         req: CostCentreRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("costcentre.manage"))
+        ctx = Depends(check_user_authorization("costcentre.manage")),
+        policy=Depends(require_policy("cost_centre.create")),
 ):
     """Create a new cost centre"""
     start = datetime.now()
@@ -1638,6 +1673,7 @@ async def update_cost_centre(
     req: CostCentreUpdateRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("costcentre.manage")),
+    policy=Depends(require_policy("cost_centre.update")),
 ):
     """Update an existing cost centre"""
     try:
@@ -1693,6 +1729,7 @@ async def delete_cost_centre(
     cost_centre_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("costcentre.manage")),
+    policy=Depends(require_policy("cost_centre.delete", resource_from="none")),
 ):
     """Soft-delete a cost centre (deactivate)"""
     try:
@@ -1745,7 +1782,9 @@ async def assign_user_to_cost_centre(
     allocated_budget_minor: int = Query(0, description="Initial allocated budget in minor units"),
     recurring_budget_minor: int = Query(0, description="Recurring budget amount for resets"),
     recurring_period: str = Query("none", description="Recurring period: none/daily/weekly/monthly/yearly"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("budgets.manage")),
+    policy=Depends(require_policy("user_budget.assign", resource_from="none")),
 ):
     """Assign a user to a cost centre with optional budget allocation (enforces remaining CC budget)"""
     try:
@@ -1941,7 +1980,8 @@ async def get_user_budget(
 @router.post("/budgets/renew", status_code=200)
 async def renew_budgets(
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("budgets.manage"))
+    ctx = Depends(check_user_authorization("budgets.manage")),
+    policy=Depends(require_policy("budget.renew", resource_from="none")),
 ):
     """Renew cost centre and user budgets that are due based on recurring settings."""
     today = date.today()
@@ -2111,7 +2151,9 @@ async def get_user_subordinates(
 @router.post("/roles", status_code=201)
 async def create_role(
         req: RoleRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx=Depends(check_user_authorization("roles.manage")),
+        policy=Depends(require_policy("role.create")),
 ):
     """Create a new role"""
     start = datetime.now()
@@ -2202,7 +2244,9 @@ async def list_roles(
 async def add_permission_to_role(
         role_code: str,
         permission_code: str,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx=Depends(check_user_authorization("roles.manage")),
+        policy=Depends(require_policy("role.map_permission", resource_from="none")),
 ):
     """Add permission to a role"""
     try:
@@ -2236,7 +2280,9 @@ async def add_permission_to_role(
 async def remove_permission_from_role(
         role_code: str,
         permission_code: str,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx=Depends(check_user_authorization("roles.manage")),
+        policy=Depends(require_policy("role.unmap_permission", resource_from="none")),
 ):
     """Remove permission from a role"""
     try:
@@ -2339,7 +2385,8 @@ async def get_role_permissions(
 async def create_tenant_role(
     req: TenantRoleRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx = Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("tenant_role.create")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     if not tenant_id:
@@ -2367,7 +2414,8 @@ async def add_permission_to_tenant_role(
     role_id: str,
     req: TenantRolePermissionRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("tenant.admin"))
+    ctx = Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("tenant_role.add_permission", resource_from="none")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     role = db.query(TenantRole).filter(
@@ -2400,7 +2448,8 @@ async def assign_tenant_role_to_user(
     user_id: str,
     req: TenantRoleAssignRequest,
     db: Session = Depends(get_db),
-    ctx = Depends(check_user_authorization("users.manage"))
+    ctx = Depends(check_user_authorization("users.manage")),
+    policy=Depends(require_policy("user_role.assign", resource_from="none")),
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     role = db.query(TenantRole).filter(
@@ -2447,7 +2496,9 @@ async def list_tenant_roles(
 async def assign_role_to_user(
         user_id: str,
         req: AssignRoleRequest,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx=Depends(check_user_authorization("roles.assign")),
+        policy=Depends(require_policy("user_role.assign")),
 ):
     """Assign a role to a user"""
     start = datetime.now()
@@ -2572,7 +2623,9 @@ async def get_user_roles(
 async def remove_role_from_user(
         user_id: str,
         role_id: str,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        ctx=Depends(check_user_authorization("roles.assign")),
+        policy=Depends(require_policy("user_role.remove", resource_from="none")),
 ):
     """Remove a role from a user"""
     start = datetime.now()
@@ -2715,7 +2768,8 @@ async def get_org_unit(org_unit_id: str, db: Session = Depends(get_db)):
 async def create_org_unit(
         req: OrgUnitRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy=Depends(require_policy("org_unit.create")),
 ):
     """Create a new organisational unit"""
     try:
@@ -2799,7 +2853,8 @@ async def update_org_unit(
         org_unit_id: str,
         req: OrgUnitRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy=Depends(require_policy("org_unit.update")),
 ):
     """Update an existing organisational unit"""
     try:
@@ -2887,7 +2942,8 @@ async def update_org_unit(
 async def delete_org_unit(
         org_unit_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.manage"))
+        ctx = Depends(check_user_authorization("org_units.manage")),
+        policy=Depends(require_policy("org_unit.delete", resource_from="none")),
 ):
     """Delete an organisational unit (soft delete by default)"""
     try:
@@ -2935,7 +2991,8 @@ async def delete_org_unit(
 async def assign_user_to_org_unit(
         req: OrgUnitAssignmentRequest,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx = Depends(check_user_authorization("org_units.assign")),
+        policy=Depends(require_policy("org_unit.assign_user")),
 ):
     """
     Assign a user to an organisational unit with a specific role.
@@ -3195,7 +3252,8 @@ async def get_user_org_units(
 async def remove_user_from_org_unit(
         assignment_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx = Depends(check_user_authorization("org_units.assign")),
+        policy=Depends(require_policy("org_unit.remove_user", resource_from="none")),
 ):
     """
     Remove a user's assignment from an organisational unit.
@@ -3234,7 +3292,8 @@ async def remove_user_from_org_unit_by_ids(
         org_unit_id: str,
         user_id: str,
         db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("org_units.assign"))
+        ctx = Depends(check_user_authorization("org_units.assign")),
+        policy=Depends(require_policy("org_unit.remove_user", resource_from="none")),
 ):
     """
     Remove a user's assignment from an organisational unit by org_unit_id and user_id.

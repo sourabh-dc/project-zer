@@ -22,6 +22,7 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -37,6 +38,7 @@ async def create_company_cap(
     req: CompanyBudgetCapCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget.create_cap")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -96,6 +98,7 @@ async def update_company_cap(
     req: CompanyBudgetCapUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget.update_cap")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -153,6 +156,7 @@ async def create_cc_budget_version(
     req: CCBudgetVersionCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget.create_version")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -267,6 +271,7 @@ async def update_cc_budget_version(
     req: CCBudgetVersionUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget.update_version")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -306,6 +311,7 @@ async def reallocate_budget(
     req: BudgetReallocationRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("budget.reallocate")),
 ):
     """
     Transfer (or add) budget between two CC budget versions.

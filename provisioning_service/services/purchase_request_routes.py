@@ -18,6 +18,7 @@ from provisioning_service.Models import (
 from provisioning_service.Schemas import PurchaseRequestCreate, ApprovalDecisionRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.budget_engine import check_request_headroom
 from provisioning_service.core.approval_engine import resolve_workflow, advance_workflow
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
@@ -36,6 +37,7 @@ async def submit_purchase_request(
     req: PurchaseRequestCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.place")),
+    policy=Depends(require_policy("purchase_request.create")),
 ):
     """
     Submit a purchase request.
@@ -262,6 +264,7 @@ async def decide_task(
     req: ApprovalDecisionRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.approve")),
+    policy=Depends(require_policy("purchase_request.decide")),
 ):
     """
     Approve, reject, or escalate an approval task.
@@ -316,6 +319,7 @@ async def issue_po(
     request_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.manage")),
+    policy=Depends(require_policy("purchase_request.issue_po", resource_from="none")),
 ):
     """Mark an approved request as PO issued."""
     tenant_id = _tid(ctx)

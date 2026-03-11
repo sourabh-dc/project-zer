@@ -11,6 +11,7 @@ from provisioning_service.Schemas import TenantSubscriptionRequest, CurrentSubsc
     CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext, SubscribeRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -163,7 +164,9 @@ async def whoami(
 @router.post("/renew", status_code=201)
 async def renew_subscription(
     req: TenantSubscriptionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("subscription.manage")),
+    policy=Depends(require_policy("subscription.renew")),
 ):
     """Renew current subscription"""
     current_subscription = db.query(TenantSubscription).filter_by(id=req.previous_sub_id).first()
@@ -363,7 +366,9 @@ async def get_current_subscription(
 @router.post("/cancel")
 async def cancel_subscription(
     req: CancelSubscriptionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("subscription.manage")),
+    policy=Depends(require_policy("subscription.cancel")),
 ):
     """Cancel subscription"""
     sub = db.query(TenantSubscription).filter_by(id=req.subscription_id).first()

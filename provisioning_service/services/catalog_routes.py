@@ -21,6 +21,7 @@ from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event, dispatch_outbox_to_queue
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.utils.logger import logger
 
 
@@ -34,7 +35,8 @@ router = APIRouter(prefix="/catalog", tags=["Catalog"])
 async def create_category(
     req: CategoryRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("category.create")),
 ):
     try:
         tenant_id = ctx.tenant_id if hasattr(ctx, 'tenant_id') else ctx.get('tenant_id')
@@ -164,7 +166,8 @@ async def list_categories(
 async def create_product(
     req: ProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.create")),
 ):
     if str(ctx["tenant_id"]) != req.tenant_id:
         raise HTTPException(403, "Tenant mismatch")
@@ -446,7 +449,8 @@ async def list_products(
 async def create_variant(
     req: VariantRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("variant.create")),
 ):
     # Check entitlement limit
     check_feature_limit(db, str(ctx.tenant_id), "variants", count=1)
@@ -514,7 +518,8 @@ async def create_variant(
 async def add_product_to_store(
     req: StoreProductRequest,
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("stores.manage"))
+    ctx: UserContext = Depends(check_user_authorization("stores.manage")),
+    policy=Depends(require_policy("store_product.create")),
 ):
     # Check entitlement limit
     check_feature_limit(db, str(ctx["tenant_id"]), "store_products", count=1)
@@ -694,7 +699,8 @@ async def list_store_products(
 async def bulk_upload_products(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
+    policy=Depends(require_policy("product.bulk_upload", resource_from="none")),
 ):
     """
     Bulk upload products from an Excel file.

@@ -14,21 +14,13 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.utils.logger import logger
 
 
 router = APIRouter(prefix="/approved-ranges", tags=["Approved Ranges"])
 
-
-def require_policy(action: str, resource_from: str = "path"):
-    """
-    Placeholder policy guard.  Returns a no-op FastAPI dependency until a
-    full policy enforcement layer is wired in.
-    """
-    async def _noop():
-        return None
-    return _noop
 
 
 # =============================================================================

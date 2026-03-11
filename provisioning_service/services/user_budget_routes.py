@@ -20,6 +20,7 @@ from provisioning_service.Schemas import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
@@ -35,6 +36,7 @@ async def assign_user_to_cost_centre(
     req: UserCCAssignmentCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("user_budget.create_assignment")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -121,6 +123,7 @@ async def remove_assignment(
     assignment_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("user_budget.delete_assignment", resource_from="none")),
 ):
     tenant_id = _tid(ctx)
     try:
@@ -148,6 +151,7 @@ async def create_limit(
     req: UserBudgetLimitCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("user_budget.create_limit")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -258,6 +262,7 @@ async def update_limit(
     req: UserBudgetLimitUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("user_budget.update_limit")),
 ):
     tenant_id = _tid(ctx)
     lim = _get_limit_or_404(db, limit_id, tenant_id)
@@ -288,6 +293,7 @@ async def deactivate_limit(
     limit_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
+    policy=Depends(require_policy("user_budget.delete_limit", resource_from="none")),
 ):
     tenant_id = _tid(ctx)
     lim = _get_limit_or_404(db, limit_id, tenant_id)
