@@ -40,3 +40,4 @@ azure-keyvault-secrets==4.10.0
 pandas
 openpyxl
 python-multipart
+openai==2.28.0
