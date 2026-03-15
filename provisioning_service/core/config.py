@@ -17,9 +17,9 @@ vault_url = f"https://{keyvault_name}.vault.azure.net"
 credential = DefaultAzureCredential()
 client = SecretClient(vault_url=vault_url, credential=credential)
 
-environment = os.getenv("ENVIRONMENT", "Development")
+environment = os.getenv("ENVIRONMENT")
 # Retrieve the secret
-if environment == "Development":
+if environment != "local":
     db_name = client.get_secret("dbName").value
     db_password = client.get_secret("dbPassword").value
     db_host = client.get_secret("dbHost").value

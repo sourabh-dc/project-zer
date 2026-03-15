@@ -21,7 +21,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Resolve secrets — Key Vault for deployed environments, .env for local
 # ---------------------------------------------------------------------------
-environment = os.getenv("ENVIRONMENT", "local").lower()
+environment = os.getenv("ENVIRONMENT").lower()
 
 if environment != "local":
     from azure.identity import DefaultAzureCredential
@@ -51,9 +51,9 @@ if environment != "local":
     db_host = _secret("dbHost")
     db_username = _secret("dbUsername")
 
-    neo4j_uri = _secret("neo4jUri", "bolt://localhost:7687")
-    neo4j_user = _secret("neo4jUser", "neo4j")
-    neo4j_password = _secret("neo4jPassword", "password")
+    neo4j_uri = _secret("neo4jUri")
+    neo4j_user = _secret("neo4jUser")
+    neo4j_password = _secret("neo4jPassword")
     neo4j_database = _secret("neo4jDatabase", "neo4j")
 
 else:

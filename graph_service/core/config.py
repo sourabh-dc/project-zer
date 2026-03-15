@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-environment = os.getenv("ENVIRONMENT", "local").lower()
+environment = os.getenv("ENVIRONMENT").lower()
 
 if environment != "local":
     from azure.identity import DefaultAzureCredential
