@@ -363,13 +363,24 @@ async def create_product(
 
     # Outbox audit event
     try:
+        # Resolve category name for vector embedding
+        _cat_name = None
+        if product.category_id:
+            _cat = db.query(Category).filter(Category.category_id == product.category_id).first()
+            if _cat:
+                _cat_name = _cat.name
+
         create_outbox_event(db, req.tenant_id, "product.created", {
             "product_id": str(product.product_id),
             "sku": product.sku,
             "ean": product.ean,
             "display_name": product.display_name,
+            "sales_description": product.sales_description,
             "matrix_type": product.matrix_type,
             "purchase_price_minor": product.purchase_price_minor,
+            "category_id": str(product.category_id) if product.category_id else None,
+            "category_name": _cat_name,
+            "restricted": product.restricted,
         })
         db.commit()
     except Exception as _oe:

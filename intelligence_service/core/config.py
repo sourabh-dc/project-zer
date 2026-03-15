@@ -50,17 +50,12 @@ if environment != "local":
     db_password = _secret("dbPassword")
     db_host = _secret("dbHost")
     db_username = _secret("dbUsername")
-    stripe_secret_key = _secret("stripeSecretKey")
-    stripe_webhook_secret = _secret("stripeWebhookSecret")
-    email_conn_string = _secret("azure-email")
 
     neo4j_uri = _secret("neo4jUri", "bolt://localhost:7687")
     neo4j_user = _secret("neo4jUser", "neo4j")
     neo4j_password = _secret("neo4jPassword", "password")
     neo4j_database = _secret("neo4jDatabase", "neo4j")
 
-    graph_service_url = _secret("graphServiceUrl", "http://localhost:8005")
-    vector_service_url = _secret("vectorServiceUrl", "http://localhost:8006")
 else:
     azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
     azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
@@ -72,18 +67,11 @@ else:
     db_password = os.getenv("POSTGRES_PASSWORD")
     db_host = os.getenv("POSTGRES_HOST")
     db_username = os.getenv("POSTGRES_USER")
-    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
-    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-    email_conn_string = os.getenv("AZURE_EMAIL_CONNECTION_STRING")
 
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER", "neo4j")
     neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
     neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
-
-    graph_service_url = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8005")
-    vector_service_url = os.getenv("VECTOR_SERVICE_URL", "http://localhost:8006")
-
 
 # ---------------------------------------------------------------------------
 # Pydantic settings model
@@ -106,8 +94,8 @@ class IntelligenceSettings(BaseSettings):
     NEO4J_PASSWORD: str = Field(default=neo4j_password)
     NEO4J_DATABASE: str = Field(default=neo4j_database)
 
-    GRAPH_SERVICE_URL: str = Field(default=graph_service_url)
-    VECTOR_SERVICE_URL: str = Field(default=vector_service_url)
+    GRAPH_SERVICE_URL: str = Field(default="http://localhost:8004")
+    VECTOR_SERVICE_URL: str = Field(default="http://localhost:8003")
 
     LOG_LEVEL: str = Field(default="INFO")
 

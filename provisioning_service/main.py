@@ -52,6 +52,43 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"❌ Table initialization failed: {e}")
 
+        # Migrate outbox_events: add aggregate_type, aggregate_id, payload columns
+        # if they don't exist yet (safe for existing databases)
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("outbox_events"):
+                existing_cols = {c["name"] for c in insp.get_columns("outbox_events")}
+                with engine.begin() as conn:
+                    if "aggregate_type" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN aggregate_type VARCHAR(100)"
+                        ))
+                        logger.info("✅ Added aggregate_type column to outbox_events")
+                    if "aggregate_id" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN aggregate_id UUID"
+                        ))
+                        logger.info("✅ Added aggregate_id column to outbox_events")
+                    if "payload" not in existing_cols and "event_data" in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events RENAME COLUMN event_data TO payload"
+                        ))
+                        logger.info("✅ Renamed event_data → payload column in outbox_events")
+                    elif "payload" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN payload JSONB NOT NULL DEFAULT '{}'"
+                        ))
+                        logger.info("✅ Added payload column to outbox_events")
+                    # Back-fill aggregate_type from event_type for existing rows
+                    conn.execute(text("""
+                        UPDATE outbox_events
+                        SET    aggregate_type = split_part(event_type, '.', 1)
+                        WHERE  aggregate_type IS NULL
+                    """))
+        except Exception as e:
+            logger.warning(f"Outbox migration step skipped or failed: {e}")
+
         # Load static data (permissions/features)
         try:
             insert_permissions_from_csv(r'provisioning_service/permissions.csv')

@@ -187,6 +187,7 @@ async def renew_subscription(
     # Outbox audit event
     try:
         create_outbox_event(db, req.tenant_id, "subscription.renewed", {
+            "subscription_id": str(tenant_subscription.id),
             "tenant_id": str(req.tenant_id),
             "plan_code": req.plan_code,
             "previous_sub_id": str(req.previous_sub_id),
@@ -272,6 +273,7 @@ async def upgrade_current_subscription(req: TenantSubscriptionRequest,db: Sessio
     # Outbox audit event
     try:
         create_outbox_event(db, req.tenant_id, "subscription.upgraded", {
+            "subscription_id": str(tenant_subscription.id),
             "tenant_id": str(req.tenant_id),
             "plan_code": req.plan_code,
             "previous_sub_id": str(req.previous_sub_id),
@@ -303,6 +305,7 @@ async def upgrade_current_subscription(req: TenantSubscriptionRequest,db: Sessio
     # Outbox audit event
     try:
         create_outbox_event(db, req.tenant_id, "subscription.downgraded", {
+            "subscription_id": str(tenant_subscription.id),
             "tenant_id": str(req.tenant_id),
             "plan_code": req.plan_code,
             "previous_sub_id": str(req.previous_sub_id),

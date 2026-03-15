@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
-from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column
+from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column, synonym
 import uuid
 
 # ==================================================================================
@@ -1407,8 +1407,11 @@ class OutboxEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    aggregate_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    aggregate_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     event_type: Mapped[str] = mapped_column(nullable=False)
-    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    event_data = synonym("payload")
     status: Mapped[str] = mapped_column(default='pending')
     retry_count: Mapped[int] = mapped_column(default=0)
     max_retries: Mapped[int] = mapped_column(default=3)

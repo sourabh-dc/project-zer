@@ -33,19 +33,22 @@ def append_outbox_event(
     status: str = "completed",
 ) -> OutboxEvent:
     """
-    Create an OutboxEvent record enriched with aggregate metadata.
+    Create an OutboxEvent record with explicit aggregate metadata.
 
     Compatible shim for callers that use the older
     ``append_outbox_event(db, tenant_id=..., aggregate_type=..., ...)`` signature.
-    Enriches ``event_data`` with aggregate_type and aggregate_id before
-    delegating to :func:`create_outbox_event`.
+    Now passes ``aggregate_type`` and ``aggregate_id`` as first-class columns
+    via :func:`create_outbox_event`.
     """
-    enriched_data: Dict[str, Any] = {
-        "aggregate_type": aggregate_type,
-        "aggregate_id": str(aggregate_id),
-        **payload,
-    }
-    return create_outbox_event(db, tenant_id, event_type, enriched_data, status=status)
+    return create_outbox_event(
+        db,
+        tenant_id,
+        event_type,
+        payload,
+        status=status,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id,
+    )
 
 
 async def notify_outbox(outbox_id: str) -> None:

@@ -21,12 +21,45 @@ Usage
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import OutboxEvent
 from provisioning_service.utils.logger import logger
+
+# Keys commonly used in event_data that hold the aggregate entity's ID.
+# Checked in priority order: the first match wins.
+_AGGREGATE_ID_KEYS = (
+    "product_id", "category_id", "variant_id", "store_product_id",
+    "site_id", "store_id", "user_id", "vendor_id", "cost_centre_id",
+    "org_unit_id", "tenant_id", "subscription_id", "policy_id",
+    "request_id", "calendar_id", "year_id", "period_id",
+    "role_id", "assignment_id", "cap_id", "version_id",
+    "target_version_id", "from_version_id", "source_version_id",
+    "approved_range_id", "change_req_id", "limit_id", "task_id",
+)
+
+
+def _derive_aggregate_type(event_type: str) -> str:
+    """Derive aggregate_type from dot-notation event_type.
+
+    ``"product.created"`` → ``"product"``
+    ``"approval_task.approved"`` → ``"approval_task"``
+    """
+    return event_type.rsplit(".", 1)[0] if "." in event_type else event_type
+
+
+def _derive_aggregate_id(event_data: Dict[str, Any]) -> Optional[uuid.UUID]:
+    """Scan event_data for a well-known entity ID key and return it as UUID."""
+    for key in _AGGREGATE_ID_KEYS:
+        val = event_data.get(key)
+        if val is not None:
+            try:
+                return uuid.UUID(str(val))
+            except (ValueError, AttributeError):
+                continue
+    return None
 
 
 def create_outbox_event(
@@ -36,6 +69,8 @@ def create_outbox_event(
     event_data: Dict[str, Any],
     *,
     status: str = "completed",
+    aggregate_type: Optional[str] = None,
+    aggregate_id: Any = None,
 ) -> OutboxEvent:
     """
     Persist an OutboxEvent and return it.
@@ -46,12 +81,20 @@ def create_outbox_event(
     For events that need async worker processing, pass ``status="pending"`` so
     the outbox worker can pick them up.
 
+    ``aggregate_type`` and ``aggregate_id`` are auto-derived when not supplied:
+
+    * ``aggregate_type`` ← prefix of *event_type* (e.g. ``"product"`` from
+      ``"product.created"``)
+    * ``aggregate_id`` ← first recognised entity-ID key found in *event_data*
+
     Args:
-        db:          Active SQLAlchemy session (already inside a transaction).
-        tenant_id:   UUID of the owning tenant (str or UUID).
-        event_type:  Dot-notation event name, e.g. ``"product.created"``.
-        event_data:  JSON-serialisable dict with relevant payload.
-        status:      ``"completed"`` (audit only) or ``"pending"`` (needs worker).
+        db:              Active SQLAlchemy session (already inside a transaction).
+        tenant_id:       UUID of the owning tenant (str or UUID).
+        event_type:      Dot-notation event name, e.g. ``"product.created"``.
+        event_data:      JSON-serialisable dict with relevant payload.
+        status:          ``"completed"`` (audit only) or ``"pending"`` (needs worker).
+        aggregate_type:  Optional entity type (auto-derived from event_type if omitted).
+        aggregate_id:    Optional entity UUID (auto-derived from event_data if omitted).
 
     Returns:
         The persisted :class:`OutboxEvent` instance.
@@ -59,11 +102,26 @@ def create_outbox_event(
     if isinstance(tenant_id, str):
         tenant_id = uuid.UUID(tenant_id)
 
+    # Auto-derive aggregate metadata when not explicitly provided
+    if aggregate_type is None:
+        aggregate_type = _derive_aggregate_type(event_type)
+
+    resolved_agg_id: Optional[uuid.UUID] = None
+    if aggregate_id is not None:
+        try:
+            resolved_agg_id = uuid.UUID(str(aggregate_id))
+        except (ValueError, AttributeError):
+            resolved_agg_id = None
+    else:
+        resolved_agg_id = _derive_aggregate_id(event_data)
+
     event = OutboxEvent(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
+        aggregate_type=aggregate_type,
+        aggregate_id=resolved_agg_id,
         event_type=event_type,
-        event_data=event_data,
+        payload=event_data,
         status=status,
         retry_count=0,
         created_at=datetime.now(timezone.utc),
