@@ -43,10 +43,12 @@ else:
     db_password = os.getenv("POSTGRES_PASSWORD")
     db_host = os.getenv("POSTGRES_HOST")
     db_username = os.getenv("POSTGRES_USER")
-    neo4j_password = os.getenv("NEO4J_USER")
+    neo4j_password = os.getenv("NEO4J_PASSWORD")
     neo4j_uri = os.getenv("NEO4J_URI")
-    neo4j_user = os.getenv("NEO4J_PASSWORD")
-
+    neo4j_user = os.getenv("NEO4J_USERNAME")
+print(neo4j_uri)
+print(neo4j_user)
+print(neo4j_password)
 class GraphSettings(BaseSettings):
     NEO4J_URI: str = Field(default=neo4j_uri, description="Neo4j bolt URI")
     NEO4J_USER: str = Field(default=neo4j_user, description="Neo4j username")
