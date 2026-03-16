@@ -16,6 +16,7 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 import bcrypt
 
@@ -99,7 +100,18 @@ async def logout(user_id: str, db: Session = Depends(get_db)):
     # revoke the stored refresh token (this helper commits/refreshes the user)
     revoke_refresh_token(user, db)
 
-    logger.info(f"🔓 User {user.email} logged out and refresh token revoked")
+    logger.info(f"User {user.email} logged out and refresh token revoked")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, user.tenant_id, "user.logged_out", {
+            "user_id": str(user.user_id),
+            "email": user.email,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for user.logged_out: {_oe}")
+
     return {"message":"Logged out successfully"}
 
 @router.post("/reset-password", status_code=200)
@@ -128,7 +140,18 @@ async def reset_password(
         db.commit()
         db.refresh(current_user)
 
-        logger.info(f"🔒 Password changed for user {current_user.email}")
+        logger.info(f"Password changed for user {current_user.email}")
+
+        # Outbox audit event
+        try:
+            create_outbox_event(db, current_user.tenant_id, "user.password_reset", {
+                "user_id": str(current_user.user_id),
+                "email": current_user.email,
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for user.password_reset: {_oe}")
+
         return {"message": "Password updated successfully"}
 
     except HTTPException:
@@ -216,6 +239,17 @@ async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_
             poller = client.begin_send(message)
             result = poller.result()
             print("Message sent: ", result)
+
+            # Outbox audit event
+            try:
+                create_outbox_event(db, user.tenant_id, "user.forgot_password_requested", {
+                    "user_id": str(user.user_id),
+                    "email": req.email,
+                })
+                db.commit()
+            except Exception as _oe:
+                logger.warning(f"Outbox failed for user.forgot_password_requested: {_oe}")
+
             return result
 
         except Exception as ex:
@@ -266,7 +300,17 @@ async def confirm_reset_password(req: PasswordResetConfirmRequest, db: Session =
         except Exception:
             logger.error("Failed to revoke refresh token after password reset", exc_info=True)
 
-        logger.info(f"🔒 Password reset completed for user {user.email}")
+        # Outbox audit event
+        try:
+            create_outbox_event(db, user.tenant_id, "user.password_reset_confirmed", {
+                "user_id": str(user.user_id),
+                "email": user.email,
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for user.password_reset_confirmed: {_oe}")
+
+        logger.info(f"Password reset completed for user {user.email}")
         return {"message": "Password updated successfully"}
 
     except HTTPException:

@@ -22,6 +22,7 @@ from provisioning_service.utils.logger import logger
 router = APIRouter(prefix="/approved-ranges", tags=["Approved Ranges"])
 
 
+
 # =============================================================================
 # APPROVED RANGE CRUD
 # =============================================================================

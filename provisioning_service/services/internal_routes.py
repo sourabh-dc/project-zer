@@ -12,13 +12,22 @@ from sqlalchemy.orm import Session
 from provisioning_service.Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
 from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest
 from provisioning_service.core.db_config import get_db
-from provisioning_service.core.policy_client import require_policy
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
-from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
-SYSTEM_TENANT = uuid.UUID("00000000-0000-0000-0000-000000000000")
+# System-level tenant UUID for internal/admin audit events
+_SYSTEM_TENANT = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _internal_outbox(db, event_type: str, data: dict):
+    """Write an outbox event for internal/system operations."""
+    try:
+        create_outbox_event(db, _SYSTEM_TENANT, event_type, data)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Outbox failed for {event_type}: {e}")
 
 
 # Request schemas for endpoints that were using query params
@@ -37,7 +46,7 @@ class RolePermissionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/plans", status_code=201)
-async def create_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db), policy=Depends(require_policy("plan.create"))):
+async def create_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db)):
     """Create a new subscription plan with pricing."""
     if db.query(SubscriptionPlan).filter_by(code=req.code).first():
         raise HTTPException(409, "Plan code already exists")
@@ -67,17 +76,9 @@ async def create_plan(req: SubscriptionPlanRequest, db: Session = Depends(get_db
         price_quarterly_minor=price_quarterly
     )
     db.add(pricing)
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="plan",
-        aggregate_id=str(plan.plan_id),
-        event_type="plan.created",
-        payload={"code": plan.code, "name": plan.name},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
+
+    _internal_outbox(db, "plan.created", {"plan_code": plan.code, "name": plan.name})
 
     logger.info(f"Created plan: {plan.code}")
     return {
@@ -148,7 +149,7 @@ async def get_plan(plan_code: str, db: Session = Depends(get_db)):
 
 
 @router.put("/plans/{plan_code}")
-async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session = Depends(get_db), policy=Depends(require_policy("plan.update"))):
+async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session = Depends(get_db)):
     """Update an existing plan and its pricing."""
     plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
     if not plan:
@@ -167,17 +168,8 @@ async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session 
         pricing.price_yearly_minor = int((req.price_monthly_minor * 12) * (1 - req.yearly_discount_pct / 100))
         pricing.price_quarterly_minor = int((req.price_monthly_minor * 3) * (1 - req.quarterly_discount_pct / 100))
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="plan",
-        aggregate_id=str(plan.plan_id),
-        event_type="plan.updated",
-        payload={"code": plan.code, "name": plan.name},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "plan.updated", {"plan_code": plan.code, "name": plan.name})
     logger.info(f"Updated plan: {plan.code}")
 
     return {
@@ -189,26 +181,16 @@ async def update_plan(plan_code: str, req: SubscriptionPlanRequest, db: Session 
 
 
 @router.delete("/plans/{plan_code}", status_code=204)
-async def delete_plan(plan_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("plan.delete", resource_from="none"))):
-    """Soft-delete a plan by deactivating it."""
+async def delete_plan(plan_code: str, db: Session = Depends(get_db)):
+    """Deactivate a plan (soft delete)."""
     plan = db.query(SubscriptionPlan).filter_by(code=plan_code).first()
     if not plan:
         raise HTTPException(404, "Plan not found")
 
     plan.is_active = False
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="plan",
-        aggregate_id=str(plan.plan_id),
-        event_type="plan.deleted",
-        payload={"code": plan.code},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
-    logger.info(f"Soft-deleted plan: {plan_code}")
+    _internal_outbox(db, "plan.deactivated", {"plan_code": plan_code})
+    logger.info(f"Deactivated plan: {plan_code}")
     return None
 
 
@@ -217,7 +199,7 @@ async def delete_plan(plan_code: str, db: Session = Depends(get_db), policy=Depe
 # ---------------------------------------------------------------------------
 
 @router.post("/features", status_code=201)
-async def create_feature(req: FeatureRequest, db: Session = Depends(get_db), policy=Depends(require_policy("feature.create"))):
+async def create_feature(req: FeatureRequest, db: Session = Depends(get_db)):
     """Create a new feature."""
     if db.query(Feature).filter_by(code=req.code).first():
         raise HTTPException(409, "Feature code already exists")
@@ -234,17 +216,9 @@ async def create_feature(req: FeatureRequest, db: Session = Depends(get_db), pol
         active=True
     )
     db.add(feature)
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="feature",
-        aggregate_id=str(feature.id),
-        event_type="feature.created",
-        payload={"code": feature.code, "name": feature.name},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
+
+    _internal_outbox(db, "feature.created", {"feature_code": feature.code, "name": feature.name})
 
     logger.info(f"Created feature: {feature.code}")
     return {
@@ -262,7 +236,7 @@ async def list_features(
     db: Session = Depends(get_db)
 ):
     """List all features with optional filters."""
-    q = db.query(Feature).filter(Feature.status != "deleted")
+    q = db.query(Feature)
     if active is not None:
         q = q.filter(Feature.active == active)
     if cluster:
@@ -307,7 +281,7 @@ async def get_feature(feature_code: str, db: Session = Depends(get_db)):
 
 
 @router.put("/features/{feature_code}")
-async def update_feature(feature_code: str, req: FeatureRequest, db: Session = Depends(get_db), policy=Depends(require_policy("feature.update"))):
+async def update_feature(feature_code: str, req: FeatureRequest, db: Session = Depends(get_db)):
     """Update an existing feature."""
     feature = db.query(Feature).filter_by(code=feature_code).first()
     if not feature:
@@ -320,17 +294,8 @@ async def update_feature(feature_code: str, req: FeatureRequest, db: Session = D
     feature.max_unit = req.max_unit
     feature.reset_period = req.reset_period or feature.reset_period
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="feature",
-        aggregate_id=str(feature.id),
-        event_type="feature.updated",
-        payload={"code": feature.code, "name": feature.name},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "feature.updated", {"feature_code": feature_code})
     logger.info(f"Updated feature: {feature_code}")
 
     return {
@@ -342,27 +307,16 @@ async def update_feature(feature_code: str, req: FeatureRequest, db: Session = D
 
 
 @router.delete("/features/{feature_code}", status_code=204)
-async def delete_feature(feature_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("feature.delete", resource_from="none"))):
-    """Soft-delete a feature."""
+async def delete_feature(feature_code: str, db: Session = Depends(get_db)):
+    """Deactivate a feature (soft delete)."""
     feature = db.query(Feature).filter_by(code=feature_code).first()
     if not feature:
         raise HTTPException(404, "Feature not found")
 
-    feature.status = "deleted"
     feature.active = False
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="feature",
-        aggregate_id=str(feature.id),
-        event_type="feature.deleted",
-        payload={"code": feature.code},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
-    logger.info(f"Soft-deleted feature: {feature_code}")
+    _internal_outbox(db, "feature.deactivated", {"feature_code": feature_code})
+    logger.info(f"Deactivated feature: {feature_code}")
     return None
 
 
@@ -375,8 +329,7 @@ async def add_feature_to_plan(
     plan_code: str,
     feature_code: str,
     db: Session = Depends(get_db),
-    req: FeatureRequest = None,
-    policy=Depends(require_policy("plan_feature.update"))
+    req: FeatureRequest = None
 ):
     """
     Add or enable a feature in a plan.
@@ -422,23 +375,14 @@ async def add_feature_to_plan(
         )
         db.add(pf)
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="plan_feature",
-        aggregate_id=str(pf.id),
-        event_type="plan_feature.created",
-        payload={"plan_code": plan_code, "feature_code": feature_code},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "plan_feature.added", {"plan_code": plan_code, "feature_code": feature_code})
     logger.info(f"Added feature {feature_code} to plan {plan_code} with limits {pf.limits}")
     return {"plan_code": plan_code, "feature_code": feature_code, "enabled": True, "limits": pf.limits}
 
 
 @router.delete("/plans/{plan_code}/features/{feature_code}", status_code=204)
-async def remove_feature_from_plan(plan_code: str, feature_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("plan_feature.delete", resource_from="none"))):
+async def remove_feature_from_plan(plan_code: str, feature_code: str, db: Session = Depends(get_db)):
     """Remove (disable) a feature from a plan."""
     pf = db.query(PlanFeature).filter_by(
         plan_code=plan_code,
@@ -447,16 +391,8 @@ async def remove_feature_from_plan(plan_code: str, feature_code: str, db: Sessio
 
     if pf:
         pf.enabled = False
-        outbox = append_outbox_event(
-            db,
-            tenant_id=SYSTEM_TENANT,
-            aggregate_type="plan_feature",
-            aggregate_id=str(pf.id),
-            event_type="plan_feature.deleted",
-            payload={"plan_code": plan_code, "feature_code": feature_code},
-        )
         db.commit()
-        await notify_outbox(str(outbox.id))
+        _internal_outbox(db, "plan_feature.removed", {"plan_code": plan_code, "feature_code": feature_code})
         logger.info(f"Removed feature {feature_code} from plan {plan_code}")
 
     return None
@@ -500,7 +436,7 @@ async def list_plan_features(plan_code: str, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @router.post("/roles", status_code=201)
-async def create_role(req: RoleRequest, db: Session = Depends(get_db), policy=Depends(require_policy("role.create"))):
+async def create_role(req: RoleRequest, db: Session = Depends(get_db)):
     """Create a new role."""
     try:
         if req.code:
@@ -514,18 +450,10 @@ async def create_role(req: RoleRequest, db: Session = Depends(get_db), policy=De
             description=req.description or ""
         )
         db.add(role)
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=SYSTEM_TENANT,
-            aggregate_type="role",
-            aggregate_id=str(role.role_id),
-            event_type="role.created",
-            payload={"role_id": str(role.role_id), "code": role.code, "name": role.code},
-        )
         db.commit()
         db.refresh(role)
-        await notify_outbox(str(outbox.id))
+
+        _internal_outbox(db, "role.created", {"role_code": role.code})
 
         logger.info(f"Created role: {role.code}")
         return {
@@ -576,8 +504,7 @@ async def list_roles(
 async def add_permission_to_role_legacy(
     role_code: str = Query(...),
     permission_code: str = Query(...),
-    db: Session = Depends(get_db),
-    policy=Depends(require_policy("role_permission.create"))
+    db: Session = Depends(get_db)
 ):
     """Add permission to a role (legacy, use POST /roles/{role_code}/permissions instead)."""
     try:
@@ -595,17 +522,9 @@ async def add_permission_to_role_legacy(
             permission_code=permission_code
         )
         db.add(rp)
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=SYSTEM_TENANT,
-            aggregate_type="role_permission",
-            aggregate_id=str(rp.id),
-            event_type="role_permission.created",
-            payload={"role_code": role_code, "permission_code": permission_code},
-        )
         db.commit()
-        await notify_outbox(str(outbox.id))
+
+        _internal_outbox(db, "role_permission.added", {"role_code": role_code, "permission_code": permission_code})
 
         return {"message": "Permission added to role"}
     except HTTPException:
@@ -620,8 +539,7 @@ async def add_permission_to_role_legacy(
 async def remove_permission_from_role_legacy(
     role_code: str = Query(...),
     permission_code: str = Query(...),
-    db: Session = Depends(get_db),
-    policy=Depends(require_policy("role_permission.delete", resource_from="none"))
+    db: Session = Depends(get_db)
 ):
     """Remove permission from a role (legacy, use DELETE /roles/{role_code}/permissions/{perm} instead)."""
     assignment = db.query(RolePermission).filter(
@@ -632,18 +550,9 @@ async def remove_permission_from_role_legacy(
     if not assignment:
         raise HTTPException(404, "Permission not assigned to role")
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="role_permission",
-        aggregate_id=str(assignment.id),
-        event_type="role_permission.deleted",
-        payload={"role_code": role_code, "permission_code": permission_code},
-    )
     db.delete(assignment)
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "role_permission.removed", {"role_code": role_code, "permission_code": permission_code})
     return None
 
 
@@ -664,25 +573,15 @@ async def get_role(role_code: str, db: Session = Depends(get_db)):
 
 
 @router.put("/roles/{role_code}")
-async def update_role(role_code: str, req: RoleRequest, db: Session = Depends(get_db), policy=Depends(require_policy("role.update"))):
+async def update_role(role_code: str, req: RoleRequest, db: Session = Depends(get_db)):
     """Update an existing role."""
     role = db.query(Role).filter(Role.code == role_code).first()
     if not role:
         raise HTTPException(404, "Role not found")
 
     role.description = req.description or role.description
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="role",
-        aggregate_id=str(role.role_id),
-        event_type="role.updated",
-        payload={"role_id": str(role.role_id), "code": role.code},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "role.updated", {"role_code": role_code})
     logger.info(f"Updated role: {role_code}")
 
     return {
@@ -693,7 +592,7 @@ async def update_role(role_code: str, req: RoleRequest, db: Session = Depends(ge
 
 
 @router.delete("/roles/{role_code}", status_code=204)
-async def delete_role(role_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("role.delete", resource_from="none"))):
+async def delete_role(role_code: str, db: Session = Depends(get_db)):
     """Delete a role. Fails if role has assigned permissions or users."""
     role = db.query(Role).filter(Role.code == role_code).first()
     if not role:
@@ -702,18 +601,9 @@ async def delete_role(role_code: str, db: Session = Depends(get_db), policy=Depe
     if db.query(RolePermission).filter(RolePermission.role_code == role_code).first():
         raise HTTPException(400, "Cannot delete role with assigned permissions. Remove permissions first.")
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="role",
-        aggregate_id=str(role.role_id),
-        event_type="role.deleted",
-        payload={"role_id": str(role.role_id), "code": role.code},
-    )
     db.delete(role)
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "role.deleted", {"role_code": role_code})
     logger.info(f"Deleted role: {role_code}")
     return None
 
@@ -723,7 +613,7 @@ async def delete_role(role_code: str, db: Session = Depends(get_db), policy=Depe
 # ---------------------------------------------------------------------------
 
 @router.post("/permissions", status_code=201)
-async def create_permission(req: PermissionRequest, db: Session = Depends(get_db), policy=Depends(require_policy("permission.create"))):
+async def create_permission(req: PermissionRequest, db: Session = Depends(get_db)):
     """Create a new permission."""
     try:
         existing = db.query(Permission).filter(Permission.code == req.code).first()
@@ -736,18 +626,10 @@ async def create_permission(req: PermissionRequest, db: Session = Depends(get_db
             description=req.description or ""
         )
         db.add(perm)
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=SYSTEM_TENANT,
-            aggregate_type="permission",
-            aggregate_id=str(perm.permission_id),
-            event_type="permission.created",
-            payload={"permission_id": str(perm.permission_id), "code": perm.code},
-        )
         db.commit()
         db.refresh(perm)
-        await notify_outbox(str(outbox.id))
+
+        _internal_outbox(db, "permission.created", {"permission_code": perm.code})
 
         logger.info(f"Created permission: {perm.code}")
         return {
@@ -791,25 +673,15 @@ async def get_permission(permission_code: str, db: Session = Depends(get_db)):
 
 
 @router.put("/permissions/{permission_code}")
-async def update_permission(permission_code: str, req: PermissionRequest, db: Session = Depends(get_db), policy=Depends(require_policy("permission.update"))):
+async def update_permission(permission_code: str, req: PermissionRequest, db: Session = Depends(get_db)):
     """Update an existing permission."""
     perm = db.query(Permission).filter(Permission.code == permission_code).first()
     if not perm:
         raise HTTPException(404, "Permission not found")
 
     perm.description = req.description or perm.description
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="permission",
-        aggregate_id=str(perm.permission_id),
-        event_type="permission.updated",
-        payload={"permission_id": str(perm.permission_id), "code": perm.code},
-    )
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "permission.updated", {"permission_code": permission_code})
     logger.info(f"Updated permission: {permission_code}")
 
     return {
@@ -820,7 +692,7 @@ async def update_permission(permission_code: str, req: PermissionRequest, db: Se
 
 
 @router.delete("/permissions/{permission_code}", status_code=204)
-async def delete_permission(permission_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("permission.delete", resource_from="none"))):
+async def delete_permission(permission_code: str, db: Session = Depends(get_db)):
     """Delete a permission. Fails if assigned to any role."""
     perm = db.query(Permission).filter(Permission.code == permission_code).first()
     if not perm:
@@ -829,18 +701,9 @@ async def delete_permission(permission_code: str, db: Session = Depends(get_db),
     if db.query(RolePermission).filter(RolePermission.permission_code == permission_code).first():
         raise HTTPException(400, "Cannot delete permission assigned to roles. Remove from roles first.")
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="permission",
-        aggregate_id=str(perm.permission_id),
-        event_type="permission.deleted",
-        payload={"permission_id": str(perm.permission_id), "code": perm.code},
-    )
     db.delete(perm)
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "permission.deleted", {"permission_code": permission_code})
     logger.info(f"Deleted permission: {permission_code}")
     return None
 
@@ -850,7 +713,7 @@ async def delete_permission(permission_code: str, db: Session = Depends(get_db),
 # ---------------------------------------------------------------------------
 
 @router.post("/roles/{role_code}/permissions", status_code=201)
-async def add_permission_to_role(role_code: str, req: PermissionRequest, db: Session = Depends(get_db), policy=Depends(require_policy("role_permission.create"))):
+async def add_permission_to_role(role_code: str, req: PermissionRequest, db: Session = Depends(get_db)):
     """Add a permission to a role."""
     try:
         # validate role exists
@@ -875,17 +738,9 @@ async def add_permission_to_role(role_code: str, req: PermissionRequest, db: Ses
             permission_code=req.code
         )
         db.add(rp)
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=SYSTEM_TENANT,
-            aggregate_type="role_permission",
-            aggregate_id=str(rp.id),
-            event_type="role_permission.created",
-            payload={"role_code": role_code, "permission_code": req.code},
-        )
         db.commit()
-        await notify_outbox(str(outbox.id))
+
+        _internal_outbox(db, "role_permission.added", {"role_code": role_code, "permission_code": req.code})
 
         logger.info(f"Added permission {req.code} to role {role_code}")
         return {"role_code": role_code, "permission_code": req.code, "assigned": True}
@@ -898,7 +753,7 @@ async def add_permission_to_role(role_code: str, req: PermissionRequest, db: Ses
 
 
 @router.delete("/roles/{role_code}/permissions/{permission_code}", status_code=204)
-async def remove_permission_from_role(role_code: str, permission_code: str, db: Session = Depends(get_db), policy=Depends(require_policy("role_permission.delete", resource_from="none"))):
+async def remove_permission_from_role(role_code: str, permission_code: str, db: Session = Depends(get_db)):
     """Remove a permission from a role."""
     assignment = db.query(RolePermission).filter(
         RolePermission.role_code == role_code,
@@ -908,18 +763,9 @@ async def remove_permission_from_role(role_code: str, permission_code: str, db: 
     if not assignment:
         raise HTTPException(404, "Permission not assigned to role")
 
-    outbox = append_outbox_event(
-        db,
-        tenant_id=SYSTEM_TENANT,
-        aggregate_type="role_permission",
-        aggregate_id=str(assignment.id),
-        event_type="role_permission.deleted",
-        payload={"role_code": role_code, "permission_code": permission_code},
-    )
     db.delete(assignment)
     db.commit()
-    await notify_outbox(str(outbox.id))
-
+    _internal_outbox(db, "role_permission.removed", {"role_code": role_code, "permission_code": permission_code})
     logger.info(f"Removed permission {permission_code} from role {role_code}")
     return None
 

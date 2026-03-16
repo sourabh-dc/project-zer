@@ -8,9 +8,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import Tenant, User, UserRole, Role, Permission, RolePermission, TenantUserRole, TenantRole, TenantRolePermission
-from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.Schemas import TenantRequest, LoginRequest, LoginResponse
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.metrics import req_total
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
@@ -194,15 +194,13 @@ async def create_tenant(
         req: TenantRequest,
         db: Session = Depends(get_db)
 ):
-    """Create a new tenant with admin user (synchronous) and emit outbox event."""
+    """Create a new tenant"""
     try:
+        # Check if tenant exists
         existing = db.query(Tenant).filter(Tenant.email == req.email).first()
         if existing:
             raise HTTPException(status_code=409, detail="Tenant email already exists")
 
-        password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
-
-        # --- Create tenant ---
         tenant = Tenant(
             tenant_id=uuid.uuid4(),
             tenant_name=getattr(req, "tenant_name", getattr(req, "name", None)),
@@ -220,87 +218,30 @@ async def create_tenant(
             industry=getattr(req, "industry", None),
             tech_contact_email=getattr(req, "tech_contact_email", None),
             support_contact_email=getattr(req, "support_contact_email", None),
+            # store raw logo bytes (schema/DB must have a matching binary column)
             logo=getattr(req, "logo", None),
             active=True if getattr(req, "active", None) is None else req.active,
         )
+
         db.add(tenant)
+        db.commit()
+        db.refresh(tenant)
 
-        # --- Create admin user (synchronous) ---
-        user = User(
-            user_id=uuid.uuid4(),
-            tenant_id=tenant.tenant_id,
-            first_name=req.admin_firstname,
-            last_name=req.admin_lastname,
-            display_name=f"{req.admin_firstname} {req.admin_lastname}".strip(),
-            email=req.admin_email,
-            password_hash=password_hash,
-        )
-        db.add(user)
+        # Create outbox event record so worker can process and update status
+        event_data = req.dict()
+        event_data["tenant_id"] = str(tenant.tenant_id)
 
-        # --- Ensure tenant_admin role + permissions ---
-        role = db.query(Role).filter(Role.code == "tenant_admin").first()
-        if not role:
-            role = Role(role_id=uuid.uuid4(), code="tenant_admin", description="Super admin for tenant")
-            db.add(role)
-            db.flush()
-
-        core_permissions = [
-            ("tenant.admin", "Full tenant administration"),
-            ("users.manage", "Create and manage users"),
-            ("sites.manage", "Create and manage sites"),
-            ("stores.manage", "Create and manage stores"),
-            ("vendors.manage", "Create and manage vendors"),
-            ("budgets.manage", "Manage budgets and cost centres"),
-            ("approvals.manage", "Manage approval chains and requests"),
-            ("catalog.manage", "Manage products and catalog"),
-        ]
-        for perm_code, perm_desc in core_permissions:
-            perm = db.query(Permission).filter(Permission.code == perm_code).first()
-            if not perm:
-                perm = Permission(permission_id=uuid.uuid4(), code=perm_code, description=perm_desc)
-                db.add(perm)
-                db.flush()
-            existing_rp = db.query(RolePermission).filter(
-                RolePermission.role_code == role.code,
-                RolePermission.permission_code == perm_code,
-            ).first()
-            if not existing_rp:
-                db.add(RolePermission(id=uuid.uuid4(), role_code=role.code, permission_code=perm_code))
-
-        db.add(UserRole(id=uuid.uuid4(), tenant_id=tenant.tenant_id, user_id=user.user_id, role_id=role.role_id))
-
-        # --- Outbox event (same transaction) ---
-        outbox = append_outbox_event(
-            db,
-            tenant_id=tenant.tenant_id,
-            aggregate_type="tenant",
-            aggregate_id=tenant.tenant_id,
-            event_type="tenant.created",
-            payload={
-                "tenant_id": str(tenant.tenant_id),
-                "tenant_name": tenant.tenant_name,
-                "type": tenant.tenant_type,
-                "email": tenant.email,
-                "admin_email": req.admin_email,
-                "admin_user_id": str(user.user_id),
-            },
-        )
-
-        # Single atomic commit: tenant + user + role + permissions + outbox
+        outbox = create_outbox_event(db, tenant.tenant_id, "tenant.signup", event_data, status="pending")
         db.commit()
 
-        await notify_outbox(str(outbox.id))
+        try:
+            from provisioning_service.core.sb_client import messaging_service
+            await messaging_service.send_outbox_message(str(outbox.id))
+        except Exception as e:
+            # The outbox worker will pick this up later if the notify fails.
+            logger.warning(f"Failed to notify Service Bus: {e}")
 
-        return {
-            "tenant_id": str(tenant.tenant_id),
-            "user_id": str(user.user_id),
-            "name": tenant.tenant_name,
-            "type": tenant.tenant_type,
-            "role": "tenant_admin",
-            "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
-        }
-    except HTTPException:
-        raise
+        return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}
     except Exception as e:
         db.rollback()
         req_total.labels(operation="create_tenant", status="error").inc()

@@ -1,6 +1,6 @@
 import uuid
 import io
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -9,9 +9,8 @@ from uuid import UUID
 import pandas as pd
 
 from provisioning_service.Models import (
-    Tenant, Category, Product, Variant, StoreProduct, Store, Vendor,
-    Colour, Size, Fit, UosLabel,
-    ApprovedRange, ApprovedRangeOrgUnit, ApprovedRangeProduct, User,
+    Category, Product, Variant, StoreProduct, Store, Vendor,
+    Colour, Size, Fit, UosLabel
 )
 from provisioning_service.Schemas import (
     CategoryRequest, ProductRequest, VariantRequest, StoreProductRequest,
@@ -20,9 +19,9 @@ from provisioning_service.Schemas import (
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.aifi_services import cv_create_product
 from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event, dispatch_outbox_to_queue
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
-from provisioning_service.core.helpers.outbox import append_outbox_event, notify_outbox
 from provisioning_service.utils.logger import logger
 
 
@@ -86,28 +85,26 @@ async def create_category(
         active=True
     )
     db.add(category)
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=uuid.UUID(req.tenant_id),
-        aggregate_type="category",
-        aggregate_id=category.category_id,
-        event_type="category.created",
-        payload={
-            "category_id": str(category.category_id),
-            "name": category.name,
-            "code": category.code,
-            "tenant_id": req.tenant_id,
-        },
-    )
     try:
         db.commit()
         db.refresh(category)
+        # Record feature usage
         record_feature_usage(db, req.tenant_id, "categories", count=1)
-        await notify_outbox(str(outbox.id))
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Category code conflict")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "category.created", {
+            "category_id": str(category.category_id),
+            "name": category.name,
+            "code": category.code,
+            "parent_category_id": str(parent_id) if parent_id else None,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for category.created: {_oe}")
 
     return {
         "category_id": str(category.category_id),
@@ -129,7 +126,7 @@ async def list_categories(
 ):
     q = db.query(Category).filter(
         Category.tenant_id == ctx["tenant_id"],
-        Category.status != "deleted"
+        Category.active == True
     )
 
     if active is not None:
@@ -153,139 +150,12 @@ async def list_categories(
                 "active": c.active,
                 "has_children": db.query(Category).filter(
                     Category.parent_category_id == c.category_id,
-                    Category.status != "deleted"
+                    Category.active == True
                 ).count() > 0
             }
             for c in items
         ]
     }
-
-
-@router.put("/categories/{category_id}")
-async def update_category(
-    category_id: str,
-    name: Optional[str] = Query(None),
-    code: Optional[str] = Query(None),
-    description: Optional[str] = Query(None),
-    parent_category_id: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("category.update")),
-):
-    try:
-        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
-
-        category = db.query(Category).filter(
-            Category.category_id == UUID(category_id),
-            Category.tenant_id == tenant_id,
-            Category.status != "deleted"
-        ).first()
-        if not category:
-            raise HTTPException(404, "Category not found")
-
-        if name is not None:
-            category.name = name.strip()
-        if code is not None:
-            existing = db.query(Category).filter(
-                Category.tenant_id == tenant_id,
-                Category.code == code.strip(),
-                Category.category_id != category.category_id,
-                Category.active == True
-            ).first()
-            if existing:
-                raise HTTPException(409, "Category code already exists")
-            category.code = code.strip()
-        if description is not None:
-            category.description = description
-        if parent_category_id is not None:
-            if parent_category_id == "":
-                category.parent_category_id = None
-            else:
-                try:
-                    pid = UUID(parent_category_id)
-                except ValueError:
-                    raise HTTPException(400, "Invalid parent_category_id format")
-                parent = db.query(Category).filter(
-                    Category.category_id == pid,
-                    Category.tenant_id == tenant_id,
-                    Category.active == True
-                ).first()
-                if not parent:
-                    raise HTTPException(404, "Parent category not found")
-                category.parent_category_id = pid
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=uuid.UUID(str(tenant_id)),
-            aggregate_type="category",
-            aggregate_id=category.category_id,
-            event_type="category.updated",
-            payload={
-                "category_id": str(category.category_id),
-                "name": category.name,
-                "code": category.code,
-                "tenant_id": str(tenant_id),
-            },
-        )
-        db.commit()
-        db.refresh(category)
-        await notify_outbox(str(outbox.id))
-
-        return {
-            "category_id": str(category.category_id),
-            "name": category.name,
-            "code": category.code,
-            "description": category.description,
-            "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
-            "active": category.active,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Update category failed: {e}")
-        raise HTTPException(500, f"Internal server error")
-
-
-@router.delete("/categories/{category_id}", status_code=200)
-async def delete_category(
-    category_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("category.delete", resource_from="none")),
-):
-    try:
-        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
-
-        category = db.query(Category).filter(
-            Category.category_id == UUID(category_id),
-            Category.tenant_id == tenant_id,
-            Category.status != "deleted"
-        ).first()
-        if not category:
-            raise HTTPException(404, "Category not found")
-
-        category.status = "deleted"
-        category.active = False
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=uuid.UUID(str(tenant_id)),
-            aggregate_type="category",
-            aggregate_id=category.category_id,
-            event_type="category.deleted",
-            payload={"category_id": str(category.category_id), "tenant_id": str(tenant_id)},
-        )
-        db.commit()
-        await notify_outbox(str(outbox.id))
-
-        return {"deleted": True, "category_id": category_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Delete category failed: {e}")
-        raise HTTPException(500, "Internal server error")
 
 
 # =============================================================================
@@ -397,7 +267,7 @@ async def create_product(
             fit_id = UUID(req.fit_id)
         except ValueError:
             raise HTTPException(400, "Invalid fit_id")
-        if not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.status != "deleted").first():
+        if not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
             raise HTTPException(404, "Fit not found")
 
     # Validate UOS labels
@@ -468,20 +338,6 @@ async def create_product(
         active=True
     )
     db.add(product)
-
-    outbox = append_outbox_event(
-        db,
-        tenant_id=uuid.UUID(req.tenant_id),
-        aggregate_type="product",
-        aggregate_id=product.product_id,
-        event_type="product.created",
-        payload={
-            "product_id": str(product.product_id),
-            "sku": product.sku,
-            "display_name": product.display_name,
-            "tenant_id": req.tenant_id,
-        },
-    )
     try:
         db.commit()
         db.refresh(product)
@@ -497,13 +353,38 @@ async def create_product(
             product.aifi_product_id = aifi_product.get("id")
             db.commit()
         except Exception as e:
-            logger.warning(f"AiFi product sync failed, continuing: {e}")
+            logger.warning(f"❌ AiFi product sync failed, continuing: {e}")
             db.rollback()
+        # Record feature usage
         record_feature_usage(db, req.tenant_id, "products", count=1)
-        await notify_outbox(str(outbox.id))
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(409, "SKU or EAN conflict")
+
+    # Outbox audit event
+    try:
+        # Resolve category name for vector embedding
+        _cat_name = None
+        if product.category_id:
+            _cat = db.query(Category).filter(Category.category_id == product.category_id).first()
+            if _cat:
+                _cat_name = _cat.name
+
+        create_outbox_event(db, req.tenant_id, "product.created", {
+            "product_id": str(product.product_id),
+            "sku": product.sku,
+            "ean": product.ean,
+            "display_name": product.display_name,
+            "sales_description": product.sales_description,
+            "matrix_type": product.matrix_type,
+            "purchase_price_minor": product.purchase_price_minor,
+            "category_id": str(product.category_id) if product.category_id else None,
+            "category_name": _cat_name,
+            "restricted": product.restricted,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for product.created: {_oe}")
 
     return {
         "product_id": str(product.product_id),
@@ -516,58 +397,6 @@ async def create_product(
     }
 
 
-def _is_tenant_admin(ctx) -> bool:
-    """Check if the current user is a tenant admin (bypasses approved range filtering)."""
-    perms = ctx.get("permissions") if isinstance(ctx, dict) else getattr(ctx, "permissions", None)
-    if isinstance(perms, list) and "*" in perms:
-        return True
-    roles = ctx.get("roles") if isinstance(ctx, dict) else getattr(ctx, "roles", None)
-    if isinstance(roles, list) and "tenant_admin" in roles:
-        return True
-    return False
-
-
-def _get_approved_product_ids(db: Session, tenant_id, user_id) -> Optional[set]:
-    """Return the set of product IDs visible to a non-admin user via approved ranges.
-
-    Returns None if the user has no org unit (fallback: show nothing outside universal).
-    """
-    user = db.query(User).filter(User.user_id == user_id).first()
-    user_org_unit_id = user.home_org_unit_id if user else None
-
-    # Universal ranges — always included
-    universal_range_ids = [
-        r[0] for r in db.query(ApprovedRange.approved_range_id).filter(
-            ApprovedRange.tenant_id == tenant_id,
-            ApprovedRange.is_universal == True,
-            ApprovedRange.status != "deleted",
-        ).all()
-    ]
-
-    # Org-unit-specific ranges
-    ou_range_ids = []
-    if user_org_unit_id:
-        ou_range_ids = [
-            r[0] for r in db.query(ApprovedRangeOrgUnit.approved_range_id).filter(
-                ApprovedRangeOrgUnit.org_unit_id == user_org_unit_id,
-            ).join(ApprovedRange, ApprovedRange.approved_range_id == ApprovedRangeOrgUnit.approved_range_id).filter(
-                ApprovedRange.tenant_id == tenant_id,
-                ApprovedRange.status != "deleted",
-            ).all()
-        ]
-
-    all_range_ids = set(universal_range_ids + ou_range_ids)
-    if not all_range_ids:
-        return set()
-
-    product_ids = {
-        r[0] for r in db.query(ApprovedRangeProduct.product_id).filter(
-            ApprovedRangeProduct.approved_range_id.in_(all_range_ids)
-        ).all()
-    }
-    return product_ids
-
-
 @router.get("/products")
 async def list_products(
     category_id: Optional[str] = None,
@@ -577,29 +406,12 @@ async def list_products(
     limit: int = Query(100, le=500),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("product.search", resource_from="none")),
+    ctx: UserContext = Depends(check_user_authorization("catalog.manage"))
 ):
-    tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
-    user_id = ctx["user_id"] if isinstance(ctx, dict) else ctx.user_id
-
     q = db.query(Product).filter(
-        Product.tenant_id == tenant_id,
-        Product.status != "deleted"
+        Product.tenant_id == ctx["tenant_id"],
+        Product.active == True
     )
-
-    # Approved range filtering: non-admin users only see products in their ranges
-    if not _is_tenant_admin(ctx):
-        has_any_ranges = db.query(ApprovedRange).filter(
-            ApprovedRange.tenant_id == tenant_id,
-            ApprovedRange.status != "deleted",
-        ).first()
-        if has_any_ranges:
-            approved_ids = _get_approved_product_ids(db, tenant_id, user_id)
-            if approved_ids:
-                q = q.filter(Product.product_id.in_(approved_ids))
-            else:
-                q = q.filter(Product.product_id == None)
 
     if category_id:
         q = q.filter(Product.category_id == UUID(category_id))
@@ -638,174 +450,6 @@ async def list_products(
             for p in items
         ]
     }
-
-
-@router.put("/products/{product_id}")
-async def update_product(
-    product_id: str,
-    display_name: Optional[str] = Query(None),
-    sales_description: Optional[str] = Query(None),
-    purchase_description: Optional[str] = Query(None),
-    purchase_price_minor: Optional[int] = Query(None),
-    restricted: Optional[bool] = Query(None),
-    active: Optional[bool] = Query(None),
-    category_id: Optional[str] = Query(None),
-    vendor_id: Optional[str] = Query(None),
-    web_display_name: Optional[str] = Query(None),
-    detailed_description: Optional[str] = Query(None),
-    weight: Optional[float] = Query(None),
-    weight_unit: Optional[str] = Query(None),
-    currency: Optional[str] = Query(None),
-    tax_rate: Optional[int] = Query(None),
-    search_keywords: Optional[str] = Query(None),
-    comments: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("product.update")),
-):
-    try:
-        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
-
-        product = db.query(Product).filter(
-            Product.product_id == UUID(product_id),
-            Product.tenant_id == tenant_id,
-            Product.status != "deleted"
-        ).first()
-        if not product:
-            raise HTTPException(404, "Product not found")
-
-        if display_name is not None:
-            product.display_name = display_name.strip()
-        if sales_description is not None:
-            product.sales_description = sales_description
-        if purchase_description is not None:
-            product.purchase_description = purchase_description
-        if purchase_price_minor is not None:
-            product.purchase_price_minor = purchase_price_minor
-        if restricted is not None:
-            product.restricted = restricted
-        if active is not None:
-            product.active = active
-        if category_id is not None:
-            if category_id == "":
-                product.category_id = None
-            else:
-                try:
-                    cat_uuid = UUID(category_id)
-                except ValueError:
-                    raise HTTPException(400, "Invalid category_id")
-                if not db.query(Category).filter(
-                    Category.category_id == cat_uuid,
-                    Category.tenant_id == tenant_id,
-                    Category.active == True
-                ).first():
-                    raise HTTPException(404, "Category not found")
-                product.category_id = cat_uuid
-        if vendor_id is not None:
-            if vendor_id == "":
-                product.vendor_id = None
-            else:
-                try:
-                    v_uuid = UUID(vendor_id)
-                except ValueError:
-                    raise HTTPException(400, "Invalid vendor_id")
-                if not db.query(Vendor).filter(
-                    Vendor.vendor_id == v_uuid,
-                    Vendor.tenant_id == tenant_id
-                ).first():
-                    raise HTTPException(404, "Vendor not found")
-                product.vendor_id = v_uuid
-        if web_display_name is not None:
-            product.web_display_name = web_display_name
-        if detailed_description is not None:
-            product.detailed_description = detailed_description
-        if weight is not None:
-            product.weight = weight
-        if weight_unit is not None:
-            product.weight_unit = weight_unit
-        if currency is not None:
-            product.currency = currency
-        if tax_rate is not None:
-            product.tax_rate = tax_rate
-        if search_keywords is not None:
-            product.search_keywords = search_keywords
-        if comments is not None:
-            product.comments = comments
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=uuid.UUID(str(tenant_id)),
-            aggregate_type="product",
-            aggregate_id=product.product_id,
-            event_type="product.updated",
-            payload={
-                "product_id": str(product.product_id),
-                "sku": product.sku,
-                "display_name": product.display_name,
-                "tenant_id": str(tenant_id),
-            },
-        )
-        db.commit()
-        db.refresh(product)
-        await notify_outbox(str(outbox.id))
-
-        return {
-            "product_id": str(product.product_id),
-            "sku": product.sku,
-            "ean": product.ean,
-            "display_name": product.display_name,
-            "purchase_price_minor": product.purchase_price_minor,
-            "active": product.active,
-            "category_id": str(product.category_id) if product.category_id else None,
-            "vendor_id": str(product.vendor_id) if product.vendor_id else None,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Update product failed: {e}")
-        raise HTTPException(500, "Internal server error")
-
-
-@router.delete("/products/{product_id}", status_code=200)
-async def delete_product(
-    product_id: str,
-    db: Session = Depends(get_db),
-    ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("product.delete", resource_from="none")),
-):
-    try:
-        tenant_id = ctx["tenant_id"] if isinstance(ctx, dict) else ctx.tenant_id
-
-        product = db.query(Product).filter(
-            Product.product_id == UUID(product_id),
-            Product.tenant_id == tenant_id,
-            Product.status != "deleted"
-        ).first()
-        if not product:
-            raise HTTPException(404, "Product not found")
-
-        product.status = "deleted"
-        product.active = False
-
-        outbox = append_outbox_event(
-            db,
-            tenant_id=uuid.UUID(str(tenant_id)),
-            aggregate_type="product",
-            aggregate_id=product.product_id,
-            event_type="product.deleted",
-            payload={"product_id": str(product.product_id), "tenant_id": str(tenant_id)},
-        )
-        db.commit()
-        await notify_outbox(str(outbox.id))
-
-        return {"deleted": True, "product_id": product_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Delete product failed: {e}")
-        raise HTTPException(500, "Internal server error")
 
 
 # =============================================================================
@@ -859,10 +503,22 @@ async def create_variant(
         db.commit()
         # Record feature usage
         record_feature_usage(db, str(ctx.tenant_id), "variants", count=1)
-        return {"variant_id": str(variant.variant_id), "sku": variant.sku}
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Variant SKU conflict")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, ctx.tenant_id, "variant.created", {
+            "variant_id": str(variant.variant_id),
+            "sku": variant.sku,
+            "product_id": str(product.product_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for variant.created: {_oe}")
+
+    return {"variant_id": str(variant.variant_id), "sku": variant.sku}
 
 
 # =============================================================================
@@ -922,6 +578,17 @@ async def add_product_to_store(
     
     # Record feature usage
     record_feature_usage(db, str(ctx["tenant_id"]), "store_products", count=1)
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, ctx["tenant_id"], "store_product.created", {
+            "store_product_id": str(sp.id),
+            "product_id": str(product_id),
+            "store_id": str(store_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for store_product.created: {_oe}")
 
     return {
         "store_product_id": str(sp.id),
@@ -1044,7 +711,7 @@ async def bulk_upload_products(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     ctx: UserContext = Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("product.bulk_upload")),
+    policy=Depends(require_policy("product.bulk_upload", resource_from="none")),
 ):
     """
     Bulk upload products from an Excel file.
@@ -1151,7 +818,7 @@ async def bulk_upload_products(
                 continue
 
             category_id = get_uuid('category_id')
-            if category_id and not db.query(Category).filter(Category.category_id == category_id, Category.tenant_id == tenant_id, Category.status != "deleted").first():
+            if category_id and not db.query(Category).filter(Category.category_id == category_id, Category.tenant_id == tenant_id, Category.active == True).first():
                 errors.append({"row": row_num, "error": f"Category ID not found: {category_id}"})
                 continue
 
@@ -1166,7 +833,7 @@ async def bulk_upload_products(
                 continue
 
             fit_id = get_uuid('fit_id')
-            if fit_id and not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.status != "deleted").first():
+            if fit_id and not db.query(Fit).filter(Fit.fit_id == fit_id, Fit.active == True).first():
                 errors.append({"row": row_num, "error": f"Fit ID not found: {fit_id}"})
                 continue
 
@@ -1231,21 +898,6 @@ async def bulk_upload_products(
             )
 
             db.add(product)
-
-            append_outbox_event(
-                db,
-                tenant_id=uuid.UUID(str(tenant_id)),
-                aggregate_type="product",
-                aggregate_id=product.product_id,
-                event_type="product.created",
-                payload={
-                    "product_id": str(product.product_id),
-                    "sku": product.sku,
-                    "display_name": product.display_name,
-                    "tenant_id": str(tenant_id),
-                },
-            )
-
             created_products.append({
                 "row": row_num,
                 "product_id": str(product.product_id),
@@ -1257,10 +909,27 @@ async def bulk_upload_products(
             logger.error(f"Error processing row {row_num}: {e}")
             errors.append({"row": row_num, "error": str(e)})
 
+    # Commit all products at once
     if created_products:
         try:
             db.commit()
+            # Record feature usage for all created products
             record_feature_usage(db, str(tenant_id), "products", count=len(created_products))
+            # Single outbox event for the entire batch – the product worker will
+            # iterate the product_ids list and sync each one to AiFi asynchronously.
+            product_ids = [p["product_id"] for p in created_products]
+            bulk_outbox = create_outbox_event(
+                db, tenant_id, "product.bulk_created",
+                {
+                    "product_ids": product_ids,
+                    "tenant_id": str(tenant_id),
+                    "count": len(product_ids),
+                },
+                status="pending",
+            )
+            db.commit()
+            # Dispatch to queue for async AiFi sync
+            await dispatch_outbox_to_queue(bulk_outbox)
         except IntegrityError as e:
             db.rollback()
             logger.error(f"Database error during bulk commit: {e}")

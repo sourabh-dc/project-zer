@@ -1,16 +1,3 @@
-"""
-Outbox worker — consumes Service Bus messages and routes to event handlers.
-
-Engineering Lock v1.1 §3.2:
-  - Events MUST NOT be marked processed until projection mutation completes.
-  - If retries exceed threshold → dead-letter queue + operational alert.
-  - Consumers MUST retry until success.
-
-Engineering Lock v1.1 §0.3:
-  - All projection consumers MUST be idempotent.
-  - Duplicate event processing MUST NOT alter final state.
-"""
-
 import json
 import uuid
 import asyncio
@@ -19,23 +6,37 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
+# Add project root to path for direct script execution
 project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Use the ASYNC versions for Service Bus
 from azure.identity.aio import DefaultAzureCredential
 from azure.servicebus.aio import ServiceBusClient
 
-from provisioning_service.Models import OutboxEvent
+# Your internal imports
+from provisioning_service.Models import (
+    OutboxEvent
+)
 from provisioning_service.core.db_config import SessionLocal
-from provisioning_service.core.config import SETTINGS
 
+# Import handlers (lazy import below to avoid top-level import resolution issues)
+# from provisioning_service.core.tasks.tenant_worker import handle_tenant_provisioning
+
+# Setup logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("outbox-worker")
+logger = logging.getLogger("worker")
+
+SB_NAMESPACE = "zeroque.servicebus.windows.net"
+QUEUE_NAME = "outbox-task-queue"
 
 
 def _decode_message_body(msg):
-    """Safely decode the service bus message body."""
+    """Safely decode the service bus message body to a Python object.
+    Handles cases where `msg.body` yields an iterable of bytes/strings.
+    """
     try:
+        # msg.body may be an iterable of bytes/parts
         body_bytes = b""
         if hasattr(msg, "body"):
             for part in msg.body:
@@ -44,78 +45,64 @@ def _decode_message_body(msg):
                 else:
                     body_bytes += str(part).encode("utf-8")
         else:
+            # fallback to str(msg)
             body_bytes = str(msg).encode("utf-8")
-        return json.loads(body_bytes.decode("utf-8"))
+
+        text = body_bytes.decode("utf-8")
+        return json.loads(text)
     except Exception as exc:
         logger.error(f"Failed to decode message body: {exc}")
         return None
 
 
-HANDLER_REGISTRY = {}
-
-
-def _load_handlers():
-    """Lazy-load handler functions to avoid circular imports."""
-    if HANDLER_REGISTRY:
-        return
-    from provisioning_service.core.tasks.tenant_worker import handle_tenant_created
-    from provisioning_service.core.tasks.user_worker import handle_user_created
-
-    HANDLER_REGISTRY["tenant.created"] = handle_tenant_created
-    HANDLER_REGISTRY["user.created"] = handle_user_created
-
-
-async def _process_event(db, event: OutboxEvent, outbox_id: str) -> None:
-    """Route an outbox event to its handler. Raises on failure."""
-    _load_handlers()
-
-    handler = HANDLER_REGISTRY.get(event.event_type)
-    if handler:
-        logger.info(f"Routing outbox {outbox_id} → {event.event_type}")
-        await handler(db, str(event.id))
-    else:
-        logger.info(f"No handler for event_type={event.event_type}; marking completed (no-op)")
-
-
 async def process_outbox():
-    """Main worker loop — consume Service Bus messages and process outbox events."""
+    """Generic outbox processor. Routes based on OutboxEvent.event_type to handler functions.
+
+    Workflow:
+    - Receive Service Bus message containing {'outbox_id': '<uuid>'}
+    - Load OutboxEvent from DB, mark as processing
+    - Call handler for its event_type
+    - On success mark completed; on failure increment retry_count and abandon/complete accordingly
+    """
     cred = DefaultAzureCredential()
-    client = ServiceBusClient(SETTINGS.SB_NAMESPACE, cred)
+    client = ServiceBusClient(SB_NAMESPACE, cred)
 
     async with client:
-        receiver = client.get_queue_receiver(SETTINGS.QUEUE_NAME)
+        receiver = client.get_queue_receiver(QUEUE_NAME)
         async with receiver:
             logger.info("Outbox worker started. Listening for messages...")
             async for msg in receiver:
                 db = SessionLocal()
+
                 try:
                     data = _decode_message_body(msg)
                     if not data:
-                        logger.error("Empty/invalid message body; completing")
+                        logger.error("Empty/invalid message body; completing message")
                         await receiver.complete_message(msg)
                         continue
 
                     outbox_id = data.get("outbox_id") or data.get("id")
                     if not outbox_id:
-                        logger.error("No outbox_id in message; completing")
+                        logger.error("No outbox_id found in message; completing message")
                         await receiver.complete_message(msg)
                         continue
 
                     try:
                         outbox_uuid = uuid.UUID(outbox_id)
                     except Exception:
-                        logger.error("Invalid outbox_id format; completing")
+                        logger.error("Invalid outbox_id format; completing message")
                         await receiver.complete_message(msg)
                         continue
 
                     event = db.query(OutboxEvent).filter(OutboxEvent.id == outbox_uuid).first()
                     if not event:
-                        logger.error(f"Outbox event {outbox_id} not found; completing")
+                        logger.error(f"Outbox event not found for id {outbox_id}; completing message")
                         await receiver.complete_message(msg)
                         continue
 
-                    if event.processed_at is not None or event.status in ("completed", "dead_letter"):
-                        logger.info(f"Outbox {outbox_id} already processed; completing")
+                    # Skip if already processed
+                    if event.status in ("completed", "failed"):
+                        logger.info(f"Outbox {outbox_id} already processed with status={event.status}; completing message")
                         await receiver.complete_message(msg)
                         continue
 
@@ -124,45 +111,57 @@ async def process_outbox():
                     event.updated_at = datetime.now(timezone.utc)
                     db.commit()
 
+                    # Route to handler based on event_type
                     try:
-                        await _process_event(db, event, outbox_id)
+                        logger.info(f"Routing outbox {outbox_id} with event_type={event.event_type}")
+                        if event.event_type == "tenant.signup":
+                            # lazy import to avoid circular/import-time issues
+                            from provisioning_service.core.tasks.tenant_worker import handle_tenant_provisioning
+                            # pass payload id (outbox id) to handler per requested call pattern
+                            await handle_tenant_provisioning(db, str(event.id))
 
-                        now = datetime.now(timezone.utc)
+                        elif event.event_type == "user.created":
+                            from provisioning_service.core.tasks.user_worker import handle_user_created
+                            await handle_user_created(db, str(event.id))
+
+                        elif event.event_type == "product.created":
+                            from provisioning_service.core.tasks.product_worker import handle_product_created
+                            await handle_product_created(db, str(event.id))
+
+                        elif event.event_type == "product.bulk_created":
+                            from provisioning_service.core.tasks.product_worker import handle_bulk_products_created
+                            await handle_bulk_products_created(db, str(event.id))
+
+                        else:
+                            logger.warning(f"No handler implemented for event_type={event.event_type}; marking completed")
+
+                        # On success
                         event.status = "completed"
-                        event.processed_at = now
-                        event.updated_at = now
+                        event.updated_at = datetime.now(timezone.utc)
                         db.commit()
 
                         await receiver.complete_message(msg)
                         logger.info(f"Processed outbox {outbox_id} successfully")
 
                     except Exception as handler_exc:
+                        # Handler raised; apply retry logic
                         db.rollback()
                         event = db.query(OutboxEvent).filter(OutboxEvent.id == outbox_uuid).first()
-                        if not event:
-                            logger.error(f"Outbox {outbox_id} missing during error handling")
-                            await receiver.complete_message(msg)
-                            continue
-
-                        event.retry_count = (event.retry_count or 0) + 1
-                        event.updated_at = datetime.now(timezone.utc)
-
-                        if event.retry_count >= (event.max_retries or 3):
-                            event.status = "dead_letter"
-                            event.processed_at = datetime.now(timezone.utc)
-                            db.commit()
-                            logger.error(
-                                f"DEAD LETTER: outbox {outbox_id} (event_type={event.event_type}) "
-                                f"failed after {event.retry_count} retries: {handler_exc}"
-                            )
-                            await receiver.complete_message(msg)
+                        if event:
+                            event.retry_count = (event.retry_count or 0) + 1
+                            event.updated_at = datetime.now(timezone.utc)
+                            if event.retry_count >= (event.max_retries or 3):
+                                event.status = "failed"
+                                db.commit()
+                                logger.error(f"Outbox {outbox_id} failed after max retries: {handler_exc}")
+                                await receiver.complete_message(msg)
+                            else:
+                                db.commit()
+                                logger.error(f"Transient error processing outbox {outbox_id}, abandoning message for retry: {handler_exc}")
+                                await receiver.abandon_message(msg)
                         else:
-                            db.commit()
-                            logger.warning(
-                                f"Transient error on outbox {outbox_id} "
-                                f"(retry {event.retry_count}/{event.max_retries}): {handler_exc}"
-                            )
-                            await receiver.abandon_message(msg)
+                            logger.error(f"Outbox missing during error handling for id {outbox_id}: {handler_exc}")
+                            await receiver.complete_message(msg)
 
                 except Exception as e:
                     logger.error(f"Unexpected worker error: {e}", exc_info=True)
@@ -172,48 +171,6 @@ async def process_outbox():
                         pass
                 finally:
                     db.close()
-
-
-async def run_relay_poller(interval_seconds: int = 10):
-    """Relay poller — picks up outbox events that were never notified to Service Bus.
-
-    Engineering Lock v1.1 §3.2: Events MUST be retried until success.
-    This catches events where the initial Service Bus send failed.
-    """
-    from provisioning_service.core.sb_client import messaging_service
-
-    logger.info(f"Relay poller started (interval={interval_seconds}s)")
-    while True:
-        db = SessionLocal()
-        try:
-            stale_cutoff = datetime.now(timezone.utc)
-            pending_events = (
-                db.query(OutboxEvent)
-                .filter(
-                    OutboxEvent.processed_at.is_(None),
-                    OutboxEvent.status.in_(["pending", "processing"]),
-                )
-                .order_by(OutboxEvent.created_at.asc())
-                .limit(50)
-                .all()
-            )
-
-            if pending_events:
-                logger.info(f"Relay poller found {len(pending_events)} unprocessed events")
-
-            for event in pending_events:
-                try:
-                    await messaging_service.send_outbox_message(str(event.id))
-                    logger.info(f"Relay: re-notified outbox {event.id}")
-                except Exception as e:
-                    logger.warning(f"Relay: failed to notify outbox {event.id}: {e}")
-
-        except Exception as e:
-            logger.error(f"Relay poller error: {e}", exc_info=True)
-        finally:
-            db.close()
-
-        await asyncio.sleep(interval_seconds)
 
 
 if __name__ == "__main__":

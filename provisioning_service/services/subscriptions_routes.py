@@ -11,6 +11,8 @@ from provisioning_service.Schemas import TenantSubscriptionRequest, CurrentSubsc
     CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext, SubscribeRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.policy_client import require_policy
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
 
@@ -162,7 +164,9 @@ async def whoami(
 @router.post("/renew", status_code=201)
 async def renew_subscription(
     req: TenantSubscriptionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("subscription.manage")),
+    policy=Depends(require_policy("subscription.renew")),
 ):
     """Renew current subscription"""
     current_subscription = db.query(TenantSubscription).filter_by(id=req.previous_sub_id).first()
@@ -179,6 +183,19 @@ async def renew_subscription(
 
     db.add(tenant_subscription)
     db.commit()
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "subscription.renewed", {
+            "subscription_id": str(tenant_subscription.id),
+            "tenant_id": str(req.tenant_id),
+            "plan_code": req.plan_code,
+            "previous_sub_id": str(req.previous_sub_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for subscription.renewed: {_oe}")
+
     return tenant_subscription
 
 @router.get("/upgrade-preview", response_model=UpgradePreviewResponse)
@@ -252,6 +269,19 @@ async def upgrade_current_subscription(req: TenantSubscriptionRequest,db: Sessio
 
     db.add(tenant_subscription)
     db.commit()
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "subscription.upgraded", {
+            "subscription_id": str(tenant_subscription.id),
+            "tenant_id": str(req.tenant_id),
+            "plan_code": req.plan_code,
+            "previous_sub_id": str(req.previous_sub_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for subscription.upgraded: {_oe}")
+
     return tenant_subscription
 
 @router.get("/downgrade")
@@ -271,6 +301,19 @@ async def upgrade_current_subscription(req: TenantSubscriptionRequest,db: Sessio
 
     db.add(tenant_subscription)
     db.commit()
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, req.tenant_id, "subscription.downgraded", {
+            "subscription_id": str(tenant_subscription.id),
+            "tenant_id": str(req.tenant_id),
+            "plan_code": req.plan_code,
+            "previous_sub_id": str(req.previous_sub_id),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for subscription.downgraded: {_oe}")
+
     return tenant_subscription
 
 @router.get("/active", response_model=CurrentSubscriptionResponse)
@@ -326,7 +369,9 @@ async def get_current_subscription(
 @router.post("/cancel")
 async def cancel_subscription(
     req: CancelSubscriptionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("subscription.manage")),
+    policy=Depends(require_policy("subscription.cancel")),
 ):
     """Cancel subscription"""
     sub = db.query(TenantSubscription).filter_by(id=req.subscription_id).first()
@@ -353,7 +398,22 @@ async def cancel_subscription(
     
     db.commit()
     logger.info(f"Canceled subscription for tenant {req.tenant_id}")
-    
+
+    # Outbox audit event
+    try:
+        create_outbox_event(
+            db, req.tenant_id, "subscription.cancelled",
+            {
+                "tenant_id": str(req.tenant_id),
+                "subscription_id": str(req.subscription_id),
+                "cancel_immediately": req.cancel_immediately,
+                "reason": req.reason,
+            },
+        )
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox event failed for subscription.cancelled: {_oe}")
+
     return {
         "tenant_id": str(req.tenant_id),
         "status": "Cancelled",

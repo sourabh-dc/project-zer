@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
     Date, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
-from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column
+from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column, synonym
 import uuid
 
 # ==================================================================================
@@ -19,8 +19,7 @@ class Tenant(Base):
     tenant_name = Column(String, nullable=False, index=True)
     tenant_type = Column(String, nullable=False)  # retailer/brand/franchisee
     email = Column(String, nullable=False, index=True)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)
 
     registration_number = Column(String, nullable=True)
     phone = Column(String, nullable=True)
@@ -46,8 +45,7 @@ class Site(Base):
     site_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
     site_type = Column(String, nullable=False)  # mall/campus/DC/online-hub
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)
 
     currency = Column(String(3), nullable=True)
     timezone = Column(String, nullable=True)
@@ -77,8 +75,7 @@ class Store(Base):
 
     name = Column(String, nullable=False)
     store_type = Column(String, nullable=False)  # physical/online/kiosk/darkstore
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)
 
     currency = Column(String(3), nullable=True)
     timezone = Column(String, nullable=True)
@@ -107,8 +104,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)  # required
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
 
     display_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
@@ -213,7 +209,7 @@ class OrgUnit(Base):
 
     name = Column(String, nullable=False)
     type = Column(String, nullable=False, index=True)  # department/division/team
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    status = Column(String, nullable=False, index=True)  # active/archived
 
     parent_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
     code = Column(String, nullable=True)
@@ -252,7 +248,7 @@ class Vendor(Base):
     name = Column(String(255), nullable=False)
     contact_email = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
+    status = Column(String(50), default="active", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -302,8 +298,7 @@ class Fit(Base):
 
     fit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False, index=True)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -332,10 +327,15 @@ class CostCentre(Base):
     code = Column(String(50), nullable=False)  # unique per tenant
     name = Column(String(255), nullable=False)
     description = Column(String(500), nullable=True)
+    gl_code = Column(String(100), nullable=True, index=True)          # General Ledger code
     owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    is_active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    # New budget control columns
+    period_granularity = Column(String(20), nullable=True, default="month")  # week|month|quarter|year
+    carry_forward_enabled = Column(Boolean, nullable=False, default=False)
+    default_calendar_id = Column(SQLUUID(as_uuid=True), ForeignKey("financial_calendars.calendar_id", ondelete="SET NULL"), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -449,9 +449,8 @@ class Feature(Base):
     usage_type = Column(String(50), nullable=False, default="count")  # count, boolean, storage, api_calls
     max_unit = Column(String(50), nullable=True)  # reports, users, GB, requests
     reset_period = Column(String(20), nullable=False, default="monthly")  # daily, weekly, monthly, yearly
-
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
+    
+    active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -544,8 +543,7 @@ class Category(Base):
     code = Column(String(100), nullable=False, index=True)
     description = Column(String(500), nullable=True)
     parent_category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
+    active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -631,8 +629,7 @@ class Product(Base):
     restricted = Column(Boolean, nullable=False, default=False, index=True)  # Restricted product flag
     product_metadata = Column(JSONB, nullable=True)  # Flexible JSON for extra data
     comments = Column(Text, nullable=True)  # Free-text notes/comments
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)  # Active/inactive flag
     deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete timestamp
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=True)
@@ -669,8 +666,7 @@ class Variant(Base):
     currency = Column(String(3), default="GBP", nullable=False)
     stock_quantity = Column(Integer, default=0, nullable=False)
     low_stock_threshold = Column(Integer, default=10, nullable=False)
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, default=True, nullable=False, index=True)  # legacy — use status instead
+    active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -721,8 +717,7 @@ class VendorUser(Base):
     password_hash = Column(String(255), nullable=False)
     first_name = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="vendor_staff")  # vendor_admin / vendor_staff
-    status = Column(String(20), nullable=False, default="active", index=True)  # active / inactive / deleted
-    active = Column(Boolean, nullable=False, default=True, index=True)  # legacy — use status instead
+    active = Column(Boolean, nullable=False, default=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -845,6 +840,565 @@ class ApprovedRangeProduct(Base):
 
 
 # ==================================================================================
+# FINANCIAL CALENDAR MODELS
+# ==================================================================================
+
+class FinancialCalendar(Base):
+    """
+    Tenant-defined financial calendar.  A tenant may have multiple simultaneous
+    calendars (e.g. corporate Gregorian + project 4-4-5).
+    """
+    __tablename__ = "financial_calendars"
+
+    calendar_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id   = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    name        = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    # gregorian | 445 | 454 | 444 | custom
+    calendar_type = Column(String(20), nullable=False, default="gregorian", index=True)
+    start_month   = Column(Integer, nullable=False, default=1)   # 1=January … 12=December
+    currency      = Column(String(3), nullable=True, default="GBP")
+    is_active     = Column(Boolean, nullable=False, default=True, index=True)
+    is_default    = Column(Boolean, nullable=False, default=False)
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_financial_calendar_tenant_name", "tenant_id", "name", unique=True),
+    )
+
+
+class FinancialYear(Base):
+    """
+    A financial year (full, part, or adjusted) belonging to a calendar.
+    Part-years are allowed on onboarding or during calendar adjustments.
+    """
+    __tablename__ = "financial_years"
+
+    year_id     = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    calendar_id = Column(SQLUUID(as_uuid=True), ForeignKey("financial_calendars.calendar_id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    tenant_id   = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    label      = Column(String(50), nullable=False)          # e.g. "FY2025", "FY2025-Part1"
+    start_date = Column(Date, nullable=False)
+    end_date   = Column(Date, nullable=False)
+    # full | part | adjusted
+    year_type  = Column(String(20), nullable=False, default="full")
+    # draft | active | closed
+    status     = Column(String(20), nullable=False, default="draft", index=True)
+
+    total_budget_minor    = Column(BigInteger, nullable=True)   # company-level cap for this year
+    notes                 = Column(Text, nullable=True)
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    calendar = relationship("FinancialCalendar", backref="years", foreign_keys=[calendar_id])
+
+    __table_args__ = (
+        Index("ix_financial_year_tenant_label", "tenant_id", "label", unique=True),
+    )
+
+
+class FinancialPeriod(Base):
+    """
+    A single period (week, month, quarter) within a financial year.
+    Rows are auto-generated by the period_calculator for standard calendar types,
+    or manually created for custom calendars.
+    """
+    __tablename__ = "financial_periods"
+
+    period_id     = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    year_id       = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    calendar_id   = Column(SQLUUID(as_uuid=True), ForeignKey("financial_calendars.calendar_id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    tenant_id     = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    period_number = Column(Integer, nullable=False)          # sequential within the year
+    label         = Column(String(50), nullable=False)       # e.g. "P1", "Q1", "W01"
+    # week | month | quarter
+    period_type   = Column(String(20), nullable=False, default="month")
+    start_date    = Column(Date, nullable=False)
+    end_date      = Column(Date, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    year = relationship("FinancialYear", backref="periods", foreign_keys=[year_id])
+
+    __table_args__ = (
+        Index("ix_fin_period_year_num", "year_id", "period_number", unique=True),
+    )
+
+
+# ==================================================================================
+# COMPANY BUDGET CAP
+# ==================================================================================
+
+class CompanyBudgetCap(Base):
+    """
+    Top-level company-wide budget cap for a financial year.
+    Soft enforcement: admins may override with a recorded reason.
+    """
+    __tablename__ = "company_budget_caps"
+
+    cap_id     = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id  = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    year_id    = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    calendar_id = Column(SQLUUID(as_uuid=True), ForeignKey("financial_calendars.calendar_id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    currency           = Column(String(3), nullable=False, default="GBP")
+    total_budget_minor = Column(BigInteger, nullable=False)
+    allocated_minor    = Column(BigInteger, nullable=False, default=0)
+    committed_minor    = Column(BigInteger, nullable=False, default=0)
+    spent_minor        = Column(BigInteger, nullable=False, default=0)
+    # If True, exceeding the cap blocks save; if False it warns but allows with reason
+    hard_cap           = Column(Boolean, nullable=False, default=False)
+    notes              = Column(Text, nullable=True)
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_company_cap_tenant_year", "tenant_id", "year_id", unique=True),
+    )
+
+
+# ==================================================================================
+# COST CENTRE BUDGET VERSIONS  (replaces CostCenterBudget)
+# ==================================================================================
+
+class CostCentreBudgetVersion(Base):
+    """
+    Versioned budget allocation for a cost centre, scoped to a financial year
+    and optionally a specific period.  period_id=NULL means an annual lump-sum.
+
+    Supports:
+    - Carry-forward: carry_forward_minor is added to the next period's opening balance.
+    - Mixed granularity: a CC may have some annual and some monthly entries.
+    """
+    __tablename__ = "cc_budget_versions"
+
+    version_id     = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    year_id        = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    period_id      = Column(SQLUUID(as_uuid=True), ForeignKey("financial_periods.period_id", ondelete="SET NULL"),
+                            nullable=True, index=True)  # NULL → annual allocation
+    tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    currency       = Column(String(3), nullable=False, default="GBP")
+
+    # Monetary buckets (minor units)
+    budget_minor         = Column(BigInteger, nullable=False)
+    carry_forward_minor  = Column(BigInteger, nullable=False, default=0)
+    allocated_to_users_minor = Column(BigInteger, nullable=False, default=0)
+    committed_minor      = Column(BigInteger, nullable=False, default=0)
+    spent_minor          = Column(BigInteger, nullable=False, default=0)
+
+    # draft | active | closed
+    status         = Column(String(20), nullable=False, default="draft", index=True)
+    override_reason = Column(Text, nullable=True)   # populated when company cap is breached
+
+    closed_at  = Column(DateTime(timezone=True), nullable=True)
+    closed_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    cost_centre = relationship("CostCentre", backref="budget_versions", foreign_keys=[cost_centre_id])
+    year        = relationship("FinancialYear", backref="cc_budget_versions", foreign_keys=[year_id])
+
+
+class BudgetTransaction(Base):
+    """
+    Immutable double-entry ledger recording every change to any budget bucket.
+    Used for full audit trail and cross-CC reallocation.
+    """
+    __tablename__ = "budget_transactions"
+
+    txn_id        = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id     = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    # allocation | reallocation_debit | reallocation_credit |
+    # bring_forward | top_up | commitment | spend | reversal | carry_forward
+    txn_type      = Column(String(50), nullable=False, index=True)
+    source_version_id = Column(SQLUUID(as_uuid=True), ForeignKey("cc_budget_versions.version_id", ondelete="SET NULL"),
+                               nullable=True, index=True)
+    target_version_id = Column(SQLUUID(as_uuid=True), ForeignKey("cc_budget_versions.version_id", ondelete="SET NULL"),
+                               nullable=True, index=True)
+    amount_minor  = Column(BigInteger, nullable=False)
+    currency      = Column(String(3), nullable=False, default="GBP")
+    reference_id  = Column(SQLUUID(as_uuid=True), nullable=True, index=True)  # FK to request/approval
+    note          = Column(Text, nullable=True)
+
+    performed_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ==================================================================================
+# USER BUDGET ALLOCATION  (replaces UserCostCentre for new tenants)
+# ==================================================================================
+
+class UserCostCentreAssignment(Base):
+    """
+    Links a user to a cost centre.  A user may belong to multiple cost centres.
+    """
+    __tablename__ = "user_cc_assignments"
+
+    assignment_id  = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id        = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    is_primary     = Column(Boolean, nullable=False, default=False)
+    is_active      = Column(Boolean, nullable=False, default=True)
+    effective_from = Column(Date, nullable=True)
+    effective_to   = Column(Date, nullable=True)
+
+    assigned_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_cc_assign_unique", "user_id", "cost_centre_id", unique=True),
+    )
+
+
+class UserBudgetLimit(Base):
+    """
+    Per-user, per-cost-centre, per-year budget/approval limit for a specific
+    time-window.  A user may have multiple rows (e.g. one for transaction + one
+    for monthly + one for annual).
+
+    limit_type:
+        requester – controls whether order routes for approval (routing constraint)
+        approver  – signing authority; deducted at commitment (binding control)
+
+    window_type:
+        transaction | week | month | quarter | year
+    """
+    __tablename__ = "user_budget_limits"
+
+    limit_id       = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id        = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    year_id        = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    period_id      = Column(SQLUUID(as_uuid=True), ForeignKey("financial_periods.period_id", ondelete="SET NULL"),
+                            nullable=True, index=True)   # NULL → applies to the whole year
+    tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    currency       = Column(String(3), nullable=False, default="GBP")
+
+    # requester | approver
+    limit_type   = Column(String(20), nullable=False, index=True)
+    # transaction | week | month | quarter | year
+    window_type  = Column(String(20), nullable=False, index=True)
+
+    limit_amount_minor = Column(BigInteger, nullable=False)   # 0 = always routes for approval
+    committed_minor    = Column(BigInteger, nullable=False, default=0)
+    spent_minor        = Column(BigInteger, nullable=False, default=0)
+    carry_forward_minor = Column(BigInteger, nullable=False, default=0)
+    carry_forward_enabled = Column(Boolean, nullable=False, default=False)
+
+    # Window reset tracking
+    window_start = Column(Date, nullable=True)
+    window_end   = Column(Date, nullable=True)
+    next_reset_date = Column(Date, nullable=True)
+
+    is_active   = Column(Boolean, nullable=False, default=True)
+    created_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_limit_unique", "user_id", "cost_centre_id", "year_id", "limit_type", "window_type", unique=True),
+    )
+
+
+# ==================================================================================
+# APPROVAL ROUTING ENGINE
+# ==================================================================================
+
+class ApprovalPolicy(Base):
+    """
+    Tenant-level (or cost-centre-level) approval routing policy.
+    Defines the overall routing mode and SOX/SoD settings.
+    """
+    __tablename__ = "approval_policies"
+
+    policy_id   = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id   = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=True, index=True)  # NULL = tenant-wide policy
+    name        = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # broadcast | hierarchical
+    routing_mode      = Column(String(20), nullable=False, default="hierarchical")
+    # For broadcast: how many approvers to notify concurrently
+    broadcast_n       = Column(Integer, nullable=False, default=3)
+    # Segregation of Duties: requester cannot approve their own order
+    sox_sod_enforced  = Column(Boolean, nullable=False, default=True)
+    # block | partial | force_top_up
+    partial_approval_mode = Column(String(20), nullable=False, default="block")
+    # auto | require_approval
+    zero_value_mode   = Column(String(20), nullable=False, default="auto")
+
+    is_active   = Column(Boolean, nullable=False, default=True, index=True)
+    created_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    stages = relationship("ApprovalStage", back_populates="policy",
+                          order_by="ApprovalStage.stage_order", cascade="all, delete-orphan")
+
+
+class ApprovalStage(Base):
+    """
+    One stage in an N-level approval chain.
+    Stages are evaluated in order; each stage can run sequentially or in parallel
+    with others (parallel_allowed).  min_approvers controls how many concurrent
+    approvers must approve before the stage is marked complete.
+    """
+    __tablename__ = "approval_stages"
+
+    stage_id      = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    policy_id     = Column(SQLUUID(as_uuid=True), ForeignKey("approval_policies.policy_id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    stage_order   = Column(Integer, nullable=False)          # 1, 2, 3 …
+    name          = Column(String(255), nullable=True)       # e.g. "Line Manager", "Finance Director"
+    parallel_allowed = Column(Boolean, nullable=False, default=False)
+    min_approvers    = Column(Integer, nullable=False, default=1)  # approvals needed to pass stage
+    escalation_timeout_hours = Column(Integer, nullable=True)      # NULL = no timeout
+
+    policy = relationship("ApprovalPolicy", back_populates="stages")
+    conditions = relationship("ApprovalStageCondition", back_populates="stage",
+                              cascade="all, delete-orphan")
+    approvers  = relationship("ApprovalStageApprover", back_populates="stage",
+                              cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_approval_stage_policy_order", "policy_id", "stage_order", unique=True),
+    )
+
+
+class ApprovalStageCondition(Base):
+    """
+    Condition that must be satisfied for a stage to be active.
+    Multiple conditions on the same stage are combined with the specified logic.
+
+    field:    amount | cost_centre | category | vendor | period_type
+    operator: gte | lte | eq | in | neq
+    value:    JSONB (scalar or list)
+    logic:    AND | OR (how this condition combines with others on the same stage)
+    """
+    __tablename__ = "approval_stage_conditions"
+
+    condition_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stage_id     = Column(SQLUUID(as_uuid=True), ForeignKey("approval_stages.stage_id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    field        = Column(String(50), nullable=False)
+    operator     = Column(String(10), nullable=False)
+    value        = Column(JSONB, nullable=False)
+    logic        = Column(String(5), nullable=False, default="AND")  # AND | OR
+
+    stage = relationship("ApprovalStage", back_populates="conditions")
+
+
+class ApprovalStageApprover(Base):
+    """
+    Defines who can approve at a given stage.
+    approver_type:
+        user               – specific user
+        org_unit_manager   – manager of the requester's org unit
+        hierarchy_traversal – walk OrgUnit tree using manager_user_id chain
+        role               – any user holding a specific role in the cost centre
+    """
+    __tablename__ = "approval_stage_approvers"
+
+    id               = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stage_id         = Column(SQLUUID(as_uuid=True), ForeignKey("approval_stages.stage_id", ondelete="CASCADE"),
+                              nullable=False, index=True)
+    approver_type    = Column(String(30), nullable=False)
+    approver_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    org_unit_id      = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True)
+    role_code        = Column(String(100), nullable=True)
+
+    stage = relationship("ApprovalStage", back_populates="approvers")
+
+
+# ==================================================================================
+# PURCHASE REQUEST & WORKFLOW
+# ==================================================================================
+
+class PurchaseRequest(Base):
+    """
+    Central entity for an indirect goods purchase request raised by a user.
+    """
+    __tablename__ = "purchase_requests"
+
+    request_id     = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    requester_id   = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    vendor_id      = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    category_id    = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    year_id        = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    period_id      = Column(SQLUUID(as_uuid=True), ForeignKey("financial_periods.period_id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+
+    reference_number = Column(String(50), nullable=True, index=True)  # human-readable PR number
+    description      = Column(Text, nullable=True)
+    line_items       = Column(JSONB, nullable=True)   # [{product_id, qty, unit_price_minor, ...}]
+    amount_minor     = Column(BigInteger, nullable=False)
+    currency         = Column(String(3), nullable=False, default="GBP")
+
+    # draft | pending_approval | approved | rejected | cancelled | po_issued
+    status = Column(String(30), nullable=False, default="draft", index=True)
+    # self_approved | workflow
+    approval_mode = Column(String(20), nullable=True)
+
+    notes         = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    approved_by   = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    approved_at   = Column(DateTime(timezone=True), nullable=True)
+    po_issued_at  = Column(DateTime(timezone=True), nullable=True)
+    po_reference  = Column(String(100), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    requester = relationship("User", foreign_keys=[requester_id], backref="purchase_requests")
+    workflow  = relationship("ApprovalWorkflow", back_populates="request",
+                             uselist=False, cascade="all, delete-orphan")
+
+
+class ApprovalWorkflow(Base):
+    """
+    Tracks the active multi-stage approval workflow for a purchase request.
+    """
+    __tablename__ = "approval_workflows"
+
+    workflow_id         = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    request_id          = Column(SQLUUID(as_uuid=True), ForeignKey("purchase_requests.request_id", ondelete="CASCADE"),
+                                 nullable=False, unique=True, index=True)
+    policy_id           = Column(SQLUUID(as_uuid=True), ForeignKey("approval_policies.policy_id", ondelete="SET NULL"),
+                                 nullable=True)
+    tenant_id           = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                                 nullable=False, index=True)
+    current_stage_order = Column(Integer, nullable=False, default=1)
+    # active | completed | rejected | escalated | cancelled
+    status              = Column(String(20), nullable=False, default="active", index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    request = relationship("PurchaseRequest", back_populates="workflow")
+    tasks   = relationship("ApprovalTask", back_populates="workflow", cascade="all, delete-orphan")
+
+
+class ApprovalTask(Base):
+    """
+    A single approval action assigned to one approver for one stage.
+    Escalation is modelled via escalated_to_user_id; if escalation occurs a new
+    ApprovalTask row is created for the escalated approver.
+    """
+    __tablename__ = "approval_tasks"
+
+    task_id      = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id  = Column(SQLUUID(as_uuid=True), ForeignKey("approval_workflows.workflow_id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    stage_id     = Column(SQLUUID(as_uuid=True), ForeignKey("approval_stages.stage_id", ondelete="SET NULL"),
+                          nullable=True, index=True)
+    tenant_id    = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    assignee_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"),
+                               nullable=True, index=True)
+    stage_order  = Column(Integer, nullable=False)
+
+    # pending | approved | rejected | escalated | expired | cancelled
+    status      = Column(String(20), nullable=False, default="pending", index=True)
+    decided_at  = Column(DateTime(timezone=True), nullable=True)
+    decided_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    note        = Column(Text, nullable=True)
+    escalated_to_task_id = Column(SQLUUID(as_uuid=True), ForeignKey("approval_tasks.task_id", ondelete="SET NULL"),
+                                   nullable=True)  # points to the new task created on escalation
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    workflow = relationship("ApprovalWorkflow", back_populates="tasks")
+
+
+# ==================================================================================
+# BUDGET CHANGE REQUESTS  (top-up / bring-forward / reallocation)
+# ==================================================================================
+
+class BudgetChangeRequest(Base):
+    """
+    Formal request to modify budget mid-period.
+    These are themselves routed through the approval engine.
+
+    request_type:
+        top_up         – add funds from central pool to a CC version
+        bring_forward  – pull future-period budget into current period
+        reallocation   – transfer between two CC versions (debit/credit)
+    """
+    __tablename__ = "budget_change_requests"
+
+    change_req_id  = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    # top_up | bring_forward | reallocation
+    request_type   = Column(String(30), nullable=False, index=True)
+    requester_id   = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    # For bring_forward: the future period being pulled from
+    from_version_id = Column(SQLUUID(as_uuid=True), ForeignKey("cc_budget_versions.version_id", ondelete="SET NULL"),
+                              nullable=True, index=True)
+    # The target period/version being credited
+    to_version_id   = Column(SQLUUID(as_uuid=True), ForeignKey("cc_budget_versions.version_id", ondelete="SET NULL"),
+                              nullable=False, index=True)
+    amount_minor    = Column(BigInteger, nullable=False)
+    currency        = Column(String(3), nullable=False, default="GBP")
+    justification   = Column(Text, nullable=True)
+
+    # pending | approved | rejected | cancelled
+    status      = Column(String(20), nullable=False, default="pending", index=True)
+    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+# ==================================================================================
 # OUTBOX & AUDIT MODELS
 # ==================================================================================
 
@@ -852,25 +1406,16 @@ class OutboxEvent(Base):
     __tablename__ = 'outbox_events'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
-    aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default='pending', nullable=False, index=True)
-    retry_count: Mapped[int] = mapped_column(default=0, nullable=False)
-    max_retries: Mapped[int] = mapped_column(default=3, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (
-        Index('ix_outbox_relay_poll', 'processed_at', 'created_at',
-              postgresql_nulls_not_distinct=False),
-        Index('ix_outbox_aggregate', 'aggregate_type', 'aggregate_id', 'created_at'),
-    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    aggregate_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    aggregate_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(nullable=False)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(default='pending')
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=3)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 
 class AuditLog(Base):

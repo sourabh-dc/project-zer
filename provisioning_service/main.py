@@ -19,6 +19,12 @@ from provisioning_service.services.subscriptions_routes import router as subscri
 from provisioning_service.services.tenant_onboarding import router as onboarding_router
 from provisioning_service.services.payments_routes import router as payments_router
 from provisioning_service.services.approved_range_routes import router as approved_range_router
+from provisioning_service.services.calendar_routes import router as calendar_router
+from provisioning_service.services.budget_routes import router as budget_router
+from provisioning_service.services.user_budget_routes import router as user_budget_router
+from provisioning_service.services.approval_policy_routes import router as approval_policy_router
+from provisioning_service.services.purchase_request_routes import router as purchase_request_router
+from provisioning_service.services.budget_change_request_routes import router as budget_change_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 from provisioning_service.core.policy_client import policy_client
@@ -45,6 +51,43 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Database tables initialized")
         except Exception as e:
             logger.error(f"❌ Table initialization failed: {e}")
+
+        # Migrate outbox_events: add aggregate_type, aggregate_id, payload columns
+        # if they don't exist yet (safe for existing databases)
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("outbox_events"):
+                existing_cols = {c["name"] for c in insp.get_columns("outbox_events")}
+                with engine.begin() as conn:
+                    if "aggregate_type" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN aggregate_type VARCHAR(100)"
+                        ))
+                        logger.info("✅ Added aggregate_type column to outbox_events")
+                    if "aggregate_id" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN aggregate_id UUID"
+                        ))
+                        logger.info("✅ Added aggregate_id column to outbox_events")
+                    if "payload" not in existing_cols and "event_data" in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events RENAME COLUMN event_data TO payload"
+                        ))
+                        logger.info("✅ Renamed event_data → payload column in outbox_events")
+                    elif "payload" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE outbox_events ADD COLUMN payload JSONB NOT NULL DEFAULT '{}'"
+                        ))
+                        logger.info("✅ Added payload column to outbox_events")
+                    # Back-fill aggregate_type from event_type for existing rows
+                    conn.execute(text("""
+                        UPDATE outbox_events
+                        SET    aggregate_type = split_part(event_type, '.', 1)
+                        WHERE  aggregate_type IS NULL
+                    """))
+        except Exception as e:
+            logger.warning(f"Outbox migration step skipped or failed: {e}")
 
         # Load static data (permissions/features)
         try:
@@ -98,6 +141,12 @@ app.include_router(catalog_router)
 app.include_router(plan_router)
 app.include_router(subscriptions_router)
 app.include_router(approved_range_router)
+app.include_router(calendar_router)
+app.include_router(budget_router)
+app.include_router(user_budget_router)
+app.include_router(approval_policy_router)
+app.include_router(purchase_request_router)
+app.include_router(budget_change_router)
 
 
 @app.get("/health")
