@@ -28,7 +28,7 @@ async def handle_product_created(db: Session, payload_id: str) -> None:
     if not outbox:
         raise ValueError(f"Outbox event {payload_id} not found")
 
-    payload = outbox.event_data or {}
+    payload = outbox.payload or {}
     product_id = payload.get("product_id")
     if not product_id:
         raise ValueError("product_id missing in outbox payload")

@@ -17,7 +17,7 @@ async def handle_user_created(db: Session, payload_id: str) -> None:
     if not outbox:
         raise ValueError(f"Outbox event {payload_id} not found")
 
-    payload = outbox.event_data or {}
+    payload = outbox.payload or {}
     user_id = payload.get("user_id")
     if not user_id:
         raise ValueError("user_id missing in outbox payload")

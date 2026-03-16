@@ -1411,7 +1411,6 @@ class OutboxEvent(Base):
     aggregate_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     event_type: Mapped[str] = mapped_column(nullable=False)
     payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    event_data = synonym("payload")
     status: Mapped[str] = mapped_column(default='pending')
     retry_count: Mapped[int] = mapped_column(default=0)
     max_retries: Mapped[int] = mapped_column(default=3)

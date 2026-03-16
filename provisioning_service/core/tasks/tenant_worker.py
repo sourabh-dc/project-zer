@@ -23,7 +23,7 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
     if not outbox:
         raise ValueError(f"Outbox event {payload_id} not found")
 
-    payload = outbox.event_data or {}
+    payload = outbox.payload or {}
     tenant_id = payload.get("tenant_id")
     if not tenant_id:
         raise ValueError("tenant_id missing in outbox payload")
