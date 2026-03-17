@@ -1,13 +1,12 @@
 """
 Graph Service — Outbox event consumer.
 
-Polls the `outbox_events` table in PostgreSQL and dispatches
-events to the appropriate graph handler for projection into Neo4j.
+Polls the `outbox_event_delivery` table in PostgreSQL for delivery rows
+assigned to 'graph_service' and dispatches events to the appropriate
+graph handler for projection into Neo4j.
 
-Follows the Transactional Outbox pattern:
-  1. Claim a batch (status='pending' → 'processing')
-  2. Dispatch each event to a handler
-  3. Mark as 'processed' on success or increment retry_count on failure
+Each consumer has independent delivery tracking — no contention with
+the outbox_worker or vector_service consumers.
 """
 import asyncio
 import json
@@ -63,85 +62,116 @@ async def start_polling():
 
 
 def _claim_batch(session) -> List[dict]:
-    """Atomically claim a batch of pending events."""
+    """Atomically claim a batch of pending delivery rows for graph_service."""
     result = session.execute(
         text("""
-            UPDATE outbox_events
-            SET    status = 'processing', updated_at = NOW()
+            UPDATE outbox_event_delivery
+            SET    status = 'processing'
             WHERE  id IN (
-                SELECT id FROM outbox_events
-                WHERE  status = 'pending'
-                ORDER  BY created_at
+                SELECT d.id FROM outbox_event_delivery d
+                WHERE  d.consumer = 'graph_service'
+                  AND  d.status = 'pending'
+                ORDER  BY d.created_at
                 LIMIT  :limit
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, tenant_id, aggregate_type, aggregate_id,
-                      event_type, payload, retry_count, max_retries
+            RETURNING id, event_id, retry_count, max_retries
         """),
         {"limit": SETTINGS.POLL_BATCH_SIZE},
     )
     session.commit()
 
-    rows = result.fetchall()
+    delivery_rows = result.fetchall()
+    if not delivery_rows:
+        return []
+
+    # Build a map from event_id → delivery metadata
+    delivery_map = {}
+    event_ids = []
+    for r in delivery_rows:
+        eid_str = str(r.event_id)
+        delivery_map[eid_str] = {
+            "delivery_id": r.id,
+            "delivery_retry_count": r.retry_count,
+            "delivery_max_retries": r.max_retries,
+        }
+        event_ids.append(r.event_id)
+
+    # Load the actual event data for each claimed delivery
+    event_result = session.execute(
+        text("""
+            SELECT id, tenant_id, aggregate_type, aggregate_id,
+                   event_type, payload
+            FROM   outbox_events
+            WHERE  id = ANY(:event_ids)
+        """),
+        {"event_ids": event_ids},
+    )
+
     events = []
-    for r in rows:
+    for r in event_result.fetchall():
         payload = r.payload if isinstance(r.payload, dict) else json.loads(r.payload or "{}")
+        dm = delivery_map[str(r.id)]
         events.append({
             "id": r.id,
+            "delivery_id": dm["delivery_id"],
+            "delivery_retry_count": dm["delivery_retry_count"],
+            "delivery_max_retries": dm["delivery_max_retries"],
             "tenant_id": r.tenant_id,
             "aggregate_type": r.aggregate_type,
             "aggregate_id": r.aggregate_id,
             "event_type": r.event_type,
             "payload": payload,
-            "retry_count": r.retry_count,
-            "max_retries": r.max_retries,
         })
     return events
 
 
 async def _dispatch(session, event: dict):
-    """Route an event to its handler and update status."""
+    """Route an event to its handler and update delivery status."""
     event_type: str = event["event_type"]
     prefix = event_type.split(".")[0]
 
     handler = _handlers.get(prefix)
     if not handler:
-        logger.debug(f"No handler for event type '{event_type}', marking processed")
-        _mark_processed(session, event["id"])
+        logger.debug(f"No handler for event type '{event_type}', marking completed")
+        _mark_completed(session, event["delivery_id"])
         return
 
     try:
         handler(event)
-        _mark_processed(session, event["id"])
+        _mark_completed(session, event["delivery_id"])
     except Exception as exc:
         logger.error(f"Handler error for {event_type} (id={event['id']}): {exc}", exc_info=True)
         _mark_failed(session, event)
 
 
-def _mark_processed(session, event_id: uuid.UUID):
+def _mark_completed(session, delivery_id):
     session.execute(
         text("""
-            UPDATE outbox_events
-            SET    status = 'processed', processed_at = NOW(), updated_at = NOW()
-            WHERE  id = :eid
+            UPDATE outbox_event_delivery
+            SET    status = 'completed', processed_at = NOW()
+            WHERE  id = :did
         """),
-        {"eid": event_id},
+        {"did": delivery_id},
     )
     session.commit()
 
 
 def _mark_failed(session, event: dict):
-    new_retry = event["retry_count"] + 1
-    new_status = "dead_letter" if new_retry >= event["max_retries"] else "pending"
+    """Increment retry; dead-letter if exhausted, else back to pending."""
+    delivery_id = event["delivery_id"]
+    new_retry = event["delivery_retry_count"] + 1
+    max_retries = event.get("delivery_max_retries", 3)
+    new_status = "dead_letter" if new_retry >= max_retries else "pending"
 
     session.execute(
         text("""
-            UPDATE outbox_events
-            SET    status = :st, retry_count = :rc, updated_at = NOW()
-            WHERE  id = :eid
+            UPDATE outbox_event_delivery
+            SET    status = :st, retry_count = :rc
+            WHERE  id = :did
         """),
-        {"st": new_status, "rc": new_retry, "eid": event["id"]},
+        {"st": new_status, "rc": new_retry, "did": delivery_id},
     )
     session.commit()
     if new_status == "dead_letter":
-        logger.warning(f"Event {event['id']} moved to dead_letter after {new_retry} retries")
+        logger.warning(f"Delivery {delivery_id} moved to dead_letter after {new_retry} retries")

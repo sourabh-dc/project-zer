@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
-    Date, Numeric, Index
+    Date, Numeric, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as SQLUUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship, backref, Mapped, mapped_column, synonym
 import uuid
@@ -1416,6 +1416,26 @@ class OutboxEvent(Base):
     max_retries: Mapped[int] = mapped_column(default=3)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
     updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+
+class OutboxEventDelivery(Base):
+    __tablename__ = 'outbox_event_delivery'
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('outbox_events.id'), nullable=False)
+    consumer: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default='pending')
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=3)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('event_id', 'consumer', name='uq_delivery_event_consumer'),
+        Index('idx_delivery_consumer_status', 'consumer', 'status'),
+        Index('idx_delivery_consumer_status_created', 'consumer', 'status', 'created_at'),
+    )
 
 
 class AuditLog(Base):

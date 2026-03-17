@@ -30,28 +30,12 @@ from vector_service.handlers.product_embedding_handler import handle as product_
 async def lifespan(app: FastAPI):
     logger.info("Vector Service starting up...")
     init_pgvector()
-    _init_vector_event_log()
     register_handler("product", product_handler)
     poll_task = asyncio.create_task(start_polling())
     logger.info("Vector outbox polling task started")
     yield
     poll_task.cancel()
     logger.info("Vector Service shut down")
-
-
-def _init_vector_event_log():
-    """Create the tracking table used by the vector outbox consumer."""
-    from sqlalchemy import create_engine, text
-    engine = create_engine(SETTINGS.POSTGRES_URL, pool_pre_ping=True)
-    with engine.connect() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS vector_event_log (
-                event_id UUID PRIMARY KEY,
-                processed_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """))
-        conn.commit()
-    logger.info("vector_event_log table initialized")
 
 
 app = FastAPI(

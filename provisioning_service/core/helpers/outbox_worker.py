@@ -16,12 +16,10 @@ from azure.servicebus.aio import ServiceBusClient
 
 # Your internal imports
 from provisioning_service.Models import (
-    OutboxEvent
+    OutboxEvent,
+    OutboxEventDelivery,
 )
 from provisioning_service.core.db_config import SessionLocal
-
-# Import handlers (lazy import below to avoid top-level import resolution issues)
-# from provisioning_service.core.tasks.tenant_worker import handle_tenant_provisioning
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -60,9 +58,9 @@ async def process_outbox():
 
     Workflow:
     - Receive Service Bus message containing {'outbox_id': '<uuid>'}
-    - Load OutboxEvent from DB, mark as processing
-    - Call handler for its event_type
-    - On success mark completed; on failure increment retry_count and abandon/complete accordingly
+    - Load OutboxEvent from DB for payload/event_type
+    - Look up the outbox_worker delivery row in outbox_event_delivery
+    - Mark delivery as processing, call handler, mark completed/failed
     """
     cred = DefaultAzureCredential()
     client = ServiceBusClient(SB_NAMESPACE, cred)
@@ -100,15 +98,25 @@ async def process_outbox():
                         await receiver.complete_message(msg)
                         continue
 
-                    # Skip if already processed
-                    if event.status in ("completed", "failed"):
-                        logger.info(f"Outbox {outbox_id} already processed with status={event.status}; completing message")
+                    # Look up this consumer's delivery row
+                    delivery = db.query(OutboxEventDelivery).filter(
+                        OutboxEventDelivery.event_id == outbox_uuid,
+                        OutboxEventDelivery.consumer == 'outbox_worker',
+                    ).first()
+
+                    if not delivery:
+                        logger.warning(f"No delivery row for outbox_worker event {outbox_id}; completing message")
                         await receiver.complete_message(msg)
                         continue
 
-                    # Mark processing
-                    event.status = "processing"
-                    event.updated_at = datetime.now(timezone.utc)
+                    # Skip if already processed
+                    if delivery.status in ('completed', 'failed'):
+                        logger.info(f"Delivery for {outbox_id} already {delivery.status}; completing message")
+                        await receiver.complete_message(msg)
+                        continue
+
+                    # Mark processing on the delivery row
+                    delivery.status = 'processing'
                     db.commit()
 
                     # Route to handler based on event_type
@@ -135,32 +143,37 @@ async def process_outbox():
                         else:
                             logger.warning(f"No handler implemented for event_type={event.event_type}; marking completed")
 
-                        # On success
-                        event.status = "completed"
-                        event.updated_at = datetime.now(timezone.utc)
+                        # On success — mark delivery completed
+                        delivery.status = 'completed'
+                        delivery.processed_at = datetime.now(timezone.utc)
                         db.commit()
 
                         await receiver.complete_message(msg)
                         logger.info(f"Processed outbox {outbox_id} successfully")
 
                     except Exception as handler_exc:
-                        # Handler raised; apply retry logic
+                        # Handler raised; apply retry logic on delivery row
                         db.rollback()
-                        event = db.query(OutboxEvent).filter(OutboxEvent.id == outbox_uuid).first()
-                        if event:
-                            event.retry_count = (event.retry_count or 0) + 1
-                            event.updated_at = datetime.now(timezone.utc)
-                            if event.retry_count >= (event.max_retries or 3):
-                                event.status = "failed"
+                        delivery = db.query(OutboxEventDelivery).filter(
+                            OutboxEventDelivery.event_id == outbox_uuid,
+                            OutboxEventDelivery.consumer == 'outbox_worker',
+                        ).first()
+                        if delivery:
+                            delivery.retry_count = (delivery.retry_count or 0) + 1
+                            delivery.error_message = str(handler_exc)[:500]
+                            if delivery.retry_count >= (delivery.max_retries or 3):
+                                delivery.status = 'failed'
+                                delivery.processed_at = datetime.now(timezone.utc)
                                 db.commit()
-                                logger.error(f"Outbox {outbox_id} failed after max retries: {handler_exc}")
+                                logger.error(f"Delivery for {outbox_id} failed after max retries: {handler_exc}")
                                 await receiver.complete_message(msg)
                             else:
+                                delivery.status = 'pending'
                                 db.commit()
-                                logger.error(f"Transient error processing outbox {outbox_id}, abandoning message for retry: {handler_exc}")
+                                logger.error(f"Transient error for {outbox_id}, abandoning for retry: {handler_exc}")
                                 await receiver.abandon_message(msg)
                         else:
-                            logger.error(f"Outbox missing during error handling for id {outbox_id}: {handler_exc}")
+                            logger.error(f"Delivery row missing during error handling for id {outbox_id}: {handler_exc}")
                             await receiver.complete_message(msg)
 
                 except Exception as e:

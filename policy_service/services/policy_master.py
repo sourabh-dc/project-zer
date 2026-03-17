@@ -32,21 +32,33 @@ router = APIRouter(tags=["Policy Management"])
 # =====================================================================
 
 def _emit_policy_event(db: Session, tenant_id, aggregate_type: str, aggregate_id, event_type: str, payload: dict):
-    """Insert an outbox event for policy changes."""
+    """Insert an outbox event and delivery rows for policy changes."""
     import uuid as _uuid
+
+    event_id = _uuid.uuid4()
+
     db.execute(
         text("""
             INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload, status, retry_count, max_retries, created_at)
-            VALUES (:id, :tid, :atype, :aid, :etype, CAST(:payload AS jsonb), 'pending', 0, 3, NOW())
+            VALUES (:id, :tid, :atype, :aid, :etype, CAST(:payload AS jsonb), 'dispatched', 0, 3, NOW())
         """),
         {
-            "id": _uuid.uuid4(),
+            "id": event_id,
             "tid": tenant_id or _uuid.UUID('00000000-0000-0000-0000-000000000000'),
             "atype": aggregate_type,
             "aid": aggregate_id,
             "etype": event_type,
             "payload": json.dumps(payload, default=str),
         }
+    )
+
+    # Delivery row for graph_service (all policy events go to graph)
+    db.execute(
+        text("""
+            INSERT INTO outbox_event_delivery (id, event_id, consumer, status, created_at)
+            VALUES (:id, :eid, 'graph_service', 'pending', NOW())
+        """),
+        {"id": _uuid.uuid4(), "eid": event_id}
     )
 
 

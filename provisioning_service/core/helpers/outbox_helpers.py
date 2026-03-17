@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import OutboxEvent
+from provisioning_service.Models import OutboxEvent, OutboxEventDelivery
 from provisioning_service.utils.logger import logger
 
 # Keys commonly used in event_data that hold the aggregate entity's ID.
@@ -39,6 +39,37 @@ _AGGREGATE_ID_KEYS = (
     "target_version_id", "from_version_id", "source_version_id",
     "approved_range_id", "change_req_id", "limit_id", "task_id",
 )
+
+# ── Consumer routing rules ────────────────────────────────────────
+# Only applied when status='pending' (actionable events, not audit-only).
+
+_OUTBOX_WORKER_EVENT_TYPES = frozenset({
+    'tenant.signup',
+    'user.created',
+    'product.created',
+    'product.bulk_created',
+})
+
+_VECTOR_SERVICE_AGGREGATE_TYPES = frozenset({
+    'product',
+    'category',
+})
+
+
+def _determine_consumers(event_type: str, aggregate_type: str) -> list:
+    """Return the list of consumer names that should receive delivery rows."""
+    consumers = []
+
+    if event_type in _OUTBOX_WORKER_EVENT_TYPES:
+        consumers.append('outbox_worker')
+
+    # graph_service gets ALL pending events
+    consumers.append('graph_service')
+
+    if aggregate_type in _VECTOR_SERVICE_AGGREGATE_TYPES:
+        consumers.append('vector_service')
+
+    return consumers
 
 
 def _derive_aggregate_type(event_type: str) -> str:
@@ -130,6 +161,25 @@ def create_outbox_event(
     # Flush so the row is visible within the same transaction but callers can
     # still include it in a larger commit.
     db.flush()
+
+    # Create delivery rows for each consumer that should process this event
+    if status == "pending":
+        consumers = _determine_consumers(event_type, event.aggregate_type)
+        for consumer_name in consumers:
+            delivery = OutboxEventDelivery(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                consumer=consumer_name,
+                status='pending',
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(delivery)
+        db.flush()
+        # Mark the outbox event as dispatched — consumers now read from
+        # outbox_event_delivery, not outbox_events.status
+        event.status = 'dispatched'
+        db.flush()
+
     return event
 
 

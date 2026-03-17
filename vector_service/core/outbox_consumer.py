@@ -1,9 +1,11 @@
 """
 Vector Service — Outbox consumer.
 
-Same pattern as graph_service/core/outbox_consumer.py but runs
-independently. Only consumes product and category events
-(entities that need semantic search).
+Polls the `outbox_event_delivery` table for delivery rows assigned to
+'vector_service' and dispatches events to embedding handlers.
+
+Each consumer has independent delivery tracking — the vector service
+no longer depends on the graph service finishing first.
 """
 import asyncio
 import json
@@ -53,56 +55,66 @@ async def start_polling():
 
 
 def _claim_batch(session) -> List[dict]:
-    """Claim events that the vector service cares about.
-
-    Uses a separate status column approach: we only pick events
-    whose aggregate_type is product or category AND status is 'processed'
-    (already handled by graph service) but vector_status is 'pending'.
-
-    Fallback: if vector_status column doesn't exist, we use a
-    separate tracking table.
-    """
-    try:
-        result = session.execute(
-            text("""
-                SELECT id, tenant_id, aggregate_type, aggregate_id,
-                       event_type, payload, retry_count
-                FROM   outbox_events
-                WHERE  status = 'processed'
-                  AND  aggregate_type IN ('product', 'category')
-                  AND  id NOT IN (SELECT event_id FROM vector_event_log)
-                ORDER  BY created_at
+    """Atomically claim a batch of pending delivery rows for vector_service."""
+    result = session.execute(
+        text("""
+            UPDATE outbox_event_delivery
+            SET    status = 'processing'
+            WHERE  id IN (
+                SELECT d.id FROM outbox_event_delivery d
+                WHERE  d.consumer = 'vector_service'
+                  AND  d.status = 'pending'
+                ORDER  BY d.created_at
                 LIMIT  :limit
-            """),
-            {"limit": SETTINGS.POLL_BATCH_SIZE},
-        )
-        rows = result.fetchall()
-    except Exception:
-        result = session.execute(
-            text("""
-                SELECT id, tenant_id, aggregate_type, aggregate_id,
-                       event_type, payload, retry_count
-                FROM   outbox_events
-                WHERE  status = 'processed'
-                  AND  aggregate_type IN ('product', 'category')
-                ORDER  BY created_at
-                LIMIT  :limit
-            """),
-            {"limit": SETTINGS.POLL_BATCH_SIZE},
-        )
-        rows = result.fetchall()
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, event_id, retry_count, max_retries
+        """),
+        {"limit": SETTINGS.POLL_BATCH_SIZE},
+    )
+    session.commit()
+
+    delivery_rows = result.fetchall()
+    if not delivery_rows:
+        return []
+
+    # Build a map from event_id → delivery metadata
+    delivery_map = {}
+    event_ids = []
+    for r in delivery_rows:
+        eid_str = str(r.event_id)
+        delivery_map[eid_str] = {
+            "delivery_id": r.id,
+            "delivery_retry_count": r.retry_count,
+            "delivery_max_retries": r.max_retries,
+        }
+        event_ids.append(r.event_id)
+
+    # Load the actual event data for each claimed delivery
+    event_result = session.execute(
+        text("""
+            SELECT id, tenant_id, aggregate_type, aggregate_id,
+                   event_type, payload
+            FROM   outbox_events
+            WHERE  id = ANY(:event_ids)
+        """),
+        {"event_ids": event_ids},
+    )
 
     events = []
-    for r in rows:
+    for r in event_result.fetchall():
         payload = r.payload if isinstance(r.payload, dict) else json.loads(r.payload or "{}")
+        dm = delivery_map[str(r.id)]
         events.append({
             "id": r.id,
+            "delivery_id": dm["delivery_id"],
+            "delivery_retry_count": dm["delivery_retry_count"],
+            "delivery_max_retries": dm["delivery_max_retries"],
             "tenant_id": r.tenant_id,
             "aggregate_type": r.aggregate_type,
             "aggregate_id": r.aggregate_id,
             "event_type": r.event_type,
             "payload": payload,
-            "retry_count": r.retry_count,
         })
     return events
 
@@ -113,26 +125,52 @@ async def _dispatch(session, event: dict):
 
     handler = _handlers.get(prefix)
     if not handler:
-        _mark_vector_processed(session, event["id"])
+        _mark_completed(session, event["delivery_id"])
         return
 
     try:
         await handler(event)
-        _mark_vector_processed(session, event["id"])
+        _mark_completed(session, event["delivery_id"])
     except Exception as exc:
         logger.error(f"[Vector] Handler error for {event_type}: {exc}", exc_info=True)
+        _mark_failed(session, event)
 
 
-def _mark_vector_processed(session, event_id):
+def _mark_completed(session, delivery_id):
+    """Mark a delivery row as completed."""
     try:
         session.execute(
             text("""
-                INSERT INTO vector_event_log (event_id, processed_at)
-                VALUES (:eid, NOW())
-                ON CONFLICT (event_id) DO NOTHING
+                UPDATE outbox_event_delivery
+                SET    status = 'completed', processed_at = NOW()
+                WHERE  id = :did
             """),
-            {"eid": event_id},
+            {"did": delivery_id},
         )
         session.commit()
     except Exception:
         session.rollback()
+
+
+def _mark_failed(session, event: dict):
+    """Retry or dead-letter a failed delivery."""
+    delivery_id = event["delivery_id"]
+    new_retry = event["delivery_retry_count"] + 1
+    max_retries = event.get("delivery_max_retries", 3)
+    new_status = "dead_letter" if new_retry >= max_retries else "pending"
+
+    try:
+        session.execute(
+            text("""
+                UPDATE outbox_event_delivery
+                SET    status = :st, retry_count = :rc
+                WHERE  id = :did
+            """),
+            {"st": new_status, "rc": new_retry, "did": delivery_id},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    if new_status == "dead_letter":
+        logger.warning(f"[Vector] Delivery {delivery_id} moved to dead_letter after {new_retry} retries")
