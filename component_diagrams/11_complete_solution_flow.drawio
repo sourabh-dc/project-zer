@@ -1,0 +1,210 @@
+<mxfile host="app.diagrams.net" modified="2026-03-16T00:00:00.000Z" agent="cursor" version="24.0.0" type="device">
+  <diagram id="complete-solution-flow" name="Complete Solution Flow">
+    <mxGraphModel dx="2200" dy="1800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1600" pageHeight="2000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="11 — Complete Solution Flow" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#1a1a2e;" vertex="1" parent="1">
+          <mxGeometry x="430" y="10" width="520" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="End-to-end platform flow across onboarding, governance, provisioning, catalog, budget, approvals, projections, search, and intelligence" style="text;html=1;fontSize=11;fontStyle=2;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="240" y="42" width="900" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- CLIENTS -->
+        <mxCell id="grp_clients" value="Client Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=11;verticalAlign=top;dashed=1;dashPattern=5 5;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="360" y="80" width="700" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="c_admin" value="&lt;b&gt;Tenant Admin&lt;/b&gt;&lt;br&gt;Web App" style="shape=mxgraph.azure.user;fillColor=#0078D4;fontColor=#ffffff;strokeColor=none;fontSize=10;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="102" width="70" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="c_requester" value="&lt;b&gt;Requester&lt;/b&gt;&lt;br&gt;Store / Ops User" style="shape=mxgraph.azure.user;fillColor=#00A36C;fontColor=#ffffff;strokeColor=none;fontSize=10;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="102" width="70" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="c_approver" value="&lt;b&gt;Approver&lt;/b&gt;&lt;br&gt;Manager / Finance" style="shape=mxgraph.azure.user;fillColor=#E67E22;fontColor=#ffffff;strokeColor=none;fontSize=10;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="790" y="102" width="70" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="c_nl" value="&lt;b&gt;Analyst&lt;/b&gt;&lt;br&gt;Natural Language" style="shape=mxgraph.azure.user;fillColor=#9B59B6;fontColor=#ffffff;strokeColor=none;fontSize=10;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="970" y="102" width="70" height="52" as="geometry" />
+        </mxCell>
+
+        <!-- ONBOARDING -->
+        <mxCell id="grp_onboard" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;arcSize=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="70" y="205" width="1450" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="onboard_lbl" value="Flow A — Onboarding &amp; Authentication (entry to platform)" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#3F51B5;" vertex="1" parent="1">
+          <mxGeometry x="520" y="210" width="550" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="otp" value="&lt;b&gt;OTP Flow&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/onboarding/otp/generate&lt;br&gt;/onboarding/otp/validate&lt;br&gt;Azure Email delivery&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#3F51B5;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="245" width="180" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="signup" value="&lt;b&gt;Tenant Signup&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/onboarding/tenant-signup&lt;br&gt;Creates tenant + admin user + tenant_admin role&lt;br&gt;Emits outbox event&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#E65100;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="240" width="220" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="signin" value="&lt;b&gt;Sign In / Refresh / Logout&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/onboarding/tenant-signin&lt;br&gt;/authentication/*&lt;br&gt;JWT returned to client&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#607D8B;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="630" y="245" width="220" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="sub" value="&lt;b&gt;Plans / Subscription / Payments&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/plans · /subscriptions/* · /payments/*&lt;br&gt;Feature entitlements activated&lt;br&gt;Stripe checkout + webhook&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2E7D32;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="920" y="240" width="230" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="ready" value="&lt;b&gt;Tenant Ready&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;JWT + plan + features + permissions&lt;br&gt;All business APIs available&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="245" width="210" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="e_o1" style="rounded=1;strokeColor=#3F51B5;strokeWidth=2;" edge="1" parent="1" source="otp" target="signup"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_o2" style="rounded=1;strokeColor=#607D8B;strokeWidth=2;" edge="1" parent="1" source="signup" target="signin"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_o3" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="signin" target="sub"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_o4" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="sub" target="ready"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- GOVERNANCE -->
+        <mxCell id="grp_govern" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9800;dashed=1;dashPattern=5 5;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="170" y="380" width="1250" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="gov_lbl" value="Flow B — Governance Gates on every protected write endpoint" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#E65100;" vertex="1" parent="1">
+          <mxGeometry x="530" y="385" width="520" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="gw" value="&lt;b&gt;API Request&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;HTTPS + JWT&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a1a2e;fontColor=#ffffff;strokeColor=#1a1a2e;fontSize=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry x="220" y="420" width="150" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="rbac" value="&lt;b&gt;Gate 1 — RBAC&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;check_user_authorization&lt;br&gt;roles + permissions&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="450" y="410" width="180" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="policy" value="&lt;b&gt;Gate 2 — Policy&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;require_policy(action, resource)&lt;br&gt;allow / deny / require_approval&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="710" y="410" width="210" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="router" value="&lt;b&gt;Provisioning Router&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Dispatch to business module&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="415" width="180" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="tx" value="&lt;b&gt;Postgres + Outbox&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;same transaction&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="415" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e_g1" style="rounded=1;strokeColor=#333333;strokeWidth=2;" edge="1" parent="1" source="gw" target="rbac"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_g2" style="rounded=1;strokeColor=#FF9800;strokeWidth=2;" edge="1" parent="1" source="rbac" target="policy"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_g3" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="policy" target="router"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e_g4" style="rounded=1;strokeColor=#F9A825;strokeWidth=2;" edge="1" parent="1" source="router" target="tx"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- DOMAINS -->
+        <mxCell id="grp_domains" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#BDBDBD;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="60" y="525" width="1460" height="360" as="geometry" />
+        </mxCell>
+        <mxCell id="domains_lbl" value="Flow C — Provisioning Service business modules" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="570" y="530" width="440" height="22" as="geometry" />
+        </mxCell>
+
+        <mxCell id="d_core" value="&lt;b&gt;Tenant / Org Provisioning&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/provisioning/tenants · sites · stores&lt;br&gt;users · roles · permissions · org_units&lt;br&gt;vendors · cost-centres&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="90" y="575" width="290" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="d_catalog" value="&lt;b&gt;Catalog &amp; Product Governance&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/catalog/categories · products · variants&lt;br&gt;/catalog/store-products&lt;br&gt;/approved-ranges + org-unit/product mapping&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="575" width="300" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="d_fin" value="&lt;b&gt;Financial Governance&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/financial-calendars&lt;br&gt;/budgets/company-caps · cc-versions · transactions&lt;br&gt;/user-budgets/assignments · limits&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="780" y="575" width="300" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="d_approve" value="&lt;b&gt;Purchasing &amp; Approval Workflows&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/approval-policies&lt;br&gt;/purchase-requests + my-tasks + decide + issue-po&lt;br&gt;/budget-change-requests (top-up / bring-forward / reallocation)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="575" width="340" height="95" as="geometry" />
+        </mxCell>
+
+        <mxCell id="engines" value="&lt;b&gt;Provisioning internal engines&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;budget_engine · approval_engine · period_calculator&lt;br&gt;outbox helpers · outbox worker&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#607D8B;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="470" y="720" width="650" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="dbs" value="&lt;b&gt;Transactional data in PostgreSQL&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;tenants · users · subscriptions · catalog · approved ranges · cost centres · financial calendars · budget versions · user limits · approval policies · purchase requests · approval workflows/tasks · budget change requests · spending events · outbox_events&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E0E0;strokeColor=#616161;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="140" y="805" width="1300" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- BUDGET FLOW -->
+        <mxCell id="grp_budget" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#FF8F00;arcSize=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="925" width="1460" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="budget_lbl" value="Flow D — Budget and approval runtime flow" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#E65100;" vertex="1" parent="1">
+          <mxGeometry x="590" y="930" width="400" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="b1" value="&lt;b&gt;1. Configure finance model&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Calendars → Years → Periods&lt;br&gt;Company caps → CC versions → User budgets / limits&lt;br&gt;Approval policies&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#FF8F00;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="90" y="970" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="b2" value="&lt;b&gt;2. Submit purchase request&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/purchase-requests&lt;br&gt;resolve current financial period&lt;br&gt;check_request_headroom()&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#FF8F00;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="390" y="980" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="b3" value="&lt;b&gt;3. Self-approve?&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;transaction + period windows&lt;br&gt;cost-centre headroom&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="655" y="975" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="b4" value="&lt;b&gt;4A. Auto-approve&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;approved_by=requester&lt;br&gt;emit purchase_request.auto_approved&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="860" y="960" width="190" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="b5" value="&lt;b&gt;4B. Approval workflow&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;resolve_workflow()&lt;br&gt;ApprovalWorkflow + ApprovalTask rows&lt;br&gt;approver decides on /my-tasks&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="860" y="1030" width="220" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="b6" value="&lt;b&gt;5. Finalize&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;approved / rejected / po_issued&lt;br&gt;SpendingEvent + BudgetTransaction&lt;br&gt;budget-change requests route separately for top-up / bring-forward / reallocation&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#607D8B;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="980" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="eb1" style="rounded=1;strokeColor=#FF8F00;strokeWidth=2;" edge="1" parent="1" source="b1" target="b2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eb2" style="rounded=1;strokeColor=#FF8F00;strokeWidth=2;" edge="1" parent="1" source="b2" target="b3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eb3" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="b3" target="b4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eb3l" value="Yes" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="eb3"><mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry></mxCell>
+        <mxCell id="eb4" style="rounded=1;strokeColor=#C62828;strokeWidth=2;" edge="1" parent="1" source="b3" target="b5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eb4l" value="No / require approval" style="edgeLabel;html=1;fontSize=8;fontColor=#C62828;" vertex="1" connectable="0" parent="eb4"><mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry></mxCell>
+        <mxCell id="eb5" style="rounded=1;strokeColor=#607D8B;strokeWidth=2;" edge="1" parent="1" source="b4" target="b6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eb6" style="rounded=1;strokeColor=#607D8B;strokeWidth=2;" edge="1" parent="1" source="b5" target="b6"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- PROJECTIONS -->
+        <mxCell id="grp_proj" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#F57F17;arcSize=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="1185" width="1460" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="proj_lbl" value="Flow E — Event-driven projection and governed search" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#F57F17;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1190" width="460" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p_outbox" value="&lt;b&gt;Outbox Events&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;entity.created / updated / deleted&lt;br&gt;purchase requests / ranges / policies / budgets&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=9;size=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="1245" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p_sb" value="&lt;b&gt;Messaging Service&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Azure Service Bus notify&lt;br&gt;relay / retry&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="1250" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p_graph" value="&lt;b&gt;Graph Service (8005)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;poll outbox → Neo4j&lt;br&gt;tenant/site/store/user/org unit&lt;br&gt;approved ranges · policies · cost centres&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00897B;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="590" y="1240" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p_vector" value="&lt;b&gt;Vector Service (8006)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;poll product events&lt;br&gt;generate embeddings with Azure OpenAI&lt;br&gt;filter search via Graph approved universe&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="890" y="1240" width="250" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p_intel" value="&lt;b&gt;Intelligence Service (8007)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;/intelligence/query&lt;br&gt;route question to SQL / Graph / Vector&lt;br&gt;LLM summarization of results&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9B59B6;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="1240" width="250" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ep1" style="rounded=1;strokeColor=#3F51B5;strokeWidth=1.5;dashed=1;" edge="1" parent="1" source="p_outbox" target="p_sb"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ep2" style="rounded=1;strokeColor=#00897B;strokeWidth=2;" edge="1" parent="1" source="p_outbox" target="p_graph"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ep3" style="rounded=1;strokeColor=#7B1FA2;strokeWidth=2;" edge="1" parent="1" source="p_outbox" target="p_vector"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ep4" style="rounded=1;strokeColor=#9B59B6;strokeWidth=2;" edge="1" parent="1" source="p_graph" target="p_intel"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ep5" style="rounded=1;strokeColor=#7B1FA2;strokeWidth=2;" edge="1" parent="1" source="p_vector" target="p_intel"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="stores" value="&lt;b&gt;Data stores&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;PostgreSQL (SoR + pgvector) · Redis · Neo4j&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#BDBDBD;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1345" width="550" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- NL ANALYTICS -->
+        <mxCell id="grp_query" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9B59B6;arcSize=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="1455" width="1460" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="query_lbl" value="Flow F — Natural language analytics and governed discovery" style="text;html=1;fontSize=13;fontStyle=5;align=center;verticalAlign=middle;fontColor=#9B59B6;" vertex="1" parent="1">
+          <mxGeometry x="545" y="1460" width="490" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="q1" value="&lt;b&gt;Analyst asks question&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&quot;What products are in the approved range?&quot;&lt;br&gt;&quot;Which cost centres exceeded budget?&quot;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9B59B6;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="1500" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="q2" value="&lt;b&gt;Query Router&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Classify graph / sql / vector / hybrid&lt;br&gt;tenant-scoped execution only&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9B59B6;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="460" y="1510" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="q3" value="&lt;b&gt;Execute backends&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;SQL on Postgres&lt;br&gt;Cypher on Neo4j&lt;br&gt;Semantic search on pgvector&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9B59B6;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1500" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="q4" value="&lt;b&gt;LLM summary&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Azure OpenAI synthesizes answer&lt;br&gt;with supporting rows / query plan&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="1510" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="q5" value="&lt;b&gt;Response to user&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Natural language answer&lt;br&gt;grounded in platform data&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1360" y="1510" width="120" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="eq1" style="rounded=1;strokeColor=#9B59B6;strokeWidth=2;" edge="1" parent="1" source="q1" target="q2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eq2" style="rounded=1;strokeColor=#9B59B6;strokeWidth=2;" edge="1" parent="1" source="q2" target="q3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eq3" style="rounded=1;strokeColor=#3F51B5;strokeWidth=2;" edge="1" parent="1" source="q3" target="q4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eq4" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="q4" target="q5"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

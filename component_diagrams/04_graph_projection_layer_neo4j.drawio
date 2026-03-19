@@ -1,0 +1,204 @@
+<mxfile host="app.diagrams.net" modified="2026-02-19T00:00:00.000Z" agent="cursor" version="24.0.0" type="device">
+  <diagram id="graph-projection" name="Graph Projection Layer (Neo4j)">
+    <mxGraphModel dx="2000" dy="1600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- TITLE -->
+        <mxCell id="title" value="4 — Graph Projection Layer (Neo4j)" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#1a1a2e;" vertex="1" parent="1">
+          <mxGeometry x="300" y="10" width="500" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="All governance entities projected from outbox events into a graph topology. Products only enter via Approved Ranges." style="text;html=1;fontSize=11;fontStyle=2;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="200" y="42" width="700" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- ========== DATA FLOW: Postgres → Outbox → Graph Consumer → Neo4j ========== -->
+        <mxCell id="pg" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Source of Truth&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#0078D4;fontColor=#ffffff;strokeColor=#0078D4;fontSize=10;size=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="80" width="120" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="outbox" value="&lt;b&gt;outbox_events&lt;/b&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=10;size=8;" vertex="1" parent="1">
+          <mxGeometry x="280" y="85" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="consumer" value="&lt;b&gt;Graph Consumer&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Polls events, routes&lt;br&gt;to entity handlers&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00897B;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="480" y="80" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="neo4j" value="&lt;b&gt;Neo4j&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Graph Database&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#00897B;fontColor=#ffffff;strokeColor=#00897B;fontSize=10;size=10;" vertex="1" parent="1">
+          <mxGeometry x="720" y="80" width="120" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ef1" style="rounded=1;strokeColor=#F9A825;strokeWidth=2;" edge="1" parent="1" source="pg" target="outbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ef2" style="rounded=1;strokeColor=#00897B;strokeWidth=2;" edge="1" parent="1" source="outbox" target="consumer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ef2l" value="poll" style="edgeLabel;html=1;fontSize=8;fontColor=#00897B;" vertex="1" connectable="0" parent="ef2">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="ef3" style="rounded=1;strokeColor=#00897B;strokeWidth=2;" edge="1" parent="1" source="consumer" target="neo4j">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ef3l" value="Cypher MERGE" style="edgeLabel;html=1;fontSize=8;fontColor=#00897B;" vertex="1" connectable="0" parent="ef3">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ========== FULL GRAPH TOPOLOGY ========== -->
+        <mxCell id="grp_topo" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#00897B;arcSize=6;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="165" width="920" height="580" as="geometry" />
+        </mxCell>
+        <mxCell id="topo_title" value="Neo4j Graph Topology — Node Types &amp; Relationships" style="text;html=1;fontSize=14;fontStyle=5;align=center;verticalAlign=middle;fontColor=#00897B;" vertex="1" parent="1">
+          <mxGeometry x="250" y="170" width="500" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- ===== TENANT (center top) ===== -->
+        <mxCell id="n_tenant" value="&lt;b&gt;:Tenant&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;tenant_id, name,&lt;br&gt;type, status&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1a1a2e;fontColor=#ffffff;strokeColor=#1a1a2e;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="410" y="210" width="130" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== SITE ===== -->
+        <mxCell id="n_site" value="&lt;b&gt;:Site&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;site_id, name,&lt;br&gt;city, country&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1565C0;fontColor=#ffffff;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="320" width="120" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ts" style="rounded=1;strokeColor=#1565C0;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_site">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tsl" value=":HAS_SITE" style="edgeLabel;html=1;fontSize=8;fontColor=#1565C0;" vertex="1" connectable="0" parent="r_ts">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== STORE ===== -->
+        <mxCell id="n_store" value="&lt;b&gt;:Store&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;store_id, name, type&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#0097A7;fontColor=#ffffff;strokeColor=#0097A7;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="430" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ss" style="rounded=1;strokeColor=#0097A7;strokeWidth=1.5;" edge="1" parent="1" source="n_site" target="n_store">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ssl" value=":HAS_STORE" style="edgeLabel;html=1;fontSize=8;fontColor=#0097A7;" vertex="1" connectable="0" parent="r_ss">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== ORG UNIT ===== -->
+        <mxCell id="n_ou" value="&lt;b&gt;:OrgUnit&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;org_unit_id, name&lt;br&gt;(Department)&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FF9800;fontColor=#ffffff;strokeColor=#FF9800;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="390" y="320" width="130" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tou" style="rounded=1;strokeColor=#FF9800;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_ou">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_toul" value=":HAS_UNIT" style="edgeLabel;html=1;fontSize=8;fontColor=#FF9800;" vertex="1" connectable="0" parent="r_tou">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== APPROVED RANGE ===== -->
+        <mxCell id="n_ar" value="&lt;b&gt;:ApprovedRange&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;approved_range_id&lt;br&gt;name, is_universal&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E7D32;fontColor=#ffffff;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="380" y="430" width="150" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ouar" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="n_ou" target="n_ar">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ouarl" value=":USES_RANGE" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="r_ouar">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== PRODUCT (via Approved Range only) ===== -->
+        <mxCell id="n_prod" value="&lt;b&gt;:Product&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;product_id, name&lt;br&gt;sku, barcode&lt;br&gt;&lt;b&gt;Only via range!&lt;/b&gt;&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#4CAF50;fontColor=#ffffff;strokeColor=#4CAF50;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="380" y="540" width="150" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="r_arp" style="rounded=1;strokeColor=#4CAF50;strokeWidth=2;" edge="1" parent="1" source="n_ar" target="n_prod">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_arpl" value=":INCLUDES" style="edgeLabel;html=1;fontSize=8;fontColor=#4CAF50;fontStyle=1;" vertex="1" connectable="0" parent="r_arp">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== USER ===== -->
+        <mxCell id="n_user" value="&lt;b&gt;:User&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;user_id, name, email&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E91E63;fontColor=#ffffff;strokeColor=#E91E63;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="210" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tu" style="rounded=1;strokeColor=#E91E63;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_user">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tul" value=":HAS_USER" style="edgeLabel;html=1;fontSize=8;fontColor=#E91E63;" vertex="1" connectable="0" parent="r_tu">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== ROLE ===== -->
+        <mxCell id="n_role" value="&lt;b&gt;:Role&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;code, name&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#9C27B0;fontColor=#ffffff;strokeColor=#9C27B0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="790" y="310" width="100" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="r_ur" style="rounded=1;strokeColor=#9C27B0;strokeWidth=1.5;" edge="1" parent="1" source="n_user" target="n_role">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_url" value=":HAS_ROLE" style="edgeLabel;html=1;fontSize=8;fontColor=#9C27B0;" vertex="1" connectable="0" parent="r_ur">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- User → OrgUnit -->
+        <mxCell id="r_uou" style="rounded=1;strokeColor=#FF9800;strokeWidth=1.5;dashed=1;" edge="1" parent="1" source="n_user" target="n_ou">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_uoul" value=":BELONGS_TO" style="edgeLabel;html=1;fontSize=8;fontColor=#FF9800;" vertex="1" connectable="0" parent="r_uou">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== VENDOR ===== -->
+        <mxCell id="n_vendor" value="&lt;b&gt;:Vendor&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;vendor_id, name&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#795548;fontColor=#ffffff;strokeColor=#795548;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="200" y="210" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tv" style="rounded=1;strokeColor=#795548;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_vendor">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tvl" value=":HAS_VENDOR" style="edgeLabel;html=1;fontSize=8;fontColor=#795548;" vertex="1" connectable="0" parent="r_tv">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== CATEGORY ===== -->
+        <mxCell id="n_cat" value="&lt;b&gt;:Category&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;category_id, name, code&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#607D8B;fontColor=#ffffff;strokeColor=#607D8B;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="620" y="340" width="130" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tc" style="rounded=1;strokeColor=#607D8B;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_cat">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tcl" value=":HAS_CATEGORY" style="edgeLabel;html=1;fontSize=8;fontColor=#607D8B;" vertex="1" connectable="0" parent="r_tc">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== COST CENTRE ===== -->
+        <mxCell id="n_cc" value="&lt;b&gt;:CostCentre&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;cost_centre_id, name&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#F44336;fontColor=#ffffff;strokeColor=#F44336;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="780" y="430" width="130" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tcc" style="rounded=1;strokeColor=#F44336;strokeWidth=1.5;" edge="1" parent="1" source="n_tenant" target="n_cc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_tccl" value=":HAS_COST_CENTRE" style="edgeLabel;html=1;fontSize=8;fontColor=#F44336;" vertex="1" connectable="0" parent="r_tcc">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== STORE PRODUCT (links store to product) ===== -->
+        <mxCell id="r_sp" style="rounded=1;strokeColor=#0097A7;strokeWidth=1.5;dashed=1;" edge="1" parent="1" source="n_store" target="n_prod">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r_spl" value=":STOCKS" style="edgeLabel;html=1;fontSize=8;fontColor=#0097A7;" vertex="1" connectable="0" parent="r_sp">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ===== LEGEND ===== -->
+        <mxCell id="grp_legend" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#BDBDBD;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="620" y="520" width="320" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="leg_title" value="Entity → Event Handler Mapping" style="text;html=1;fontSize=10;fontStyle=5;align=center;verticalAlign=middle;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="650" y="523" width="260" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="leg_list" value="&lt;font style='font-size:8px;font-family:monospace'&gt;tenant.created → TenantHandler&lt;br&gt;site.created/updated → SiteHandler&lt;br&gt;store.created/updated → StoreHandler&lt;br&gt;org_unit.created/updated → OrgUnitHandler&lt;br&gt;user.created/updated → UserHandler&lt;br&gt;vendor/category/cost_centre → respective handlers&lt;br&gt;approved_range.* → ApprovedRangeHandler&lt;br&gt;store_product.* → StoreProductHandler&lt;/font&gt;" style="text;html=1;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="635" y="543" width="290" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Product filtering note -->
+        <mxCell id="note_prod" value="&lt;font style='font-size:9px'&gt;&lt;b&gt;Note:&lt;/b&gt; product.created / product.updated events are &lt;b&gt;NOT handled&lt;/b&gt; by the graph consumer.&lt;br&gt;Products only appear in Neo4j via &lt;b&gt;approved_range.products_added&lt;/b&gt; events.&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="620" y="640" width="320" height="50" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,165 @@
+<mxfile host="app.diagrams.net" modified="2026-02-19T00:00:00.000Z" agent="cursor" version="24.0.0" type="device">
+  <diagram id="entity-lifecycle" name="Entity Lifecycle (CRUD + Soft Deletes + RBAC)">
+    <mxGraphModel dx="1800" dy="1500" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1400" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- TITLE -->
+        <mxCell id="title" value="8 — Entity Lifecycle (CRUD + Soft Deletes + Event Emission)" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#1a1a2e;" vertex="1" parent="1">
+          <mxGeometry x="200" y="10" width="600" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="The standard lifecycle for every governance entity — from HTTP request through authorization, business logic, persistence, and event propagation" style="text;html=1;fontSize=11;fontStyle=2;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="100" y="42" width="800" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- ========== ENTITIES ========== -->
+        <mxCell id="grp_entities" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="75" width="880" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="ent_title" value="Governed Entities" style="text;html=1;fontSize=11;fontStyle=5;align=center;verticalAlign=middle;fontColor=#3F51B5;" vertex="1" parent="1">
+          <mxGeometry x="400" y="77" width="200" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="ent_list" value="&lt;font style='font-size:10px'&gt;&lt;b&gt;Tenant&lt;/b&gt; · &lt;b&gt;Site&lt;/b&gt; · &lt;b&gt;Store&lt;/b&gt; · &lt;b&gt;OrgUnit&lt;/b&gt; · &lt;b&gt;User&lt;/b&gt; · &lt;b&gt;Vendor&lt;/b&gt; · &lt;b&gt;CostCentre&lt;/b&gt; · &lt;b&gt;Category&lt;/b&gt; · &lt;b&gt;Product&lt;/b&gt; · &lt;b&gt;ApprovedRange&lt;/b&gt; · &lt;b&gt;Role&lt;/b&gt;&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="80" y="98" width="840" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- ========== FULL REQUEST FLOW ========== -->
+
+        <!-- Step 1: HTTP Request -->
+        <mxCell id="s1" value="&lt;b&gt;HTTP Request&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;POST / PUT / DELETE&lt;br&gt;Authorization: Bearer JWT&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a1a2e;fontColor=#ffffff;strokeColor=#1a1a2e;fontSize=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry x="380" y="155" width="240" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Step 2: JWT Decode -->
+        <mxCell id="s2" value="&lt;b&gt;JWT Decode&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Extract user_id, tenant_id, roles&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="400" y="230" width="200" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Step 3: RBAC -->
+        <mxCell id="s3" value="&lt;b&gt;Gate 1: RBAC&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;check_user_authorization(&quot;permission&quot;)&lt;br&gt;Does user have required permission?&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="295" width="300" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Step 4: Policy -->
+        <mxCell id="s4" value="&lt;b&gt;Gate 2: Policy Engine&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;require_policy(&quot;entity.action&quot;)&lt;br&gt;Context enrichment → rule evaluation → allow/deny&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="330" y="370" width="340" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Step 5: Feature Limit -->
+        <mxCell id="s5" value="&lt;b&gt;Feature Limit Check&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;check_feature_limit(tenant_id, feature_code)&lt;br&gt;Is usage within subscription plan limit?&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="445" width="320" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Step 6: Business Logic -->
+        <mxCell id="s6" value="&lt;b&gt;Business Logic&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Validate inputs, check uniqueness,&lt;br&gt;enforce tenant isolation, create/update entity&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="520" width="300" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows for flow -->
+        <mxCell id="ea" style="rounded=1;strokeColor=#333;strokeWidth=2;" edge="1" parent="1" source="s1" target="s2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eb" style="rounded=1;strokeColor=#333;strokeWidth=2;" edge="1" parent="1" source="s2" target="s3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ec" style="rounded=1;strokeColor=#333;strokeWidth=2;" edge="1" parent="1" source="s3" target="s4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ecl" value="pass" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="ec">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="ed" style="rounded=1;strokeColor=#333;strokeWidth=2;" edge="1" parent="1" source="s4" target="s5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edl" value="allow" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="ed">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="ee" style="rounded=1;strokeColor=#333;strokeWidth=2;" edge="1" parent="1" source="s5" target="s6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eel" value="within limit" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="ee">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- Deny arrows -->
+        <mxCell id="deny3" value="&lt;font style='font-size:8px' color='#C62828'&gt;&lt;b&gt;403&lt;/b&gt; No permission&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="720" y="300" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="ed3" style="rounded=1;strokeColor=#C62828;strokeWidth=1;dashed=1;" edge="1" parent="1" source="s3" target="deny3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="deny4" value="&lt;font style='font-size:8px' color='#C62828'&gt;&lt;b&gt;403&lt;/b&gt; Policy denied&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="720" y="375" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="ed4" style="rounded=1;strokeColor=#C62828;strokeWidth=1;dashed=1;" edge="1" parent="1" source="s4" target="deny4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="deny5" value="&lt;font style='font-size:8px' color='#C62828'&gt;&lt;b&gt;429&lt;/b&gt; Limit exceeded&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="720" y="450" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="ed5" style="rounded=1;strokeColor=#C62828;strokeWidth=1;dashed=1;" edge="1" parent="1" source="s5" target="deny5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ========== PERSISTENCE + OUTBOX ========== -->
+        <mxCell id="grp_persist" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;arcSize=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="595" width="880" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="persist_title" value="Atomic Persistence (Single Transaction)" style="text;html=1;fontSize=12;fontStyle=5;align=center;verticalAlign=middle;fontColor=#2E7D32;" vertex="1" parent="1">
+          <mxGeometry x="310" y="598" width="380" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="db_write" value="&lt;b&gt;Entity Table Write&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;INSERT (create) / UPDATE (modify)&lt;br&gt;/ UPDATE status='deleted' (soft delete)&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#0078D4;fontColor=#ffffff;strokeColor=#0078D4;fontSize=9;size=8;" vertex="1" parent="1">
+          <mxGeometry x="100" y="625" width="220" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="outbox_write" value="&lt;b&gt;Outbox Event&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;append_outbox_event(db, ...)&lt;br&gt;event_type: entity.action&lt;br&gt;payload: full entity snapshot&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=9;size=8;" vertex="1" parent="1">
+          <mxGeometry x="400" y="625" width="220" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="usage_rec" value="&lt;b&gt;Record Usage&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;record_feature_usage()&lt;br&gt;Increment counter for&lt;br&gt;subscription limit tracking&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#FF9800;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="630" width="180" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ef_biz" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="s6" target="grp_persist">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ef_same" style="rounded=1;strokeColor=#2E7D32;strokeWidth=2;" edge="1" parent="1" source="db_write" target="outbox_write">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ef_samel" value="same TX" style="edgeLabel;html=1;fontSize=8;fontColor=#2E7D32;fontStyle=1;" vertex="1" connectable="0" parent="ef_same">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+
+        <!-- ========== EVENT PROPAGATION ========== -->
+        <mxCell id="grp_prop" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#F9A825;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="755" width="880" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="prop_title" value="Event Propagation to Projection Layers" style="text;html=1;fontSize=12;fontStyle=5;align=center;verticalAlign=middle;fontColor=#F57F17;" vertex="1" parent="1">
+          <mxGeometry x="300" y="758" width="400" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="prop_graph" value="&lt;b&gt;→ Neo4j&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;All entities (products&lt;br&gt;only via approved range)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00897B;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="785" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="prop_vector" value="&lt;b&gt;→ pgvector&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Product events only&lt;br&gt;→ embedding → upsert&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=9;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="380" y="785" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="prop_future" value="&lt;b&gt;→ Future&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Audit log, notifications,&lt;br&gt;analytics, webhooks&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#607D8B;fontSize=9;arcSize=10;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="660" y="785" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ========== SOFT DELETE DETAIL ========== -->
+        <mxCell id="grp_sd" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="880" width="880" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sd_title" value="Soft Delete Pattern" style="text;html=1;fontSize=11;fontStyle=5;align=center;verticalAlign=middle;fontColor=#C62828;" vertex="1" parent="1">
+          <mxGeometry x="400" y="883" width="200" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="sd_detail" value="&lt;font style='font-size:10px'&gt;DELETE endpoints set &lt;b&gt;status = 'deleted'&lt;/b&gt; — records are never hard-deleted from PostgreSQL.&lt;br&gt;All queries filter with &lt;b&gt;WHERE status != 'deleted'&lt;/b&gt;. Outbox emits &lt;b&gt;entity.deleted&lt;/b&gt; event.&lt;br&gt;Graph consumer sets &lt;b&gt;status: 'deleted'&lt;/b&gt; on the Neo4j node. Data is always recoverable.&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="80" y="905" width="840" height="48" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
