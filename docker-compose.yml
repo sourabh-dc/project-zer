@@ -52,6 +52,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Orders Service
+  orders:
+    build:
+      context: .
+      dockerfile: orders_service/Dockerfile
+    container_name: zeroque-orders
+    environment:
+      DATABASE_URL: postgresql://zeroque:zeroque_dev_password@postgres:5432/zeroque_dev
+      ORDERS_PORT: 8008
+      LOG_LEVEL: INFO
+      ALLOW_ORIGINS: "*"
+      POLICY_ENGINE_URL: http://localhost:8004
+    ports:
+      - "8008:8008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
