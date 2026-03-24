@@ -38,6 +38,14 @@ class Role(Base):
     code = Column(String(100), unique=True, nullable=False, index=True)
 
 
+class UserRole(Base):
+    __tablename__ = "user_roles"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+
+
 class Permission(Base):
     __tablename__ = "permissions"
     permission_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

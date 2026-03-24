@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r /tmp/orders-requirements.txt
 
 COPY . /app
 
-EXPOSE 8008
+EXPOSE 80
 
-CMD ["python", "-m", "orders_service.main"]
+CMD ["python", "-m", "orders_service.main", "--host", "0.0.0.0", "--port", "80"]
 

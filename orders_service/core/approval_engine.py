@@ -101,7 +101,10 @@ def _resolve_approvers_for_stage(
             role_users = (
                 db.query(UserRole.user_id)
                 .join(Role, UserRole.role_id == Role.role_id)
-                .filter(Role.code == spec.role_code)
+                .filter(
+                    Role.code == spec.role_code,
+                    UserRole.tenant_id == request.tenant_id,
+                )
                 .all()
             )
             approver_ids.extend([uid for (uid,) in role_users])

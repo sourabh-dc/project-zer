@@ -1,4 +1,4 @@
-name: Build and Deploy to ACA
+name: Build and Deploy Vector Service to ACA
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - production
 
 jobs:
-  build-and-deploy:
+  build-and-deploy-vector:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -21,14 +21,14 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile
+          file: ./vector_service/Dockerfile
           push: true
-          tags: ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
-          
+          tags: ${{ secrets.ACR_NAME }}.azurecr.io/vector-service:${{ github.sha }}
+
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v1
         with:
           acrName: ${{ secrets.ACR_NAME }}
-          containerAppName: ${{ secrets.ACA_APP_NAME }}
+          containerAppName: ${{ secrets.ACA_VECTOR_APP_NAME }}
           resourceGroup: ${{ secrets.RESOURCE_GROUP }}
-          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
+          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/vector-service:${{ github.sha }}
