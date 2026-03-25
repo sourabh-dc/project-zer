@@ -1,9 +1,10 @@
-name: Build and Deploy Vector Service to ACA
+name: Build and Deploy Vector Service
 
 on:
   push:
     branches:
       - production
+  workflow_dispatch:
 
 jobs:
   build-and-deploy-vector:
@@ -16,6 +17,10 @@ jobs:
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: |
+          az acr login --name ${{ secrets.ACR_NAME }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v4

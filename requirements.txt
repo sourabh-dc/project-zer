@@ -41,3 +41,5 @@ pandas
 openpyxl
 python-multipart
 openai==2.28.0
+
+neo4j
