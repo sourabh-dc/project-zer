@@ -14,5 +14,5 @@ COPY . /app
 
 EXPOSE 80
 
-CMD ["python", "-m", "orders_service.main", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "orders_service.main:app", "--host", "0.0.0.0", "--port", "80"]
 
