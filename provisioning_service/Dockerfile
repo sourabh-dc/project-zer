@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 80
 
 # Run the application
-CMD ["uvicorn", "zeroque_core_app:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "provisioning_service.main:app", "--host", "0.0.0.0", "--port", "80"]

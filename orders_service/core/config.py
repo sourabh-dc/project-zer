@@ -6,40 +6,28 @@ from pydantic_settings import BaseSettings
 
 load_dotenv()
 
-environment = (os.getenv("ENVIRONMENT") or "local").lower()
+environment = os.getenv("ENVIRONMENT").lower()
 
 if environment != "local":
-    try:
-        from azure.identity import DefaultAzureCredential
-        from azure.keyvault.secrets import SecretClient
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
 
-        keyvault_name = os.getenv("KEYVAULT_NAME")
-        if keyvault_name:
-            vault_url = f"https://{keyvault_name}.vault.azure.net"
-            credential = DefaultAzureCredential()
-            kv_client = SecretClient(vault_url=vault_url, credential=credential)
+    keyvault_name = os.getenv("KEYVAULT_NAME")
+    vault_url = f"https://{keyvault_name}.vault.azure.net"
+    credential = DefaultAzureCredential()
+    kv_client = SecretClient(vault_url=vault_url, credential=credential)
 
-            def _secret(name: str, fallback: str = "") -> str:
-                try:
-                    value = kv_client.get_secret(name).value
-                    return value if value is not None else fallback
-                except Exception:
-                    return fallback
+    def _secret(name: str, fallback: str = "") -> str:
+        try:
+            value = kv_client.get_secret(name).value
+            return value if value is not None else fallback
+        except Exception:
+            return fallback
 
-            db_name = _secret("dbName", os.getenv("POSTGRES_DB", "zeroque_dev"))
-            db_password = _secret("dbPassword", os.getenv("POSTGRES_PASSWORD", "zeroque_dev_password"))
-            db_host = _secret("dbHost", os.getenv("POSTGRES_HOST", "localhost"))
-            db_username = _secret("dbUsername", os.getenv("POSTGRES_USER", "zeroque"))
-        else:
-            db_name = os.getenv("POSTGRES_DB")
-            db_password = os.getenv("POSTGRES_PASSWORD")
-            db_host = os.getenv("POSTGRES_HOST")
-            db_username = os.getenv("POSTGRES_USER")
-    except Exception:
-        db_name = os.getenv("POSTGRES_DB")
-        db_password = os.getenv("POSTGRES_PASSWORD")
-        db_host = os.getenv("POSTGRES_HOST")
-        db_username = os.getenv("POSTGRES_USER")
+    db_name = _secret("dbName")
+    db_password = _secret("dbPassword")
+    db_host = _secret("dbHost")
+    db_username = _secret("dbUsername")
 else:
     db_name = os.getenv("POSTGRES_DB")
     db_password = os.getenv("POSTGRES_PASSWORD")
@@ -55,6 +43,7 @@ class Settings(BaseSettings):
         ),
         description="PostgreSQL connection URL",
     )
+    print(f"Using DATABASE_URL: {DATABASE_URL}")
     PORT: int = Field(default=8008, description="Orders service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
 
