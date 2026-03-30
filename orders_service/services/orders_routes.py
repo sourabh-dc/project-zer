@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -11,6 +12,7 @@ from orders_service.Models import (
     ApprovalWorkflow,
     CostCentre,
     PurchaseRequest,
+    Vendor,
 )
 from orders_service.Schemas import ApprovalDecisionRequest, PurchaseRequestCreate
 from orders_service.core.approval_engine import advance_workflow, resolve_workflow
@@ -66,12 +68,15 @@ async def submit_order(
     count = db.query(PurchaseRequest).filter(PurchaseRequest.tenant_id == tenant_id).count()
     ref_number = f"PR-{count + 1:06d}"
 
+    vendor_id_parsed = uuid.UUID(req.vendor_id) if req.vendor_id else None
+    vendor_token = secrets.token_urlsafe(48) if vendor_id_parsed else None
+
     order = PurchaseRequest(
         request_id=uuid.uuid4(),
         tenant_id=tenant_id,
         requester_id=requester_id,
         cost_centre_id=uuid.UUID(req.cost_centre_id),
-        vendor_id=uuid.UUID(req.vendor_id) if req.vendor_id else None,
+        vendor_id=vendor_id_parsed,
         category_id=uuid.UUID(req.category_id) if req.category_id else None,
         year_id=year_id,
         period_id=period_id,
@@ -82,6 +87,7 @@ async def submit_order(
         currency=req.currency,
         notes=req.notes,
         status="pending_approval",
+        vendor_action_token=vendor_token,
     )
     db.add(order)
     db.flush()
@@ -106,6 +112,7 @@ async def submit_order(
             db.commit()
         except Exception as e:
             logger.warning(f"Outbox failed: {e}")
+        _emit_vendor_notification(db, order, tenant_id)
         return _request_dict(order)
 
     policy = _resolve_policy(db, tenant_id, uuid.UUID(req.cost_centre_id))
@@ -135,6 +142,7 @@ async def submit_order(
     except Exception as e:
         logger.warning(f"Outbox failed: {e}")
 
+    _emit_vendor_notification(db, order, tenant_id)
     return _request_dict(order)
 
 
@@ -378,6 +386,45 @@ def _resolve_policy(db: Session, tenant_id: uuid.UUID, cost_centre_id: uuid.UUID
     )
 
 
+def _emit_vendor_notification(db: Session, order: PurchaseRequest, tenant_id: uuid.UUID):
+    if not order.vendor_id or not order.vendor_action_token:
+        return
+
+    vendor = (
+        db.query(Vendor)
+        .filter(Vendor.vendor_id == order.vendor_id)
+        .first()
+    )
+    if not vendor or not getattr(vendor, "contact_email", None):
+        logger.info(f"Vendor {order.vendor_id} has no contact_email, skipping notification")
+        return
+
+    try:
+        outbox = create_outbox_event(
+            db,
+            tenant_id,
+            "purchase_request.vendor_notification",
+            {
+                "request_id": str(order.request_id),
+                "vendor_id": str(order.vendor_id),
+                "reference_number": order.reference_number,
+                "amount_minor": order.amount_minor,
+                "currency": order.currency,
+            },
+            status="pending",
+        )
+        db.commit()
+
+        try:
+            from orders_service.core.sb_client import messaging_service
+            import asyncio
+            asyncio.ensure_future(messaging_service.send_outbox_message(str(outbox.id)))
+        except Exception as e:
+            logger.warning(f"Failed to notify service bus for vendor email: {e}")
+    except Exception as e:
+        logger.warning(f"Vendor notification outbox event failed: {e}")
+
+
 def _request_dict(pr: Optional[PurchaseRequest]):
     if not pr:
         return None
@@ -398,6 +445,8 @@ def _request_dict(pr: Optional[PurchaseRequest]):
         "approved_at": pr.approved_at.isoformat() if pr.approved_at else None,
         "po_issued_at": pr.po_issued_at.isoformat() if pr.po_issued_at else None,
         "po_reference": pr.po_reference,
+        "vendor_response_status": pr.vendor_response_status,
+        "vendor_response_at": pr.vendor_response_at.isoformat() if pr.vendor_response_at else None,
         "created_at": pr.created_at.isoformat() if pr.created_at else None,
     }
 

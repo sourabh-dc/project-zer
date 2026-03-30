@@ -21,6 +21,8 @@ def _determine_consumers(event_type: str, aggregate_type: str) -> list:
     consumers = ["graph_service"]
     if aggregate_type in {"purchase_request", "approval_task"}:
         consumers.append("intelligence_service")
+    if event_type == "purchase_request.vendor_notification":
+        consumers.append("notification_worker")
     return consumers
 
 

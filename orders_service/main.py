@@ -1,3 +1,4 @@
+import asyncio
 import os
 import traceback
 from contextlib import asynccontextmanager
@@ -9,7 +10,9 @@ from fastapi.responses import JSONResponse
 from orders_service.Models import Base
 from orders_service.core.db_config import engine
 from orders_service.core.policy_client import policy_client
+from orders_service.core.sb_client import messaging_service
 from orders_service.services.orders_routes import router as orders_router
+from orders_service.services.vendor_routes import router as vendor_router
 from orders_service.services.aifi_store_routes import router as aifi_store_router
 from orders_service.services.aifi_admin_routes import router as aifi_admin_router
 from orders_service.services.aifi_customer_routes import router as aifi_customer_router
@@ -24,7 +27,26 @@ async def lifespan(app: FastAPI):
         logger.info("Orders service tables initialized")
     except Exception as e:
         logger.error(f"Orders service table initialization failed: {e}")
+
+    try:
+        await messaging_service.start()
+    except Exception as e:
+        logger.warning(f"Service bus client start failed: {e}")
+
+    from orders_service.core.workers.notification_worker import process_notifications
+    notification_task = asyncio.create_task(process_notifications())
+
     yield
+
+    notification_task.cancel()
+    try:
+        await notification_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await messaging_service.close()
+    except Exception as e:
+        logger.warning(f"Service bus client close failed: {e}")
     try:
         await policy_client.close()
     except Exception as e:
@@ -57,6 +79,7 @@ app.add_middleware(
 )
 
 app.include_router(orders_router)
+app.include_router(vendor_router)
 app.include_router(aifi_store_router)
 app.include_router(aifi_admin_router)
 app.include_router(aifi_customer_router)

@@ -71,6 +71,9 @@ class CostCentre(Base):
 class Vendor(Base):
     __tablename__ = "vendors"
     vendor_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    name = Column(String(255), nullable=True)
+    contact_email = Column(String(255), nullable=True)
 
 
 class Category(Base):
@@ -240,6 +243,9 @@ class PurchaseRequest(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     po_issued_at = Column(DateTime(timezone=True), nullable=True)
     po_reference = Column(String(100), nullable=True)
+    vendor_action_token = Column(String(64), nullable=True, unique=True, index=True)
+    vendor_response_status = Column(String(30), nullable=True)
+    vendor_response_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
