@@ -10,6 +10,10 @@ from orders_service.Models import Base
 from orders_service.core.db_config import engine
 from orders_service.core.policy_client import policy_client
 from orders_service.services.orders_routes import router as orders_router
+from orders_service.services.aifi_store_routes import router as aifi_store_router
+from orders_service.services.aifi_admin_routes import router as aifi_admin_router
+from orders_service.services.aifi_customer_routes import router as aifi_customer_router
+from orders_service.services.aifi_push_routes import router as aifi_push_router
 from orders_service.utils.logger import logger
 
 
@@ -25,6 +29,7 @@ async def lifespan(app: FastAPI):
         await policy_client.close()
     except Exception as e:
         logger.warning(f"Policy client close failed: {e}")
+
 
 
 app = FastAPI(
@@ -52,7 +57,10 @@ app.add_middleware(
 )
 
 app.include_router(orders_router)
-
+app.include_router(aifi_store_router)
+app.include_router(aifi_admin_router)
+app.include_router(aifi_customer_router)
+app.include_router(aifi_push_router)
 
 @app.get("/health")
 async def health():
