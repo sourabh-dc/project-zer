@@ -5,8 +5,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from provisioning_service.Models import Base
-from provisioning_service.core.db_config import engine
 from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv
 from provisioning_service.core.helpers.load_features import insert_features_from_csv
 from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
@@ -28,66 +26,24 @@ from provisioning_service.services.budget_change_request_routes import router as
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 from provisioning_service.core.policy_client import policy_client
+from provisioning_service.core.config import SETTINGS
+
+from alembic.db_check import assert_db_at_alembic_head
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan context: start messaging service, initialise DB/tables and pre-load data.
-
-    This replaces deprecated `@app.on_event("startup")` / `@app.on_event("shutdown")`.
-    """
+    """Application lifespan context: verify DB revision, start messaging service, pre-load data."""
     # Startup
     try:
+        assert_db_at_alembic_head(SETTINGS.DATABASE_URL)
+
         # Start messaging service (Service Bus connections)
         try:
             await messaging_service.start()
             logger.info("✅ Messaging service started")
         except Exception as ex:
             logger.warning(f"Messaging service failed to start: {ex}")
-
-        # Create tables and load initial data
-        try:
-            Base.metadata.create_all(bind=engine)
-            logger.info("✅ Database tables initialized")
-        except Exception as e:
-            logger.error(f"❌ Table initialization failed: {e}")
-
-        # Migrate outbox_events: add aggregate_type, aggregate_id, payload columns
-        # if they don't exist yet (safe for existing databases)
-        try:
-            from sqlalchemy import text, inspect
-            insp = inspect(engine)
-            if insp.has_table("outbox_events"):
-                existing_cols = {c["name"] for c in insp.get_columns("outbox_events")}
-                with engine.begin() as conn:
-                    if "aggregate_type" not in existing_cols:
-                        conn.execute(text(
-                            "ALTER TABLE outbox_events ADD COLUMN aggregate_type VARCHAR(100)"
-                        ))
-                        logger.info("✅ Added aggregate_type column to outbox_events")
-                    if "aggregate_id" not in existing_cols:
-                        conn.execute(text(
-                            "ALTER TABLE outbox_events ADD COLUMN aggregate_id UUID"
-                        ))
-                        logger.info("✅ Added aggregate_id column to outbox_events")
-                    if "payload" not in existing_cols and "event_data" in existing_cols:
-                        conn.execute(text(
-                            "ALTER TABLE outbox_events RENAME COLUMN event_data TO payload"
-                        ))
-                        logger.info("✅ Renamed event_data → payload column in outbox_events")
-                    elif "payload" not in existing_cols:
-                        conn.execute(text(
-                            "ALTER TABLE outbox_events ADD COLUMN payload JSONB NOT NULL DEFAULT '{}'"
-                        ))
-                        logger.info("✅ Added payload column to outbox_events")
-                    # Back-fill aggregate_type from event_type for existing rows
-                    conn.execute(text("""
-                        UPDATE outbox_events
-                        SET    aggregate_type = split_part(event_type, '.', 1)
-                        WHERE  aggregate_type IS NULL
-                    """))
-        except Exception as e:
-            logger.warning(f"Outbox migration step skipped or failed: {e}")
 
         # Load static data (permissions/features)
         try:

@@ -18,18 +18,20 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from vector_service.core.config import SETTINGS
-from vector_service.core.pg_vector import init_pgvector, similarity_search
+from vector_service.core.pg_vector import similarity_search
 from vector_service.core.embeddings import embed_text
 from vector_service.core.outbox_consumer import register_handler, start_polling
 from vector_service.core.logger import logger
 
 from vector_service.handlers.product_embedding_handler import handle as product_handler
 
+from alembic.db_check import assert_db_at_alembic_head
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Vector Service starting up...")
-    init_pgvector()
+    assert_db_at_alembic_head(SETTINGS.POSTGRES_URL)
     register_handler("product", product_handler)
     poll_task = asyncio.create_task(start_polling())
     logger.info("Vector outbox polling task started")

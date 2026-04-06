@@ -4,6 +4,9 @@ Vector Service — pgvector storage layer.
 Uses PostgreSQL with the pgvector extension for storing and
 querying product/document embeddings. All queries respect
 governance filters (approved product IDs from the graph).
+
+Schema (pgvector extension + product_embeddings table) is now managed
+exclusively by Alembic — see alembic/versions/20260406_03_pgvector_product_embeddings.py.
 """
 import json
 import uuid
@@ -25,44 +28,6 @@ def _get_session():
         _engine = create_engine(SETTINGS.POSTGRES_URL, pool_pre_ping=True)
         _Session = sessionmaker(bind=_engine)
     return _Session()
-
-
-def init_pgvector():
-    """Create the pgvector extension and embeddings table if they don't exist."""
-    session = _get_session()
-    try:
-        session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        session.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS product_embeddings (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id     UUID NOT NULL,
-                product_id    UUID NOT NULL,
-                chunk_index   INTEGER NOT NULL DEFAULT 0,
-                chunk_text    TEXT NOT NULL,
-                embedding     vector({SETTINGS.EMBEDDING_DIMENSIONS}),
-                metadata      JSONB DEFAULT '{{}}'::jsonb,
-                created_at    TIMESTAMPTZ DEFAULT NOW(),
-                updated_at    TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE (product_id, chunk_index)
-            )
-        """))
-        session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_product_embeddings_tenant
-            ON product_embeddings (tenant_id)
-        """))
-        session.execute(text(f"""
-            CREATE INDEX IF NOT EXISTS idx_product_embeddings_vector
-            ON product_embeddings
-            USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
-        """))
-        session.commit()
-        logger.info("pgvector extension + product_embeddings table initialized")
-    except Exception as exc:
-        session.rollback()
-        logger.error(f"pgvector init error: {exc}")
-    finally:
-        session.close()
 
 
 def upsert_product_embedding(

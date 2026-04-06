@@ -151,12 +151,13 @@ The model file defines **all PostgreSQL tables** shared across the platform:
 ### Startup Sequence
 
 ```
-1. Start Azure Service Bus connection (messaging_service.start())
-2. Base.metadata.create_all()              — create/sync all DB tables
-3. Migrate outbox_events                   — add aggregate_type, aggregate_id, rename event_data→payload
-4. Load permissions.csv → permissions table
-5. Load features.csv → features table
-6. Load plan_features.xlsx → plan_features table
+1. Wait for PostgreSQL healthcheck to pass
+2. Run one-shot db-migrator (alembic upgrade head)
+3. Start application services after migration success
+4. Start Azure Service Bus connection (messaging_service.start())
+5. Load permissions.csv → permissions table
+6. Load features.csv → features table
+7. Load plan_features.xlsx → plan_features table
 ```
 
 ---

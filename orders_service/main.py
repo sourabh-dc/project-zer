@@ -7,8 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from orders_service.Models import Base
-from orders_service.core.db_config import engine
 from orders_service.core.policy_client import policy_client
 from orders_service.core.sb_client import messaging_service
 from orders_service.services.orders_routes import router as orders_router
@@ -18,15 +16,14 @@ from orders_service.services.aifi_admin_routes import router as aifi_admin_route
 from orders_service.services.aifi_customer_routes import router as aifi_customer_router
 from orders_service.services.aifi_push_routes import router as aifi_push_router
 from orders_service.utils.logger import logger
+from orders_service.core.config import SETTINGS
+
+from alembic.db_check import assert_db_at_alembic_head
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Orders service tables initialized")
-    except Exception as e:
-        logger.error(f"Orders service table initialization failed: {e}")
+    assert_db_at_alembic_head(SETTINGS.DATABASE_URL)
 
     try:
         await messaging_service.start()

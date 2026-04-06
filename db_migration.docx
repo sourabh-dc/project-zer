@@ -1,0 +1,48 @@
+Plan: Shared DB Change Governance
+Stabilize the shared database by introducing one migration authority, removing all runtime DDL from microservices, and enforcing table ownership contracts. This keeps your current architecture but makes changes safe and repeatable.
+
+Steps
+
+Phase 1: Ownership baseline
+
+Build a table ownership matrix from Models.py, Models.py, and Models.py: one writer owner per table, others read-only.
+
+Resolve all overlaps (users, roles, permissions, org_units, budget/approval tables, etc.) and document owner.
+
+Phase 2: Single migration authority (depends on phase 1)
+
+Add Alembic to requirements.txt and wire full migration config under alembic.
+
+Create one migration runner (recommended: dedicated migrator job/container), not service startup hooks.
+
+Generate a baseline revision from current real schema and make that the starting point.
+
+Phase 3: Remove runtime DDL from services (depends on phase 2)
+
+Remove create_all/ad-hoc schema logic from main.py:49.
+
+Remove create_all from main.py:26.
+
+Remove create_all from main.py:27.
+
+Move pgvector extension/table/index creation from pg_vector.py:30 into Alembic revisions.
+
+Add fail-fast readiness check for required DB revision at service startup.
+
+Phase 4: Safe shared-DB change lifecycle (depends on phase 3)
+
+Use expand-contract migrations for every breaking change:
+Expand: add new nullable columns/tables.
+Migrate: backfill and dual-read/dual-write where needed.
+Contract: remove old columns only after all services are upgraded.
+Add per-service minimum supported DB revision policy and release checklist.
+
+Phase 5: CI/CD and deployment controls (parallel after phase 3)
+
+Deployment order: run migrations once, then start services.
+
+Require cross-service impact notes on every migration PR.
+
+Phase 6: Shared-DB hardening (optional but strongly recommended)
+
+Add tenant-safety controls (for example RLS) where required.

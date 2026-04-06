@@ -13,21 +13,18 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from policy_service.Models import Base
-from policy_service.core.db_config import engine
 from policy_service.services.policy_master import router as policy_master_router
 from policy_service.services.policy_evaluator import router as policy_evaluator_router
 from policy_service.utils.logger import logger
+from policy_service.core.config import SETTINGS
+
+from alembic.db_check import assert_db_at_alembic_head
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: create policy tables on startup."""
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Policy Engine tables initialized")
-    except Exception as e:
-        logger.error(f"❌ Policy table initialization failed: {e}")
+    """Application lifespan: verify DB revision then start."""
+    assert_db_at_alembic_head(SETTINGS.DATABASE_URL)
 
     yield
 
