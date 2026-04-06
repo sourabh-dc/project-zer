@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "POSTGRES_URL": "postgresql://zeroque:zeroque_dev_password@localhost:5432/zeroque_events",
+    "SERVICE_BUS_CONNECTION": "",
+    "TRANSPORT_MODE": "servicebus",
+    "PUBLISHER_BATCH_SIZE": "100"
+  }
+}

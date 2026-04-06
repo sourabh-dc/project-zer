@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: zer-new-postgres
+    environment:
+      POSTGRES_USER: zeroque
+      POSTGRES_PASSWORD: zeroque_dev_password
+      POSTGRES_DB: zeroque_events
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeroque"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: zer-new-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/neo4j_dev_password
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    volumes:
+      - neo4j_data:/data
+
+  # --- OPA Sidecars -----------------------------------------------------------
+  # Each service gets its own OPA instance, all loading the same policies.
+
+  opa-onboarding:
+    build:
+      context: ./policy_engine
+      dockerfile: opa_config/Dockerfile
+    container_name: zer-new-opa-onboarding
+    ports:
+      - "8181:8181"
+
+  opa-graph:
+    build:
+      context: ./policy_engine
+      dockerfile: opa_config/Dockerfile
+    container_name: zer-new-opa-graph
+    ports:
+      - "8182:8181"
+
+  graph-service:
+    build:
+      context: .
+      dockerfile: graph_service/Dockerfile
+    container_name: zer-new-graph
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: neo4j_dev_password
+      OPA_URL: http://opa-graph:8181
+      POLICY_MODE: opa
+    ports:
+      - "8015:8015"
+    depends_on:
+      neo4j:
+        condition: service_started
+      opa-graph:
+        condition: service_started
+
+volumes:
+  pg_data:
+  neo4j_data:

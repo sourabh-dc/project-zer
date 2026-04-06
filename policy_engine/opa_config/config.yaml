@@ -1,0 +1,23 @@
+# OPA server configuration
+# Used when OPA is deployed as a sidecar alongside each service.
+
+services:
+  - name: policy-bundle
+    url: ${BUNDLE_URL}
+    credentials:
+      bearer:
+        token: ${BUNDLE_TOKEN}
+
+bundles:
+  authz:
+    service: policy-bundle
+    resource: /v1/policies/bundle.tar.gz
+    persist: true
+    polling:
+      min_delay_seconds: 10
+      max_delay_seconds: 30
+
+decision_logs:
+  console: true
+
+default_decision: /data/authz/allow

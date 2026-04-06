@@ -1,0 +1,5 @@
+azure-functions
+azure-servicebus
+sqlalchemy
+psycopg2-binary
+python-dotenv

@@ -1,0 +1,12 @@
+sqlalchemy
+psycopg2-binary
+python-dotenv
+fastapi
+uvicorn
+httpx
+neo4j
+pydantic
+pydantic-settings
+azure-servicebus
+pyjwt[crypto]
+bcrypt
