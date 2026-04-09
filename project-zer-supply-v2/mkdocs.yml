@@ -1,0 +1,14 @@
+site_name: Supply V2 Docs
+site_description: Supply V2 team and business documentation
+theme:
+  name: mkdocs
+nav:
+  - Home: README.md
+  - Code Guide: docs/code-guide.md
+  - API Guide: docs/api-reference.md
+  - OpenAPI: docs/openapi.json
+  - Business Scenarios: docs/business-scenarios.md
+  - Dispute Flow: docs/dispute-flow.md
+  - OPA Policy Guide: docs/opa-policy-guide.md
+  - Production Rollout: docs/production-rollout.md
+  - Pending vs Plan: docs/pending-vs-plan.md
