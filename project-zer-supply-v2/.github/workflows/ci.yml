@@ -1,0 +1,24 @@
+name: supply-v2-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Tests
+        run: python -m pytest -q
+      - name: Smoke
+        run: PYTHONPATH=src python scripts/smoke_all_endpoints.py
+      - name: Build image
+        run: docker build -t supply-v2:test .
