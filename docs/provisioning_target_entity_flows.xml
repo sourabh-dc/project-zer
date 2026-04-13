@@ -1,0 +1,337 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Common Write Chain">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3200" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n1" value="Tenant admin signs in" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="120" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n2" value="Entra issues access token" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="200" y="120" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n3" value="UI sends write request" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="410" y="120" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n4" value="API validates Entra token" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="610" y="120" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n5" value="Resolve user + tenant context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="820" y="120" width="190" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n6" value="Check tenant status&#xa;Allow only trialing / active" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="105" width="180" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n7" value="Build policy input&#xa;subject + tenant + resource + entitlement context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="105" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n8" value="Call OPA once" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="1540" y="120" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n9" value="OPA checks&#xa;- action permission&#xa;- tenant scope&#xa;- tenant state&#xa;- resource scope&#xa;- subscription validity&#xa;- feature entitlement&#xa;- quota remaining" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="1690" y="80" width="230" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="n10" value="Allow?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="1950" y="110" width="100" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="n11" value="Validate payload&#xa;Validate tenant ownership&#xa;Validate parent entity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="2080" y="95" width="210" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="n12" value="Write entity row&#xa;+ outbox row&#xa;in same transaction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="2320" y="95" width="190" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="n13" value="Return success to UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="2540" y="120" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n14" value="Publisher reads outbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="2320" y="310" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n15" value="Publish to Service Bus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="2510" y="310" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n16" value="Update delivery status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="2700" y="310" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n17" value="Graph projector consumes event&#xa;Upsert nodes + edges" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="2320" y="450" width="180" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n18" value="Vector projector consumes event&#xa;Upsert document + embedding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="2530" y="450" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n19" value="Notification worker sends notification if needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="2750" y="450" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="n20" value="Usage incremented&#xa;Remaining quota reduced" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="2960" y="450" width="180" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="deny1" value="Deny / Stop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="300" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="deny2" value="Deny / Stop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="1950" y="300" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="n1" target="n2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="n2" target="n3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="n3" target="n4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="n4" target="n5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="n5" target="n6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="n6" target="n7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="n7" target="n8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" edge="1" parent="1" source="n8" target="n9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="n9" target="n10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" edge="1" parent="1" source="n10" target="n11" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" edge="1" parent="1" source="n11" target="n12" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="n12" target="n13" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" edge="1" parent="1" source="n6" target="deny1" style="endArrow=block;dashed=1;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" edge="1" parent="1" source="n10" target="deny2" style="endArrow=block;dashed=1;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e15" edge="1" parent="1" source="n12" target="n14" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e16" edge="1" parent="1" source="n14" target="n15" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e17" edge="1" parent="1" source="n15" target="n16" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e18" edge="1" parent="1" source="n16" target="n17" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e19" edge="1" parent="1" source="n16" target="n18" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e20" edge="1" parent="1" source="n16" target="n19" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e21" edge="1" parent="1" source="n16" target="n20" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Department Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="d1" value="Tenant admin clicks Create Department" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="d2" value="UI may prefetch&#xa;- permission hints&#xa;- department quota" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1"><mxGeometry x="230" y="115" width="170" height="90" as="geometry"/></mxCell>
+        <mxCell id="d3" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="430" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="d4" value="OPA action: `department.create`&#xa;Feature: `department`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="630" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="d5" value="Checks&#xa;- quota exists&#xa;- tenant ownership mandatory&#xa;- no cross-tenant scope&#xa;- parent department optional" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="840" y="95" width="220" height="130" as="geometry"/></mxCell>
+        <mxCell id="d6" value="Strict parent validation&#xa;If parent present, same tenant and valid hierarchy" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1"><mxGeometry x="1090" y="95" width="180" height="130" as="geometry"/></mxCell>
+        <mxCell id="d7" value="Write department row&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1310" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="d8" value="Event: `department.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1520" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="d9" value="Graph&#xa;- create Department node&#xa;- link Tenant to Department&#xa;- link hierarchy if parent exists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1710" y="105" width="200" height="110" as="geometry"/></mxCell>
+        <mxCell id="d10" value="Vector&#xa;- store department summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1940" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="d11" value="Notification if configured" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="2140" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="d12" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="2330" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="de1" edge="1" parent="1" source="d1" target="d2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de2" edge="1" parent="1" source="d2" target="d3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de3" edge="1" parent="1" source="d3" target="d4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de4" edge="1" parent="1" source="d4" target="d5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de5" edge="1" parent="1" source="d5" target="d6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de6" edge="1" parent="1" source="d6" target="d7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de7" edge="1" parent="1" source="d7" target="d8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de8" edge="1" parent="1" source="d8" target="d9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de9" edge="1" parent="1" source="d8" target="d10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de10" edge="1" parent="1" source="d8" target="d11" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="de11" edge="1" parent="1" source="d8" target="d12" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Cost Centre Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="c1" value="Tenant admin clicks Create Cost Centre" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="200" height="60" as="geometry"/></mxCell>
+        <mxCell id="c2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="250" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="c3" value="OPA action: `cost_centre.create`&#xa;Feature: `cost_centre`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="450" y="115" width="200" height="90" as="geometry"/></mxCell>
+        <mxCell id="c4" value="Checks&#xa;- same tenant scope mandatory&#xa;- permission naming must align&#xa;- department link optional" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="680" y="95" width="220" height="130" as="geometry"/></mxCell>
+        <mxCell id="c5" value="Validate optional department&#xa;If linked, same tenant department only" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1"><mxGeometry x="930" y="95" width="180" height="130" as="geometry"/></mxCell>
+        <mxCell id="c6" value="Write cost centre row&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1140" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="c7" value="Event: `cost_centre.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1350" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="c8" value="Graph&#xa;- link Tenant to CostCentre&#xa;- link Department if present" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1550" y="105" width="200" height="110" as="geometry"/></mxCell>
+        <mxCell id="c9" value="Vector&#xa;- store cost summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1780" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="c10" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1970" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="ce1" edge="1" parent="1" source="c1" target="c2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce2" edge="1" parent="1" source="c2" target="c3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce3" edge="1" parent="1" source="c3" target="c4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce4" edge="1" parent="1" source="c4" target="c5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce5" edge="1" parent="1" source="c5" target="c6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce6" edge="1" parent="1" source="c6" target="c7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce7" edge="1" parent="1" source="c7" target="c8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce8" edge="1" parent="1" source="c7" target="c9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce9" edge="1" parent="1" source="c7" target="c10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Site Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="s1" value="Tenant admin clicks Create Site" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="s2" value="Optional setup&#xa;Not every tenant uses sites" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;dashed=1;" vertex="1" parent="1"><mxGeometry x="230" y="115" width="170" height="90" as="geometry"/></mxCell>
+        <mxCell id="s3" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="430" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="s4" value="OPA action: `site.create`&#xa;Feature: `sites`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="630" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="s5" value="Checks&#xa;- tenant ownership required&#xa;- no cross-tenant scope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="840" y="105" width="190" height="110" as="geometry"/></mxCell>
+        <mxCell id="s6" value="Write site row&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1060" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="s7" value="Event: `site.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1270" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="s8" value="Graph&#xa;- create Site node&#xa;- link Tenant to Site" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1460" y="105" width="180" height="110" as="geometry"/></mxCell>
+        <mxCell id="s9" value="Vector&#xa;- store site profile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1670" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="s10" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1860" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="se1" edge="1" parent="1" source="s1" target="s2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se2" edge="1" parent="1" source="s2" target="s3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se3" edge="1" parent="1" source="s3" target="s4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se4" edge="1" parent="1" source="s4" target="s5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se5" edge="1" parent="1" source="s5" target="s6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se6" edge="1" parent="1" source="s6" target="s7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se7" edge="1" parent="1" source="s7" target="s8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se8" edge="1" parent="1" source="s7" target="s9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se9" edge="1" parent="1" source="s7" target="s10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Store Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="t1" value="Tenant admin clicks Create Store" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="t2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="230" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="t3" value="OPA action: `store.create`&#xa;Feature: `stores`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="430" y="115" width="190" height="90" as="geometry"/></mxCell>
+        <mxCell id="t4" value="Checks&#xa;- site optional&#xa;- if site present, same tenant site only&#xa;- otherwise direct tenant scope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="650" y="95" width="230" height="130" as="geometry"/></mxCell>
+        <mxCell id="t5" value="Write store row&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="910" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="t6" value="Event: `store.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1120" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="t7" value="Graph&#xa;- create Store node&#xa;- link Site to Store if site exists&#xa;- else link Tenant to Store" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1310" y="95" width="220" height="130" as="geometry"/></mxCell>
+        <mxCell id="t8" value="Vector&#xa;- store store profile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1560" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="t9" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1750" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="te1" edge="1" parent="1" source="t1" target="t2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te2" edge="1" parent="1" source="t2" target="t3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te3" edge="1" parent="1" source="t3" target="t4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te4" edge="1" parent="1" source="t4" target="t5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te5" edge="1" parent="1" source="t5" target="t6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te6" edge="1" parent="1" source="t6" target="t7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te7" edge="1" parent="1" source="t6" target="t8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te8" edge="1" parent="1" source="t6" target="t9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Vendor Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="v1" value="Tenant admin clicks Create Vendor" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="190" height="60" as="geometry"/></mxCell>
+        <mxCell id="v2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="240" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="v3" value="OPA action: `vendor.create`&#xa;Feature: `vendors`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="440" y="115" width="190" height="90" as="geometry"/></mxCell>
+        <mxCell id="v4" value="Checks&#xa;- vendor tenant scope mandatory&#xa;- read must require auth&#xa;- vendor user flow separate&#xa;- vendor tenant isolation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="660" y="95" width="230" height="130" as="geometry"/></mxCell>
+        <mxCell id="v5" value="Write vendor row&#xa;separate vendor user table later&#xa;no vendor roles here" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="920" y="105" width="200" height="110" as="geometry"/></mxCell>
+        <mxCell id="v6" value="Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1150" y="115" width="160" height="90" as="geometry"/></mxCell>
+        <mxCell id="v7" value="Event: `vendor.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1340" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="v8" value="Graph&#xa;- create Vendor node&#xa;- link Tenant to Vendor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1530" y="105" width="180" height="110" as="geometry"/></mxCell>
+        <mxCell id="v9" value="Vector&#xa;- store vendor profile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1740" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="v10" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1930" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="ve1" edge="1" parent="1" source="v1" target="v2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve2" edge="1" parent="1" source="v2" target="v3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve3" edge="1" parent="1" source="v3" target="v4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve4" edge="1" parent="1" source="v4" target="v5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve5" edge="1" parent="1" source="v5" target="v6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve6" edge="1" parent="1" source="v6" target="v7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve7" edge="1" parent="1" source="v7" target="v8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve8" edge="1" parent="1" source="v7" target="v9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ve9" edge="1" parent="1" source="v7" target="v10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="User Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3000" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="u1" value="Tenant admin clicks Create User" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="u2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="230" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="u3" value="OPA action: `user.create`&#xa;Feature: `users`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="430" y="115" width="180" height="90" as="geometry"/></mxCell>
+        <mxCell id="u4" value="Create user in Entra first&#xa;- no local password stored&#xa;- reset password in Entra" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="640" y="105" width="220" height="110" as="geometry"/></mxCell>
+        <mxCell id="u5" value="Write local user profile&#xa;- tenant scope&#xa;- org unit optional&#xa;- cost centre optional&#xa;- store/site scope optional" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="890" y="95" width="220" height="130" as="geometry"/></mxCell>
+        <mxCell id="u6" value="Assign default role&#xa;No permissions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1140" y="115" width="160" height="90" as="geometry"/></mxCell>
+        <mxCell id="u7" value="Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1330" y="115" width="160" height="90" as="geometry"/></mxCell>
+        <mxCell id="u8" value="Event: `user.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1520" y="130" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="u9" value="Graph&#xa;- create User node&#xa;- link Tenant to User&#xa;- link scopes if present" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1700" y="95" width="190" height="130" as="geometry"/></mxCell>
+        <mxCell id="u10" value="Vector&#xa;- store user profile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1920" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="u11" value="Usage +1&#xa;Remaining quota -1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="2110" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="ue1" edge="1" parent="1" source="u1" target="u2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue2" edge="1" parent="1" source="u2" target="u3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue3" edge="1" parent="1" source="u3" target="u4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue4" edge="1" parent="1" source="u4" target="u5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue5" edge="1" parent="1" source="u5" target="u6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue6" edge="1" parent="1" source="u6" target="u7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue7" edge="1" parent="1" source="u7" target="u8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue8" edge="1" parent="1" source="u8" target="u9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue9" edge="1" parent="1" source="u8" target="u10" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue10" edge="1" parent="1" source="u8" target="u11" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Tenant Role Creation">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3000" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="r1" value="Tenant admin clicks Create Tenant Role" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="210" height="60" as="geometry"/></mxCell>
+        <mxCell id="r2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="260" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="r3" value="OPA action: `tenant_role.create`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="460" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="r4" value="Role is tenant scoped only&#xa;No global roles here" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;dashed=1;" vertex="1" parent="1"><mxGeometry x="670" y="115" width="190" height="90" as="geometry"/></mxCell>
+        <mxCell id="r5" value="Permissions come from central catalog&#xa;Access may be full / limited / deny&#xa;Role may contain many permissions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="890" y="95" width="250" height="130" as="geometry"/></mxCell>
+        <mxCell id="r6" value="Write tenant role row&#xa;Write role-permission rows&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1170" y="95" width="220" height="130" as="geometry"/></mxCell>
+        <mxCell id="r7" value="Event: `tenant_role.created`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1420" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="r8" value="Graph&#xa;- create Role node&#xa;- link Tenant to Role&#xa;- link Role to Permissions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1620" y="95" width="200" height="130" as="geometry"/></mxCell>
+        <mxCell id="r9" value="Vector&#xa;- store role summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1850" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="re1" edge="1" parent="1" source="r1" target="r2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re2" edge="1" parent="1" source="r2" target="r3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re3" edge="1" parent="1" source="r3" target="r4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re4" edge="1" parent="1" source="r4" target="r5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re5" edge="1" parent="1" source="r5" target="r6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re6" edge="1" parent="1" source="r6" target="r7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re7" edge="1" parent="1" source="r7" target="r8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="re8" edge="1" parent="1" source="r7" target="r9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="User Role Assignment">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3200" pageHeight="1200">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="a1" value="Tenant admin clicks Assign Role" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="20" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="a2" value="Common write chain runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1"><mxGeometry x="230" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="a3" value="OPA action: `user_role.assign`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="430" y="130" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="a4" value="Checks&#xa;- user can have many roles&#xa;- all roles same tenant&#xa;- same tenant user only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="640" y="100" width="210" height="120" as="geometry"/></mxCell>
+        <mxCell id="a5" value="Conflict policy&#xa;- effective access = union&#xa;- deny rules take precedence&#xa;- need multi-role merge model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;dashed=1;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="880" y="95" width="230" height="130" as="geometry"/></mxCell>
+        <mxCell id="a6" value="Write user-role assignment row&#xa;Write outbox row&#xa;Commit together" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1140" y="105" width="190" height="110" as="geometry"/></mxCell>
+        <mxCell id="a7" value="Event: `user_role.assigned`" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1360" y="130" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="a8" value="Graph&#xa;- link User to Role" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1560" y="130" width="160" height="60" as="geometry"/></mxCell>
+        <mxCell id="a9" value="Vector&#xa;- update user profile&#xa;- effective access summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="1750" y="105" width="180" height="110" as="geometry"/></mxCell>
+        <mxCell id="ae1" edge="1" parent="1" source="a1" target="a2" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae2" edge="1" parent="1" source="a2" target="a3" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae3" edge="1" parent="1" source="a3" target="a4" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae4" edge="1" parent="1" source="a4" target="a5" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae5" edge="1" parent="1" source="a5" target="a6" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae6" edge="1" parent="1" source="a6" target="a7" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae7" edge="1" parent="1" source="a7" target="a8" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae8" edge="1" parent="1" source="a7" target="a9" style="endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Shared Components and Rules">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="1600">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="sc1" value="Shared Components" style="text;html=1;strokeColor=none;fillColor=none;fontStyle=1;fontSize=20;align=left;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="300" height="30" as="geometry"/></mxCell>
+        <mxCell id="sc2" value="Entra for authentication" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1"><mxGeometry x="20" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc3" value="OPA for authorization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="270" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc4" value="Quota context service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="520" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc5" value="Tenant status read model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="770" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc6" value="Service-owned write database" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1020" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc7" value="Transactional outbox table" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="1270" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc8" value="Publisher container app" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1520" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc9" value="Shared Service Bus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1"><mxGeometry x="1770" y="80" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc10" value="Graph projector container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="20" y="180" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc11" value="Vector projector container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="270" y="180" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc12" value="Notification worker container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="520" y="180" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="sc13" value="Audit and replay jobs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1"><mxGeometry x="770" y="180" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="rules1" value="Non-Negotiable Rules" style="text;html=1;strokeColor=none;fillColor=none;fontStyle=1;fontSize=20;align=left;" vertex="1" parent="1"><mxGeometry x="20" y="300" width="300" height="30" as="geometry"/></mxCell>
+        <mxCell id="rules2" value="- no writes without token&#xa;- no write without OPA&#xa;- no write without quota check&#xa;- no cross-tenant writes&#xa;- no direct graph writes&#xa;- no direct vector writes&#xa;- no global tenant roles&#xa;- no unauthenticated reads&#xa;- no admin billing bypass" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="20" y="360" width="420" height="220" as="geometry"/></mxCell>
+        <mxCell id="rules3" value="Canonical Runtime Chain&#xa;authenticate in Entra&#xa;build full user context&#xa;load tenant state&#xa;call OPA once&#xa;OPA decides all checks&#xa;service validates payload&#xa;service writes entity&#xa;service writes outbox&#xa;publisher dispatches event&#xa;graph updates topology&#xa;vector updates documents&#xa;notification fires if needed&#xa;usage updates after success" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;dashed=1;align=left;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="480" y="360" width="430" height="260" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
