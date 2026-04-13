@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="border-bottom: 3px solid #4A90D9; padding-bottom: 16px; margin-bottom: 24px;">
+    <h1 style="margin: 0; color: #4A90D9; font-size: 24px;">ZeroQue</h1>
+  </div>
+
+  <p>Hello,</p>
+
+  <p><strong>{{ tenant_name }}</strong> is now registered on ZeroQue.</p>
+
+  {% if plan_name %}
+  <div style="background: #f6f8fa; border-radius: 8px; padding: 16px; margin: 16px 0;">
+    <p style="margin: 0 0 8px 0;"><strong>Plan:</strong> {{ plan_name }}</p>
+    {% if trial_ends_at %}
+    <p style="margin: 0;"><strong>Your 7-day trial ends:</strong> {{ trial_ends_at }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <p>Your account administrator is <strong>{{ admin_email }}</strong>. They can invite you and your team to start using the platform.</p>
+
+  <p style="color: #888; font-size: 13px; margin-top: 32px; border-top: 1px solid #eee; padding-top: 16px;">
+    This email was sent to the primary contact address for {{ tenant_name }}.
+  </p>
+</body>
+</html>

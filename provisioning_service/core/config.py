@@ -83,9 +83,21 @@ class Settings(BaseSettings):
     SB_NAMESPACE: str = "zeroque.servicebus.windows.net"
     QUEUE_NAME: str = "outbox-task-queue"
 
+    # Azure AD B2C settings
+    AZURE_AD_B2C_TENANT: Optional[str] = Field(default=None, description="Azure AD B2C tenant name (e.g. 'zeroque')")
+    AZURE_AD_B2C_CLIENT_ID: Optional[str] = Field(default=None, description="Azure AD B2C application (client) ID")
+    AZURE_AD_B2C_POLICY: Optional[str] = Field(default=None, description="Azure AD B2C sign-up/sign-in policy (e.g. 'B2C_1_signup_signin')")
+
+    # Azure Entra ID (alternative to B2C)
+    AZURE_AD_TENANT_ID: Optional[str] = Field(default=None, description="Azure Entra ID directory tenant ID")
+    AZURE_AD_CLIENT_ID: Optional[str] = Field(default=None, description="Azure Entra ID application (client) ID")
+
     # Policy Engine integration
     POLICY_ENGINE_URL: str = Field(default="http://localhost:8004", description="Policy Engine base URL")
     POLICY_EVALUATE_TIMEOUT: float = Field(default=5.0, description="Timeout in seconds for policy evaluation calls")
+
+    # Subscription grace period
+    PAYMENT_GRACE_PERIOD_DAYS: int = Field(default=3, description="Days of access after payment failure before revocation")
 
     EMAIL_CONNECTION_STRING: str = email_conn_string
 

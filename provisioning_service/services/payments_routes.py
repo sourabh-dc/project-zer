@@ -5,13 +5,15 @@ from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice
+from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, Tenant, Mandate
 from provisioning_service.Schemas import CheckoutRequest
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
+
+GRACE_PERIOD_DAYS = getattr(SETTINGS, "PAYMENT_GRACE_PERIOD_DAYS", 3)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -135,6 +137,19 @@ async def create_portal_session(
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db=Depends(get_db)):
+    """
+    Comprehensive Stripe webhook handler.
+
+    Handles the full subscription lifecycle for the Spotify-style auto-pay model:
+
+    - ``invoice.payment_succeeded``   — extend access, clear grace period
+    - ``invoice.payment_failed``      — start grace period, warn tenant
+    - ``customer.subscription.updated`` — trial→active, active→past_due, etc.
+    - ``customer.subscription.deleted`` — revoke access
+    - ``customer.subscription.trial_will_end`` — pre-trial-end reminder
+    - ``checkout.session.completed``  — legacy checkout flow
+    - ``setup_intent.succeeded``      — payment method saved confirmation
+    """
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     endpoint_secret = SETTINGS.STRIPE_WEBHOOK_SECRET
@@ -148,62 +163,430 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
     event_type = event.get("type")
     data = event.get("data", {}).get("object", {})
 
-    def upsert_subscription(tenant_id, plan_code, billing_cycle, external_id, status, is_active, payment_method, amount_minor=None, currency=None):
-        now = datetime.now(timezone.utc)
-        sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id, TenantSubscription.plan_code == plan_code).first()
-        if not sub:
-            sub = TenantSubscription(
-                tenant_id=tenant_id,
-                plan_code=plan_code,
-            )
-            db.add(sub)
-        sub.external_id = external_id
-        sub.billing_cycle = billing_cycle
-        sub.current_period_start = now
-        sub.current_period_end = _period_end(now, billing_cycle)
-        sub.is_trial = False
-        sub.is_active = is_active
-        sub.payment_method = payment_method
-        sub.status = status
-        db.commit()
-        return {"status": "ok"}
+    # ── Routing ─────────────────────────────────────────────────────
+
+    if event_type == "invoice.payment_succeeded":
+        return _handle_invoice_paid(db, data)
+
+    if event_type == "invoice.payment_failed":
+        return _handle_invoice_failed(db, data)
+
+    if event_type == "customer.subscription.updated":
+        return _handle_subscription_updated(db, data)
+
+    if event_type == "customer.subscription.deleted":
+        return _handle_subscription_deleted(db, data)
+
+    if event_type == "customer.subscription.trial_will_end":
+        return _handle_trial_will_end(db, data)
 
     if event_type == "checkout.session.completed":
-        tenant_id = data.get("metadata", {}).get("tenant_id")
-        plan_code = data.get("metadata", {}).get("plan_code")
-        billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
-        upsert_subscription(tenant_id, plan_code, billing_cycle, data.get("id"), "active", True, data.get("mode"))
+        return _handle_checkout_completed(db, data)
 
-        # Outbox audit event
+    if event_type == "setup_intent.succeeded":
+        return _handle_setup_intent_succeeded(db, data)
+
+    logger.debug(f"Unhandled Stripe event: {event_type}")
+    return {"status": "ignored"}
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+def _find_subscription_by_stripe_id(db: Session, stripe_sub_id: str):
+    """Look up internal TenantSubscription by Stripe subscription ID."""
+    return db.query(TenantSubscription).filter(
+        TenantSubscription.external_id == stripe_sub_id
+    ).first()
+
+
+def _find_subscription_by_customer(db: Session, stripe_customer_id: str):
+    """Fall back: find subscription via Mandate → tenant_id."""
+    mandate = db.query(Mandate).filter(
+        Mandate.stripe_customer_id == stripe_customer_id,
+        Mandate.status == "active",
+    ).first()
+    if not mandate or not mandate.tenant_id:
+        return None
+    return db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == mandate.tenant_id,
+        TenantSubscription.is_active == True,
+    ).first()
+
+
+# ── invoice.payment_succeeded ──────────────────────────────────────
+
+def _handle_invoice_paid(db: Session, invoice: dict):
+    """
+    Called when Stripe successfully charges the customer.
+
+    This fires:
+      - At the end of the 7-day trial (first real charge)
+      - On every subsequent billing cycle
+
+    Actions:
+      1. Mark subscription as active.
+      2. Extend current_period_end to the next billing cycle.
+      3. Clear any grace period / payment failure state.
+    """
+    stripe_sub_id = invoice.get("subscription")
+    if not stripe_sub_id:
+        return {"status": "ok", "detail": "no subscription on invoice"}
+
+    sub = _find_subscription_by_stripe_id(db, stripe_sub_id)
+    if not sub:
+        sub = _find_subscription_by_customer(db, invoice.get("customer"))
+    if not sub:
+        logger.warning(f"invoice.payment_succeeded: no internal sub for {stripe_sub_id}")
+        return {"status": "ok", "detail": "subscription not found"}
+
+    now = datetime.now(timezone.utc)
+
+    # Transition from trialing → active on first real charge
+    was_trial = sub.is_trial
+
+    sub.status = "active"
+    sub.is_active = True
+    sub.is_trial = False
+    sub.current_period_start = now
+    sub.current_period_end = _period_end(now, sub.billing_cycle)
+    sub.payment_failed_at = None
+    sub.grace_period_end = None
+    sub.last_invoice_id = invoice.get("id")
+
+    db.commit()
+
+    # Outbox audit event
+    tenant_id = str(sub.tenant_id)
+    event_subtype = "subscription.trial_converted" if was_trial else "subscription.renewed"
+    try:
+        create_outbox_event(db, tenant_id, f"payment.{event_subtype}", {
+            "tenant_id": tenant_id,
+            "plan_code": sub.plan_code,
+            "stripe_invoice_id": invoice.get("id"),
+            "amount_paid": invoice.get("amount_paid"),
+            "currency": invoice.get("currency"),
+            "was_trial": was_trial,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.{event_subtype}: {_oe}")
+
+    logger.info(
+        f"invoice.payment_succeeded: tenant={tenant_id} plan={sub.plan_code} "
+        f"{'trial_converted' if was_trial else 'renewed'}"
+    )
+    return {"status": "ok"}
+
+
+# ── invoice.payment_failed ─────────────────────────────────────────
+
+def _handle_invoice_failed(db: Session, invoice: dict):
+    """
+    Called when Stripe fails to charge the customer.
+
+    Actions:
+      1. Set subscription to ``past_due``.
+      2. Start a grace period (configurable, default 3 days).
+      3. If grace period already expired, deactivate access.
+      4. Emit outbox event for downstream notification.
+    """
+    stripe_sub_id = invoice.get("subscription")
+    if not stripe_sub_id:
+        return {"status": "ok", "detail": "no subscription on invoice"}
+
+    sub = _find_subscription_by_stripe_id(db, stripe_sub_id)
+    if not sub:
+        sub = _find_subscription_by_customer(db, invoice.get("customer"))
+    if not sub:
+        logger.warning(f"invoice.payment_failed: no internal sub for {stripe_sub_id}")
+        return {"status": "ok", "detail": "subscription not found"}
+
+    now = datetime.now(timezone.utc)
+    tenant_id = str(sub.tenant_id)
+
+    if sub.grace_period_end and now > sub.grace_period_end:
+        # Grace period expired — revoke access
+        sub.status = "unpaid"
+        sub.is_active = False
+        sub.last_invoice_id = invoice.get("id")
+        db.commit()
+
         try:
-            create_outbox_event(db, tenant_id, "payment.checkout.completed", {
+            create_outbox_event(db, tenant_id, "payment.access_revoked", {
                 "tenant_id": tenant_id,
-                "plan_code": plan_code,
-                "billing_cycle": billing_cycle,
-                "stripe_session_id": data.get("id"),
+                "plan_code": sub.plan_code,
+                "stripe_invoice_id": invoice.get("id"),
+                "reason": "payment_failed_grace_expired",
             })
             db.commit()
         except Exception as _oe:
-            logger.warning(f"Outbox failed for payment.checkout.completed: {_oe}")
+            logger.warning(f"Outbox failed for payment.access_revoked: {_oe}")
 
+        logger.warning(f"Access REVOKED for tenant={tenant_id} — grace period expired")
+        return {"status": "ok", "action": "access_revoked"}
+
+    # Start or continue grace period
+    sub.status = "past_due"
+    sub.payment_failed_at = sub.payment_failed_at or now
+    sub.grace_period_end = sub.grace_period_end or (now + timedelta(days=GRACE_PERIOD_DAYS))
+    sub.last_invoice_id = invoice.get("id")
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.invoice_failed", {
+            "tenant_id": tenant_id,
+            "plan_code": sub.plan_code,
+            "stripe_invoice_id": invoice.get("id"),
+            "attempt_count": invoice.get("attempt_count"),
+            "grace_period_end": sub.grace_period_end.isoformat(),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.invoice_failed: {_oe}")
+
+    logger.warning(
+        f"invoice.payment_failed: tenant={tenant_id} — grace period until {sub.grace_period_end.isoformat()}"
+    )
+    return {"status": "ok", "action": "grace_period_started"}
+
+
+# ── customer.subscription.updated ──────────────────────────────────
+
+def _handle_subscription_updated(db: Session, stripe_sub: dict):
+    """
+    Called on any subscription state change (trial→active, active→past_due, etc.).
+
+    Stripe fires this when:
+      - Trial ends and first invoice succeeds (status: trialing → active)
+      - Payment fails (status: active → past_due)
+      - Payment recovered (status: past_due → active)
+      - Subscription canceled (status: → canceled)
+    """
+    stripe_sub_id = stripe_sub.get("id")
+    new_status = stripe_sub.get("status")  # trialing, active, past_due, canceled, unpaid
+
+    sub = _find_subscription_by_stripe_id(db, stripe_sub_id)
+    if not sub:
+        sub = _find_subscription_by_customer(db, stripe_sub.get("customer"))
+    if not sub:
+        logger.debug(f"subscription.updated: no internal sub for {stripe_sub_id}")
         return {"status": "ok"}
 
-    if event_type == "invoice.payment_succeeded":
+    now = datetime.now(timezone.utc)
+    tenant_id = str(sub.tenant_id)
+
+    if new_status == "active":
+        sub.status = "active"
+        sub.is_active = True
+        sub.is_trial = False
+        sub.payment_failed_at = None
+        sub.grace_period_end = None
+        # Update period from Stripe data
+        period_end = stripe_sub.get("current_period_end")
+        if period_end:
+            sub.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc)
+        period_start = stripe_sub.get("current_period_start")
+        if period_start:
+            sub.current_period_start = datetime.fromtimestamp(period_start, tz=timezone.utc)
+
+    elif new_status == "trialing":
+        sub.status = "trialing"
+        sub.is_trial = True
+        sub.is_active = True
+        trial_end = stripe_sub.get("trial_end")
+        if trial_end:
+            sub.current_period_end = datetime.fromtimestamp(trial_end, tz=timezone.utc)
+
+    elif new_status == "past_due":
+        sub.status = "past_due"
+        sub.is_active = True  # still active during grace
+        sub.payment_failed_at = sub.payment_failed_at or now
+        sub.grace_period_end = sub.grace_period_end or (now + timedelta(days=GRACE_PERIOD_DAYS))
+
+    elif new_status in ("canceled", "unpaid"):
+        sub.status = new_status
+        sub.is_active = False
+        sub.canceled_at = sub.canceled_at or now
+
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.subscription_updated", {
+            "tenant_id": tenant_id,
+            "plan_code": sub.plan_code,
+            "new_status": new_status,
+            "stripe_subscription_id": stripe_sub_id,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.subscription_updated: {_oe}")
+
+    logger.info(f"subscription.updated: tenant={tenant_id} status={new_status}")
+    return {"status": "ok"}
+
+
+# ── customer.subscription.deleted ──────────────────────────────────
+
+def _handle_subscription_deleted(db: Session, stripe_sub: dict):
+    """
+    Called when a subscription is fully canceled/deleted.
+
+    Revokes access and updates the mandate to 'expired'.
+    """
+    stripe_sub_id = stripe_sub.get("id")
+
+    sub = _find_subscription_by_stripe_id(db, stripe_sub_id)
+    if not sub:
+        logger.debug(f"subscription.deleted: no internal sub for {stripe_sub_id}")
         return {"status": "ok"}
 
-    if event_type == "invoice.payment_failed":
-        return {"status": "failed"}
+    now = datetime.now(timezone.utc)
+    tenant_id = str(sub.tenant_id)
 
-    if event_type == "payment_intent.succeeded":
+    sub.status = "canceled"
+    sub.is_active = False
+    sub.canceled_at = now
+
+    # Expire the mandate
+    mandate = db.query(Mandate).filter(
+        Mandate.stripe_subscription_id == stripe_sub_id,
+    ).first()
+    if mandate:
+        mandate.status = "expired"
+
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.subscription_deleted", {
+            "tenant_id": tenant_id,
+            "plan_code": sub.plan_code,
+            "stripe_subscription_id": stripe_sub_id,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.subscription_deleted: {_oe}")
+
+    logger.info(f"subscription.deleted: tenant={tenant_id} — access revoked")
+    return {"status": "ok"}
+
+
+# ── customer.subscription.trial_will_end ───────────────────────────
+
+def _handle_trial_will_end(db: Session, stripe_sub: dict):
+    """
+    Fired 3 days before the trial ends (Stripe default).
+
+    Emits an outbox event so the communication module can send a
+    "your trial is ending" reminder email.
+    """
+    stripe_sub_id = stripe_sub.get("id")
+
+    sub = _find_subscription_by_stripe_id(db, stripe_sub_id)
+    if not sub:
         return {"status": "ok"}
 
-    if event_type == "payment_intent.payment_failed":
-        return {"status": "failed"}
+    tenant_id = str(sub.tenant_id)
+    trial_end = stripe_sub.get("trial_end")
+    trial_end_dt = datetime.fromtimestamp(trial_end, tz=timezone.utc) if trial_end else None
 
-    if event_type in ["customer.subscription.deleted", "customer.subscription.updated"]:
-        return {"status": "ok"}
+    try:
+        create_outbox_event(db, tenant_id, "payment.trial_ending", {
+            "tenant_id": tenant_id,
+            "plan_code": sub.plan_code,
+            "trial_ends_at": trial_end_dt.isoformat() if trial_end_dt else None,
+            "stripe_subscription_id": stripe_sub_id,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.trial_ending: {_oe}")
 
-    return {"status": "ignored"}
+    logger.info(f"trial_will_end: tenant={tenant_id} ends={trial_end_dt}")
+    return {"status": "ok"}
+
+
+# ── checkout.session.completed (legacy) ────────────────────────────
+
+def _handle_checkout_completed(db: Session, data: dict):
+    """Legacy checkout flow — upserts subscription from checkout metadata."""
+    tenant_id = data.get("metadata", {}).get("tenant_id")
+    plan_code = data.get("metadata", {}).get("plan_code")
+    billing_cycle = data.get("metadata", {}).get("billing_cycle", "monthly")
+
+    if not tenant_id or not plan_code:
+        return {"status": "ok", "detail": "missing metadata"}
+
+    now = datetime.now(timezone.utc)
+    sub = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id,
+        TenantSubscription.plan_code == plan_code,
+    ).first()
+    if not sub:
+        sub = TenantSubscription(tenant_id=tenant_id, plan_code=plan_code)
+        db.add(sub)
+
+    sub.external_id = data.get("subscription") or data.get("id")
+    sub.billing_cycle = billing_cycle
+    sub.current_period_start = now
+    sub.current_period_end = _period_end(now, billing_cycle)
+    sub.is_trial = False
+    sub.is_active = True
+    sub.payment_method = data.get("mode", "card")
+    sub.status = "active"
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.checkout.completed", {
+            "tenant_id": tenant_id,
+            "plan_code": plan_code,
+            "billing_cycle": billing_cycle,
+            "stripe_session_id": data.get("id"),
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.checkout.completed: {_oe}")
+
+    return {"status": "ok"}
+
+
+# ── setup_intent.succeeded ─────────────────────────────────────────
+
+def _handle_setup_intent_succeeded(db: Session, setup_intent: dict):
+    """
+    Fired when the customer successfully confirms the SetupIntent.
+
+    This means the payment method is saved and the mandate is authorised.
+    We log it as an audit event — the actual subscription creation happens
+    when the frontend calls ``POST /onboarding/activate``.
+    """
+    customer_id = setup_intent.get("customer")
+    payment_method = setup_intent.get("payment_method")
+    plan_code = setup_intent.get("metadata", {}).get("plan_code")
+
+    mandate = db.query(Mandate).filter(
+        Mandate.stripe_customer_id == customer_id,
+        Mandate.status == "pending",
+    ).first()
+
+    tenant_id = str(mandate.tenant_id) if mandate and mandate.tenant_id else None
+
+    try:
+        create_outbox_event(
+            db,
+            tenant_id or "00000000-0000-0000-0000-000000000000",
+            "payment.setup_intent_succeeded",
+            {
+                "stripe_customer_id": customer_id,
+                "payment_method_id": payment_method,
+                "plan_code": plan_code,
+                "mandate_id": str(mandate.mandate_id) if mandate else None,
+            },
+        )
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.setup_intent_succeeded: {_oe}")
+
+    logger.info(f"setup_intent.succeeded: customer={customer_id} pm={payment_method}")
+    return {"status": "ok"}
 
 
 @router.websocket("/ws/subscription-status/{tenant_id}")

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="border-bottom: 3px solid #4A90D9; padding-bottom: 16px; margin-bottom: 24px;">
+    <h1 style="margin: 0; color: #4A90D9; font-size: 24px;">Welcome to ZeroQue</h1>
+  </div>
+
+  <p>Hi {{ admin_name }},</p>
+
+  <p>Your organisation <strong>{{ tenant_name }}</strong> has been successfully registered on ZeroQue.</p>
+
+  {% if plan_name %}
+  <div style="background: #f6f8fa; border-radius: 8px; padding: 16px; margin: 16px 0;">
+    <p style="margin: 0 0 8px 0;"><strong>Plan:</strong> {{ plan_name }}</p>
+    {% if trial_ends_at %}
+    <p style="margin: 0;"><strong>Trial ends:</strong> {{ trial_ends_at }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <p>As the account administrator you can:</p>
+  <ul>
+    <li>Invite team members and assign roles</li>
+    <li>Configure sites, stores, and cost centres</li>
+    <li>Set up approval workflows and budget controls</li>
+    <li>Manage your subscription and billing</li>
+  </ul>
+
+  {% if login_url %}
+  <p style="text-align: center; margin: 24px 0;">
+    <a href="{{ login_url }}" style="background: #4A90D9; color: #fff; padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 600;">Go to Dashboard</a>
+  </p>
+  {% endif %}
+
+  <p>If you have any questions, contact our support team.</p>
+
+  <p style="color: #888; font-size: 13px; margin-top: 32px; border-top: 1px solid #eee; padding-top: 16px;">
+    This email was sent to {{ admin_name }} because an account was created on ZeroQue.
+  </p>
+</body>
+</html>

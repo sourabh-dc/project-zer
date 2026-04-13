@@ -487,6 +487,69 @@ class TenantSubscription(Base):
     cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    status = Column(String(20), default="active")  # active, trialing, past_due, canceled, unpaid
+
+    # Grace period & payment failure tracking
+    payment_failed_at = Column(DateTime(timezone=True), nullable=True)
+    grace_period_end = Column(DateTime(timezone=True), nullable=True)
+    last_invoice_id = Column(String(100), nullable=True)  # Stripe invoice ID
+
+
+class Mandate(Base):
+    """
+    Billing mandate — created BEFORE any tenant/user data is persisted.
+
+    A mandate captures the billing intent (plan, trial flag, Stripe customer)
+    and acts as the gate: tenant + admin user are only created once the
+    mandate reaches status='active' (payment confirmed or trial started).
+
+    Lifecycle:
+      1. POST /onboarding/mandate     -> status='pending'  (Stripe customer + SetupIntent created)
+      2. POST /onboarding/activate    -> status='active'    (payment confirmed or trial started)
+      3. Webhook subscription.deleted -> status='expired'   (trial/subscription ended)
+      4. Manual cancel                -> status='cancelled'
+    """
+    __tablename__ = "mandates"
+
+    mandate_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, nullable=False, index=True)
+    tenant_name = Column(String(200), nullable=False)
+    tenant_type = Column(String(50), nullable=False, default="retailer")
+
+    # Admin details (held until activation)
+    admin_email = Column(String, nullable=False)
+    admin_firstname = Column(String(150), nullable=False)
+    admin_lastname = Column(String(150), nullable=False)
+    password_hash = Column(String, nullable=False)
+
+    # Billing
+    plan_code = Column(String(50), nullable=False)
+    billing_cycle = Column(String(20), nullable=False, default="monthly")
+    is_trial = Column(Boolean, nullable=False, default=True)
+    trial_days = Column(Integer, nullable=False, default=7)
+    stripe_customer_id = Column(String(100), nullable=True)
+    stripe_subscription_id = Column(String(100), nullable=True)
+    stripe_setup_intent_secret = Column(String(255), nullable=True)
+
+    # State
+    status = Column(String(20), nullable=False, default="pending")  # pending, active, expired, cancelled
+    tenant_id = Column(SQLUUID(as_uuid=True), nullable=True)  # set once tenant is created on activation
+
+    # Extra onboarding fields (carried forward to Tenant)
+    phone = Column(String, nullable=True)
+    default_currency = Column(String(3), nullable=True, default="GBP")
+    timezone = Column(String, nullable=True, default="UTC")
+    locale = Column(String, nullable=True, default="en_GB")
+    industry = Column(String, nullable=True)
+    registration_number = Column(String(100), nullable=True)
+    billing_address = Column(JSONB, nullable=True)
+    primary_domain = Column(String, nullable=True)
+    metadata = Column(JSONB, nullable=True)  # freeform extra data
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class SubscriptionUsage(Base):

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="border-bottom: 3px solid #48BB78; padding-bottom: 16px; margin-bottom: 24px;">
+    <h1 style="margin: 0; color: #48BB78; font-size: 24px;">Payment Receipt</h1>
+  </div>
+
+  <p>Thank you for your payment, <strong>{{ tenant_name }}</strong>.</p>
+
+  <div style="background: #f6f8fa; border-radius: 8px; padding: 16px; margin: 16px 0;">
+    <table style="width: 100%; border-collapse: collapse;">
+      <tr>
+        <td style="padding: 8px 0; font-weight: 600;">Plan</td>
+        <td style="padding: 8px 0; text-align: right;">{{ plan_name }}</td>
+      </tr>
+      <tr style="border-top: 1px solid #ddd;">
+        <td style="padding: 8px 0; font-weight: 600;">Amount</td>
+        <td style="padding: 8px 0; text-align: right;">{{ amount_display }} {{ currency }}</td>
+      </tr>
+    </table>
+  </div>
+
+  {% if receipt_url %}
+  <p style="text-align: center; margin: 24px 0;">
+    <a href="{{ receipt_url }}" style="background: #48BB78; color: #fff; padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 600;">View Full Receipt</a>
+  </p>
+  {% endif %}
+
+  <p style="color: #888; font-size: 13px; margin-top: 32px; border-top: 1px solid #eee; padding-top: 16px;">
+    This is an automated receipt from ZeroQue. If you have billing questions, please contact support.
+  </p>
+</body>
+</html>

@@ -341,8 +341,20 @@ class LoginRequest(BaseModel):
     password: str = Field(description="User password")
 
 
+class SubscriptionContext(BaseModel):
+    """Subscription info included in sign-in response."""
+    plan_code: Optional[str] = None
+    plan_name: Optional[str] = None
+    billing_cycle: Optional[str] = None
+    is_active: bool = False
+    is_trial: bool = False
+    trial_ends_at: Optional[str] = None
+    current_period_end: Optional[str] = None
+    features: Optional[List[str]] = None
+
+
 class LoginResponse(BaseModel):
-    """Login response"""
+    """Login response — now includes full subscription context."""
     user_id: str
     tenant_id: str
     email: str
@@ -351,6 +363,75 @@ class LoginResponse(BaseModel):
     token: str
     expiring_at: datetime
     refresh_token: Optional[str] = None
+    subscription: Optional[SubscriptionContext] = None
+
+
+# ── Mandate schemas ──────────────────────────────────────────────
+
+class MandateCreateRequest(BaseModel):
+    """Step 1: create a billing mandate before any tenant data is persisted.
+
+    Trial is mandatory (7 days) and cannot be bypassed — the ``is_trial``
+    field is accepted for backwards compatibility but always forced to True.
+    """
+    email: EmailStr = Field(..., description="Tenant primary email")
+    tenant_name: str = Field(min_length=1, max_length=200)
+    tenant_type: str = Field(default="retailer")
+    admin_email: EmailStr
+    admin_firstname: str = Field(min_length=1, max_length=150)
+    admin_lastname: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=8, max_length=128)
+    plan_code: str = Field(..., description="Subscription plan code")
+    billing_cycle: str = Field(default="monthly")
+    is_trial: bool = Field(
+        default=True,
+        description="Always True — 7-day trial is mandatory and non-bypassable",
+    )
+    phone: Optional[str] = None
+    default_currency: Optional[str] = "GBP"
+    timezone: Optional[str] = "UTC"
+    locale: Optional[str] = "en_GB"
+    industry: Optional[str] = None
+    registration_number: Optional[str] = None
+    billing_address: Optional[str] = None
+    primary_domain: Optional[str] = None
+
+    @field_validator('is_trial')
+    @classmethod
+    def enforce_mandatory_trial(cls, v):
+        """Trial is non-bypassable — always return True regardless of input."""
+        return True
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v):
+        import re as _re
+        if not _re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not _re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not _re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
+class MandateResponse(BaseModel):
+    mandate_id: str
+    status: str
+    stripe_customer_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+class MandateActivateRequest(BaseModel):
+    """Step 2: activate the mandate (triggers tenant + user creation)."""
+    mandate_id: str = Field(..., description="Mandate UUID from step 1")
+
+
+class MandateActivateResponse(BaseModel):
+    tenant_id: str
+    mandate_id: str
+    status: str
+    subscription: Optional[SubscriptionContext] = None
 
 
 class RefreshJwtRequest(BaseModel):

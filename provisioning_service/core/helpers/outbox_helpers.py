@@ -48,6 +48,8 @@ _OUTBOX_WORKER_EVENT_TYPES = frozenset({
     'user.created',
     'product.created',
     'product.bulk_created',
+    'mandate.created',
+    'mandate.activated',
 })
 
 _VECTOR_SERVICE_AGGREGATE_TYPES = frozenset({

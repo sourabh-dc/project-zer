@@ -9,16 +9,26 @@ from sqlalchemy.orm import Session
 from azure.communication.email import EmailClient
 from urllib.parse import quote_plus
 
-from provisioning_service.Models import User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice
-from provisioning_service.Schemas import RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest, ForgotPasswordRequest, \
-    PasswordResetConfirmRequest
+from provisioning_service.Models import (
+    User, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice,
+    TenantUserRole, TenantRole, TenantRolePermission, Permission, RolePermission,
+    PlanFeature,
+)
+from provisioning_service.Schemas import (
+    RefreshJwtResponse, RefreshJwtRequest, ResetPasswordRequest,
+    ForgotPasswordRequest, PasswordResetConfirmRequest,
+    LoginResponse, SubscriptionContext,
+)
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
 from provisioning_service.core.user_auth import check_user_authorization
+from provisioning_service.core.azure_auth import validate_azure_token, is_azure_auth_configured
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 import bcrypt
+from sqlalchemy import func
+from typing import List
 
 router = APIRouter(prefix="/authentication", tags=["authentication"])
 
@@ -358,6 +368,180 @@ async def whoami(
         "tenant_id": tenant_id,
         "subscription": subscription,
     }
+
+@router.post("/azure/token-exchange", response_model=LoginResponse, status_code=200)
+async def azure_token_exchange(
+    db: Session = Depends(get_db),
+    azure_token: str = None,
+):
+    """
+    Exchange an Azure AD B2C / Entra ID token for an internal JWT.
+
+    Flow:
+      1. Frontend authenticates user via Azure AD B2C (MSAL.js redirect/popup).
+      2. Frontend sends the Azure access/id token to this endpoint.
+      3. Backend validates the Azure token against Azure's JWKS.
+      4. Backend maps the Azure identity to an internal User record.
+      5. Backend issues an internal JWT with tenant_id, roles, and permissions.
+
+    If the Azure user doesn't have an internal account yet, returns 404 so the
+    frontend can redirect to the onboarding/mandate flow.
+    """
+    if not is_azure_auth_configured():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Azure AD authentication is not configured",
+        )
+
+    if not azure_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="azure_token is required",
+        )
+
+    # Validate the Azure-issued token
+    azure_claims = await validate_azure_token(azure_token)
+
+    # Map Azure identity to internal user by email
+    email = azure_claims.email
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Azure token does not contain an email claim",
+        )
+
+    user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No internal account found for this Azure identity. Complete onboarding first.",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
+    # Enable SSO flag if not already set
+    if not user.is_sso_enabled:
+        user.is_sso_enabled = True
+
+    user.last_login_at = datetime.now(timezone.utc)
+    user.failed_login_attempts = 0
+    db.commit()
+    db.refresh(user)
+
+    # Resolve roles (global + tenant)
+    roles_query = db.query(Role.code) \
+        .join(UserRole, Role.role_id == UserRole.role_id) \
+        .filter(UserRole.user_id == user.user_id).all()
+    tenant_roles_query = db.query(TenantRole.code) \
+        .join(TenantUserRole, TenantRole.role_id == TenantUserRole.tenant_role_id) \
+        .filter(TenantUserRole.user_id == user.user_id).all()
+
+    roles: List[str] = [r[0] for r in roles_query if r and r[0]]
+    tenant_roles: List[str] = [r[0] for r in tenant_roles_query if r and r[0]]
+    all_roles = roles + tenant_roles
+
+    # Resolve permissions
+    role_perms = db.query(Permission.code).join(
+        RolePermission, RolePermission.permission_code == Permission.code
+    ).filter(RolePermission.role_code.in_(roles)).all()
+    tenant_role_perms = db.query(Permission.code).join(
+        TenantRolePermission, TenantRolePermission.permission_code == Permission.code
+    ).join(TenantRole, TenantRolePermission.tenant_role_id == TenantRole.role_id) \
+        .join(TenantUserRole, TenantUserRole.tenant_role_id == TenantRole.role_id) \
+        .filter(TenantUserRole.user_id == user.user_id).all()
+
+    perm_list = list({p[0] for p in role_perms + tenant_role_perms})
+    if "tenant_admin" in roles:
+        perm_list = ["*"]
+
+    # Issue internal JWT
+    jwt_exp_minutes = getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60)
+    jwt_algorithm = getattr(SETTINGS, "JWT_ALGORITHM", "HS256")
+    jwt_secret = getattr(SETTINGS, "JWT_SECRET", None)
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="Server configuration error")
+
+    now = datetime.now(timezone.utc)
+    jwt_expires_at = now + timedelta(minutes=jwt_exp_minutes)
+
+    payload = {
+        "sub": str(user.user_id),
+        "email": user.email,
+        "tenant_id": str(user.tenant_id),
+        "roles": all_roles,
+        "permissions": perm_list,
+        "auth_method": "azure_ad",
+        "azure_oid": azure_claims.oid,
+        "iat": int(now.timestamp()),
+        "exp": int(jwt_expires_at.timestamp()),
+        "iss": getattr(SETTINGS, "JWT_ISSUER", "http://mock-idp"),
+        "aud": getattr(SETTINGS, "JWT_AUDIENCE", "zeroque-api"),
+    }
+    token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
+    refresh_token = issue_refresh_token(user, db)
+
+    # Build subscription context
+    sub_ctx = None
+    active_sub = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == user.tenant_id,
+        TenantSubscription.is_active == True,
+    ).first()
+    if active_sub:
+        plan = db.query(SubscriptionPlan).filter(
+            SubscriptionPlan.code == active_sub.plan_code
+        ).first()
+        feature_rows = db.query(PlanFeature.feature_code).filter(
+            PlanFeature.plan_code == active_sub.plan_code
+        ).all()
+        features = [f[0] for f in feature_rows]
+
+        trial_ends = None
+        if active_sub.is_trial and active_sub.current_period_end:
+            trial_ends = active_sub.current_period_end.isoformat()
+
+        sub_ctx = SubscriptionContext(
+            plan_code=active_sub.plan_code,
+            plan_name=plan.name if plan else active_sub.plan_code,
+            billing_cycle=active_sub.billing_cycle,
+            is_active=active_sub.is_active,
+            is_trial=active_sub.is_trial,
+            trial_ends_at=trial_ends,
+            current_period_end=(
+                active_sub.current_period_end.isoformat()
+                if active_sub.current_period_end else None
+            ),
+            features=features,
+        )
+
+    logger.info(f"Azure SSO login for {user.email} (tenant {user.tenant_id})")
+
+    # Outbox audit event
+    try:
+        create_outbox_event(db, user.tenant_id, "user.azure_sso_login", {
+            "user_id": str(user.user_id),
+            "email": user.email,
+            "azure_oid": azure_claims.oid,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for user.azure_sso_login: {_oe}")
+
+    return LoginResponse(
+        user_id=str(user.user_id),
+        tenant_id=str(user.tenant_id),
+        email=user.email,
+        display_name=user.display_name,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+        token=token,
+        expiring_at=jwt_expires_at,
+        refresh_token=refresh_token,
+        subscription=sub_ctx,
+    )
+
 
 @router.get("/healthcheck")
 async def auth_test(user=Depends(check_user_authorization('tenant.admin'))):

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from provisioning_service.Models import User, Role, Permission, RolePermission, UserRole, OutboxEvent
@@ -14,7 +14,7 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
     This will:
     - Load OutboxEvent by id
     - Create admin user, ensure role and permission mappings, and assign user role
-    - Update OutboxEvent 'event_data' if necessary (e.g., add generated password)
+    - Trigger welcome emails to admin and tenant contact via the communication module
 
     The function raises exceptions on failure so the caller can implement retry logic.
     """
@@ -30,25 +30,31 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
 
     logger.info(f"Tenant worker: provisioning tenant {tenant_id} for outbox {payload_id}")
 
-    password_raw = payload.get("password")
-    if not password_raw:
-        password_raw = uuid.uuid4().hex[:12]
-        # store generated password back into event_data for auditing if desired
-        payload["generated_password"] = password_raw
-        outbox.event_data = payload
-        db.commit()
-
-    password_hash = bcrypt.hashpw(password_raw.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
+    # Mandate-based flow: password_hash is already present
+    password_hash = payload.get("password_hash")
+    if not password_hash:
+        # Legacy flow: raw password or generated
+        password_raw = payload.get("password")
+        if not password_raw:
+            password_raw = uuid.uuid4().hex[:12]
+            payload["generated_password"] = password_raw
+            outbox.payload = payload
+            db.flush()
+        password_hash = bcrypt.hashpw(password_raw.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
 
     # create user
+    admin_firstname = payload.get("admin_firstname") or payload.get("first_name") or "Admin"
+    admin_lastname = payload.get("admin_lastname") or payload.get("last_name") or ""
+    admin_email = payload.get("admin_email") or payload.get("email")
+
     user = User(
         user_id=uuid.uuid4(),
         tenant_id=tenant_id,
-        first_name=payload.get("admin_firstname") or payload.get("first_name") or "Admin",
-        last_name=payload.get("admin_lastname") or payload.get("last_name") or "",
-        display_name=(f"{payload.get('admin_firstname','')} {payload.get('admin_lastname','')}").strip(),
-        email=payload.get("admin_email") or payload.get("email"),
-        password_hash=password_hash
+        first_name=admin_firstname,
+        last_name=admin_lastname,
+        display_name=f"{admin_firstname} {admin_lastname}".strip(),
+        email=admin_email,
+        password_hash=password_hash,
     )
     db.add(user)
 
@@ -90,12 +96,52 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
         id=uuid.uuid4(),
         tenant_id=tenant_id,
         user_id=user.user_id,
-        role_id=role.role_id
+        role_id=role.role_id,
     )
     db.add(user_role)
 
-    # commit all
+    # commit all DB changes
     db.commit()
+
+    # ── Send welcome emails via communication module ────────────────
+    try:
+        from provisioning_service.core.config import SETTINGS
+        from shared.communication import EmailService
+
+        email_svc = EmailService(SETTINGS.EMAIL_CONNECTION_STRING)
+
+        tenant_name = payload.get("tenant_name", "")
+        plan_code = payload.get("plan_code", "")
+        is_trial = payload.get("is_trial", False)
+        trial_days = payload.get("trial_days", 7)
+        trial_ends_at = ""
+        if is_trial:
+            trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=trial_days)).strftime("%Y-%m-%d")
+
+        # Welcome email to admin
+        email_svc.send_welcome_admin(
+            admin_email=admin_email,
+            admin_name=f"{admin_firstname} {admin_lastname}".strip(),
+            tenant_name=tenant_name,
+            plan_name=plan_code,
+            trial_ends_at=trial_ends_at,
+        )
+
+        # Welcome email to tenant contact
+        tenant_email = payload.get("email", "")
+        if tenant_email and tenant_email != admin_email:
+            email_svc.send_welcome_tenant(
+                tenant_email=tenant_email,
+                tenant_name=tenant_name,
+                admin_email=admin_email,
+                plan_name=plan_code,
+                trial_ends_at=trial_ends_at,
+            )
+
+        logger.info(f"Welcome emails sent for tenant {tenant_id}")
+    except Exception as email_exc:
+        # Email failure should not block provisioning
+        logger.warning(f"Welcome email failed for tenant {tenant_id}: {email_exc}")
 
     logger.info(f"Tenant worker: provisioning complete for tenant {tenant_id} (outbox {payload_id})")
 

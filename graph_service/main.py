@@ -35,6 +35,7 @@ from graph_service.handlers import (
     cost_centre_handler,
     approved_range_handler,
     policy_handler,
+    mandate_handler,
 )
 
 from graph_service.queries.approved_universe import (
@@ -66,6 +67,7 @@ def _register_handlers():
     register_handler("policy", policy_handler.handle)
     register_handler("policy_rule", policy_handler.handle)
     register_handler("policy_assignment", policy_handler.handle)
+    register_handler("mandate", mandate_handler.handle)
 
 
 @asynccontextmanager
