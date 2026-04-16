@@ -395,6 +395,9 @@ class MandateCreateRequest(BaseModel):
     registration_number: Optional[str] = None
     billing_address: Optional[str] = None
     primary_domain: Optional[str] = None
+    billing_email: Optional[EmailStr] = None
+    tech_contact_email: Optional[EmailStr] = None
+    support_contact_email: Optional[EmailStr] = None
 
     @field_validator('is_trial')
     @classmethod

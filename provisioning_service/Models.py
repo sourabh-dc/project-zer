@@ -544,7 +544,10 @@ class Mandate(Base):
     registration_number = Column(String(100), nullable=True)
     billing_address = Column(JSONB, nullable=True)
     primary_domain = Column(String, nullable=True)
-    metadata = Column(JSONB, nullable=True)  # freeform extra data
+    billing_email = Column(String, nullable=True)
+    tech_contact_email = Column(String, nullable=True)
+    support_contact_email = Column(String, nullable=True)
+    extra_data = Column("metadata", JSONB, nullable=True)  # freeform extra data
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

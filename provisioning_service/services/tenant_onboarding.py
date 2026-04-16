@@ -266,15 +266,6 @@ async def create_mandate(
                 "billing_cycle": req.billing_cycle,
                 "mandate_type": "recurring_auto_pay",
             },
-            mandate_data={
-                "customer_acceptance": {
-                    "type": "online",
-                    "online": {
-                        "ip_address": "0.0.0.0",      # replaced by frontend
-                        "user_agent": "zeroque-app",   # replaced by frontend
-                    },
-                },
-            },
         )
 
         # Trial is ALWAYS mandatory — 7 days, non-bypassable
@@ -302,6 +293,9 @@ async def create_mandate(
             registration_number=req.registration_number,
             billing_address=req.billing_address,
             primary_domain=req.primary_domain,
+            billing_email=req.billing_email,
+            tech_contact_email=req.tech_contact_email,
+            support_contact_email=req.support_contact_email,
         )
         db.add(mandate)
         db.commit()
@@ -321,6 +315,16 @@ async def create_mandate(
         db.rollback()
         logger.error(f"Mandate creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create mandate")
+
+
+def _get_or_create_stripe_product(plan_code: str) -> str:
+    """Return a Stripe Product ID for the given plan, creating one if it doesn't exist."""
+    product_name = f"ZeroQue {plan_code}"
+    results = stripe.Product.search(query=f'name:"{product_name}"', limit=1)
+    if results.data:
+        return results.data[0].id
+    product = stripe.Product.create(name=product_name, metadata={"plan_code": plan_code})
+    return product.id
 
 
 @router.post("/activate", response_model=MandateActivateResponse, status_code=201)
@@ -414,7 +418,7 @@ async def activate_mandate(
             "items": [{
                 "price_data": {
                     "currency": currency,
-                    "product_data": {"name": f"ZeroQue {mandate.plan_code}"},
+                    "product": _get_or_create_stripe_product(mandate.plan_code),
                     "unit_amount": unit_amount,
                     "recurring": recurring,
                 },
@@ -449,6 +453,9 @@ async def activate_mandate(
             registration_number=mandate.registration_number,
             billing_address=mandate.billing_address,
             primary_domain=mandate.primary_domain,
+            billing_email=mandate.billing_email,
+            tech_contact_email=mandate.tech_contact_email,
+            support_contact_email=mandate.support_contact_email,
             active=True,
         )
         db.add(tenant)
