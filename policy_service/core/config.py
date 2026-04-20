@@ -49,6 +49,10 @@ class PolicySettings(BaseSettings):
     PORT: int = Field(default=8004, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
 
+    # OPA sidecar (policies evaluated from shared/opa_policies/)
+    OPA_URL: str = Field(default="http://localhost:8181", description="OPA sidecar base URL")
+    OPA_TIMEOUT: float = Field(default=3.0, description="OPA call timeout in seconds")
+
     # Connection pool
     CONNECTION_POOL_SIZE: int = 20
     MAX_OVERFLOW: int = 10

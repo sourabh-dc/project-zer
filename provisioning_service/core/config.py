@@ -92,9 +92,8 @@ class Settings(BaseSettings):
     AZURE_AD_TENANT_ID: Optional[str] = Field(default=None, description="Azure Entra ID directory tenant ID")
     AZURE_AD_CLIENT_ID: Optional[str] = Field(default=None, description="Azure Entra ID application (client) ID")
 
-    # Policy Engine integration
-    POLICY_ENGINE_URL: str = Field(default="http://localhost:8004", description="Policy Engine base URL")
-    POLICY_EVALUATE_TIMEOUT: float = Field(default=5.0, description="Timeout in seconds for policy evaluation calls")
+    # Policy enforcement (OPA Rego evaluated in-process via shared/policy_engine)
+    POLICY_ENGINE_BYPASS: bool = Field(default=False, description="When True, skip OPA calls and return allow (for local dev/testing without OPA)")
 
     # Subscription grace period
     PAYMENT_GRACE_PERIOD_DAYS: int = Field(default=3, description="Days of access after payment failure before revocation")

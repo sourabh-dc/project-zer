@@ -79,13 +79,17 @@ async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
         logger.error("JWT_SECRET not configured in SETTINGS")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error")
 
-    jwt_expires_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_exp_minutes)
+    now = datetime.now(timezone.utc)
+    jwt_expires_at = now + timedelta(minutes=jwt_exp_minutes)
     payload = {
         "sub": str(user.user_id),
         "email": user.email,
         "tenant_id": str(user.tenant_id) if user.tenant_id else None,
         "roles": roles,
-        "exp": int(jwt_expires_at.timestamp())
+        "iat": int(now.timestamp()),
+        "exp": int(jwt_expires_at.timestamp()),
+        "iss": getattr(SETTINGS, "JWT_ISSUER", "http://mock-idp"),
+        "aud": getattr(SETTINGS, "JWT_AUDIENCE", "zeroque-api"),
     }
     token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
 
@@ -140,17 +144,23 @@ async def reset_password(
     """
     try:
         current_user = db.query(User).filter(User.user_id == user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        stored_hash = current_user.password_hash or current_user.password
         # Verify the current password
-        if not bcrypt.checkpw(req.current_password.encode("utf-8"), current_user.password.encode("utf-8")):
+        if not bcrypt.checkpw(req.current_password.encode("utf-8"), stored_hash.encode("utf-8")):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
 
         # Optional: prevent reuse of the same password
-        if bcrypt.checkpw(req.new_password.encode("utf-8"), current_user.password.encode("utf-8")):
+        if bcrypt.checkpw(req.new_password.encode("utf-8"), stored_hash.encode("utf-8")):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be different")
 
         # Hash and save a new password
         hashed = bcrypt.hashpw(req.new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        current_user.password = hashed
+        if hasattr(current_user, 'password_hash'):
+            current_user.password_hash = hashed
+        else:
+            current_user.password = hashed
         db.commit()
         db.refresh(current_user)
 

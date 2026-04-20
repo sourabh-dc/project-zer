@@ -54,8 +54,8 @@ class Settings(BaseSettings):
     JWT_CACHE_SECONDS: int = Field(default=300)
     JWT_EXPIRY_MINUTES: int = Field(default=60)
 
-    POLICY_ENGINE_URL: str = Field(default="http://localhost:8004")
-    POLICY_EVALUATE_TIMEOUT: float = Field(default=5.0)
+    # Policy enforcement (OPA Rego evaluated in-process via shared/policy_engine)
+    POLICY_ENGINE_BYPASS: bool = Field(default=False)
 
     CONNECTION_POOL_SIZE: int = 20
     MAX_OVERFLOW: int = 10

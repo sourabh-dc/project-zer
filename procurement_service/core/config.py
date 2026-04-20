@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
     JWT_SECRET: Optional[str] = Field(default="local-procurement-secret", description="JWT secret")
 
-    POLICY_MODE: str = Field(default="local", description="local|disabled")
+    # Policy enforcement (OPA Rego evaluated in-process via shared/policy_engine)
+    POLICY_ENGINE_BYPASS: bool = Field(default=False, description="When True, skip policy checks (dev only)")
     INTERNAL_API_KEY: str = Field(default="local-internal-key", description="Internal maintenance API key")
     APP_BASE_URL: str = Field(default="http://localhost:9001", description="Base URL used in outbound action links")
 
