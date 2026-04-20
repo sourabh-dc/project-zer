@@ -2,6 +2,12 @@
 budget_routes.py
 ----------------
 Company budget caps, cost-centre budget versions, and budget transactions.
+
+Policy gates
+------------
+All cap-headroom and hard/soft-cap enforcement is delegated to OPA via
+require_policy() with enriched resource loaders.  The inline Python checks
+(hard_cap > allocated, soft cap without override_reason) have been removed.
 """
 
 import uuid
@@ -24,6 +30,11 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
+from provisioning_service.core.helpers.resource_loaders import (
+    cc_budget_create_resource,
+    company_cap_update_resource,
+    budget_reallocate_resource,
+)
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/budgets", tags=["Budgets"])
@@ -38,7 +49,7 @@ async def create_company_cap(
     req: CompanyBudgetCapCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget.create_cap")),
+    policy_result: dict = Depends(require_policy("budget.create_cap")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -98,39 +109,17 @@ async def update_company_cap(
     req: CompanyBudgetCapUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget.update_cap")),
+    # OPA checks: would_underfund + hard_cap → deny; soft + no override → deny.
+    policy_result: dict = Depends(
+        require_policy("budget.update_cap", resource_loader=company_cap_update_resource)
+    ),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
     cap = _get_cap_or_404(db, cap_id, tenant_id)
 
     if req.total_budget_minor is not None:
-        # Soft cap breach check
-        total_allocated = (
-            db.query(CostCentreBudgetVersion)
-            .filter(
-                CostCentreBudgetVersion.year_id == cap.year_id,
-                CostCentreBudgetVersion.tenant_id == tenant_id,
-                CostCentreBudgetVersion.status == "active",
-            )
-            .with_entities(CostCentreBudgetVersion.budget_minor)
-            .all()
-        )
-        allocated_sum = sum(r[0] for r in total_allocated)
-        if allocated_sum > req.total_budget_minor:
-            if cap.hard_cap:
-                raise HTTPException(
-                    400,
-                    f"New cap ({req.total_budget_minor}) is less than already allocated "
-                    f"cost-centre budgets ({allocated_sum}). Cannot reduce below allocated total."
-                )
-            if not req.override_reason:
-                raise HTTPException(
-                    422,
-                    "Soft cap breached: provide override_reason to confirm the reduction",
-                )
         cap.total_budget_minor = req.total_budget_minor
-
     if req.hard_cap is not None:
         cap.hard_cap = req.hard_cap
     if req.notes is not None:
@@ -142,7 +131,7 @@ async def update_company_cap(
 
     _write_outbox(db, tenant_id, "company_budget_cap.updated",
                   {"cap_id": cap_id, "total_budget_minor": cap.total_budget_minor,
-                   "override_reason": req.override_reason})
+                   "override_reason": getattr(req, "override_reason", None)})
 
     return _cap_dict(cap)
 
@@ -156,7 +145,10 @@ async def create_cc_budget_version(
     req: CCBudgetVersionCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget.create_version")),
+    # OPA checks: hard cap exceeded → deny; soft cap + no override → deny.
+    policy_result: dict = Depends(
+        require_policy("budget.create_version", resource_loader=cc_budget_create_resource)
+    ),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -180,27 +172,13 @@ async def create_cc_budget_version(
     if existing:
         raise HTTPException(409, "An active budget version already exists for this CC/year/period combination")
 
-    # Check company cap soft enforcement
+    # Increment the company cap's allocated counter (OPA has already validated it).
     cap = db.query(CompanyBudgetCap).filter(
         CompanyBudgetCap.tenant_id == tenant_id,
         CompanyBudgetCap.year_id == uuid.UUID(req.year_id),
     ).first()
     if cap:
         cap.allocated_minor = (cap.allocated_minor or 0) + req.budget_minor
-        if cap.hard_cap and cap.allocated_minor > cap.total_budget_minor:
-            cap.allocated_minor -= req.budget_minor
-            raise HTTPException(
-                400,
-                f"Company budget cap ({cap.total_budget_minor}) would be exceeded. "
-                f"Allocating {req.budget_minor} would bring total to {cap.allocated_minor + req.budget_minor}."
-            )
-        if cap.allocated_minor > cap.total_budget_minor and not req.override_reason:
-            # Soft cap warning — allow with override_reason
-            cap.allocated_minor -= req.budget_minor
-            raise HTTPException(
-                422,
-                "Company soft budget cap exceeded. Provide override_reason to confirm.",
-            )
 
     version = CostCentreBudgetVersion(
         version_id=uuid.uuid4(),
@@ -215,7 +193,7 @@ async def create_cc_budget_version(
         created_by=user_id,
     )
     db.add(version)
-    db.flush()  # Ensure version row exists for FK in budget_transactions
+    db.flush()
 
     # Record ledger transaction
     _record_txn(db, tenant_id, "allocation", None, version.version_id,
@@ -271,7 +249,7 @@ async def update_cc_budget_version(
     req: CCBudgetVersionUpdate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget.update_version")),
+    policy_result: dict = Depends(require_policy("budget.update_version")),
 ):
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -311,11 +289,15 @@ async def reallocate_budget(
     req: BudgetReallocationRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget.reallocate")),
+    # OPA checks: source_available < amount → deny.
+    policy_result: dict = Depends(
+        require_policy("budget.reallocate", resource_loader=budget_reallocate_resource)
+    ),
 ):
     """
     Transfer (or add) budget between two CC budget versions.
     source_version_id=null means additive top-up from central pool.
+    OPA has already validated source headroom.
     """
     tenant_id = _tid(ctx)
     user_id   = _uid(ctx)
@@ -324,8 +306,6 @@ async def reallocate_budget(
 
     if req.source_version_id:
         source = _get_version_or_404(db, req.source_version_id, tenant_id)
-        if source.budget_minor - source.committed_minor - source.spent_minor < req.amount_minor:
-            raise HTTPException(400, "Insufficient available budget in source version")
         source.budget_minor -= req.amount_minor
         _record_txn(db, tenant_id, "reallocation_debit",
                     source.version_id, target.version_id,
@@ -343,7 +323,8 @@ async def reallocate_budget(
     db.commit()
 
     _write_outbox(db, tenant_id, "budget.reallocated",
-                  {"target_version_id": req.target_version_id, "amount_minor": req.amount_minor})
+                  {"target_version_id": req.target_version_id,
+                   "amount_minor": req.amount_minor})
 
     return {"status": "ok", "target_version_id": req.target_version_id,
             "new_budget_minor": target.budget_minor}
@@ -379,15 +360,15 @@ async def list_budget_transactions(
         "total": total,
         "transactions": [
             {
-                "txn_id": str(t.txn_id),
-                "txn_type": t.txn_type,
+                "txn_id":            str(t.txn_id),
+                "txn_type":          t.txn_type,
                 "source_version_id": str(t.source_version_id) if t.source_version_id else None,
                 "target_version_id": str(t.target_version_id) if t.target_version_id else None,
-                "amount_minor": t.amount_minor,
-                "currency": t.currency,
-                "note": t.note,
-                "performed_by": str(t.performed_by) if t.performed_by else None,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "amount_minor":      t.amount_minor,
+                "currency":          t.currency,
+                "note":              t.note,
+                "performed_by":      str(t.performed_by) if t.performed_by else None,
+                "created_at":        t.created_at.isoformat() if t.created_at else None,
             }
             for t in rows
         ],
@@ -457,15 +438,15 @@ def _write_outbox(db, tenant_id, event_type, data):
 
 def _cap_dict(cap):
     return {
-        "cap_id": str(cap.cap_id),
-        "tenant_id": str(cap.tenant_id),
-        "year_id": str(cap.year_id),
-        "currency": cap.currency,
-        "total_budget_minor": cap.total_budget_minor,
-        "allocated_minor": cap.allocated_minor,
-        "committed_minor": cap.committed_minor,
-        "spent_minor": cap.spent_minor,
-        "hard_cap": cap.hard_cap,
+        "cap_id":              str(cap.cap_id),
+        "tenant_id":           str(cap.tenant_id),
+        "year_id":             str(cap.year_id),
+        "currency":            cap.currency,
+        "total_budget_minor":  cap.total_budget_minor,
+        "allocated_minor":     cap.allocated_minor,
+        "committed_minor":     cap.committed_minor,
+        "spent_minor":         cap.spent_minor,
+        "hard_cap":            cap.hard_cap,
         "available_minor": cap.total_budget_minor - (cap.committed_minor or 0) - (cap.spent_minor or 0),
     }
 
@@ -478,18 +459,17 @@ def _version_dict(v):
         - (v.spent_minor or 0)
     )
     return {
-        "version_id": str(v.version_id),
-        "cost_centre_id": str(v.cost_centre_id),
-        "year_id": str(v.year_id),
-        "period_id": str(v.period_id) if v.period_id else None,
-        "currency": v.currency,
-        "budget_minor": v.budget_minor,
-        "carry_forward_minor": v.carry_forward_minor or 0,
+        "version_id":               str(v.version_id),
+        "cost_centre_id":           str(v.cost_centre_id),
+        "year_id":                  str(v.year_id),
+        "period_id":                str(v.period_id) if v.period_id else None,
+        "currency":                 v.currency,
+        "budget_minor":             v.budget_minor,
+        "carry_forward_minor":      v.carry_forward_minor or 0,
         "allocated_to_users_minor": v.allocated_to_users_minor or 0,
-        "committed_minor": v.committed_minor or 0,
-        "spent_minor": v.spent_minor or 0,
-        "available_minor": available,
-        "status": v.status,
-        "override_reason": v.override_reason,
+        "committed_minor":          v.committed_minor or 0,
+        "spent_minor":              v.spent_minor or 0,
+        "available_minor":          available,
+        "status":                   v.status,
+        "override_reason":          v.override_reason,
     }
-

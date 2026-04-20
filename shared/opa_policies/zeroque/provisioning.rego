@@ -2,21 +2,38 @@
 # shared/opa_policies/zeroque/provisioning.rego
 # ------------------------------------------------------------------
 # Policies for provisioning_service mutating endpoints.
-# Evaluated via: POST /v1/data/zeroque/provisioning/allow
+# Evaluated via: POST /evaluate
+#
+# Action namespaces: tenant.* | site.* | store.* | user.* |
+#                    vendor.* | cost_centre.*
+#
+# Resource context expected for quota-gated create actions
+# (populated by entitlement_resource_loader in resource_loaders.py):
+#
+#   resource.tenant_id
+#   resource.subscription_active   bool
+#   resource.feature_code          e.g. "sites.manage"
+#   resource.feature_in_plan       bool
+#   resource.current_count         int  (SubscriptionUsage.usage_count)
+#   resource.feature_limit         int | null  (null = unlimited)
+#
+# All other mutating actions only need resource.tenant_id.
 # ------------------------------------------------------------------
 package zeroque.provisioning
 
 import rego.v1
 import data.zeroque.common
 
-# ── default deny ──────────────────────────────────────────────────
-default allow := false
+# ── defaults ──────────────────────────────────────────────────────
+default allow    := false
 default decision := "deny"
-default reason := "Access denied by default policy"
+default reason   := "Access denied by default policy"
 
-# ── ALLOW rules ───────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────
+# ALLOW rules
+# ──────────────────────────────────────────────────────────────────
 
-# Tenant admins with a valid subscription can perform any mutation.
+# Tenant admins with valid subscription can perform any provisioning mutation.
 allow if {
     common.is_authenticated
     common.same_tenant
@@ -32,88 +49,73 @@ allow if {
     common.has_permission(input.action)
 }
 
-# ── DENY overrides (evaluated before allow in decision) ───────────
+# ──────────────────────────────────────────────────────────────────
+# DENY: cross-cutting
+# ──────────────────────────────────────────────────────────────────
 
-# Block cross-tenant mutations.
 deny_cross_tenant if {
     common.is_authenticated
     not common.same_tenant
 }
 
-# Block if subscription is not active/trialing.
 deny_no_subscription if {
     common.is_authenticated
     not common.subscription_valid
 }
 
-# ── site.create ───────────────────────────────────────────────────
-deny_site_limit if {
-    input.action == "site.create"
-    input.resource.current_site_count >= input.resource.site_limit
+# ──────────────────────────────────────────────────────────────────
+# DENY: quota / entitlement checks for resource-creation actions
+# ──────────────────────────────────────────────────────────────────
+
+_quota_gated_actions := {
+    "site.create", "store.create", "user.create",
+    "vendor.create", "cost_centre.create",
 }
 
-# ── user.create ───────────────────────────────────────────────────
-deny_user_limit if {
-    input.action == "user.create"
-    input.resource.current_user_count >= input.resource.user_limit
+# Feature not included in the tenant's current plan.
+deny_feature_not_in_plan if {
+    input.action in _quota_gated_actions
+    input.resource.feature_in_plan == false
 }
 
-# ── order.create (budget check) ──────────────────────────────────
-deny_budget_exceeded if {
-    input.action == "order.create"
-    input.resource.amount_minor > 0
-    not common.budget_sufficient
+# Tenant has reached their plan quota for this resource type.
+deny_quota_exceeded if {
+    input.action in _quota_gated_actions
+    input.resource.feature_limit != null
+    input.resource.current_count >= input.resource.feature_limit
 }
 
-require_approval_large_order if {
-    input.action == "order.create"
-    input.resource.amount_minor > input.subject.max_order_limit_minor
-}
+# Convenience aliases kept for backwards compatibility with
+# callers that check specific deny reasons.
+deny_site_limit  if { input.action == "site.create";        deny_quota_exceeded }
+deny_store_limit if { input.action == "store.create";       deny_quota_exceeded }
+deny_user_limit  if { input.action == "user.create";        deny_quota_exceeded }
+deny_vendor_limit       if { input.action == "vendor.create";       deny_quota_exceeded }
+deny_cost_centre_limit  if { input.action == "cost_centre.create";  deny_quota_exceeded }
 
-# ── composite decision ────────────────────────────────────────────
-decision := "deny" if {
-    deny_cross_tenant
-    reason := "Cross-tenant access is forbidden"
-}
+# ──────────────────────────────────────────────────────────────────
+# Composite decision  (deny > allow)
+# ──────────────────────────────────────────────────────────────────
 
-decision := "deny" if {
-    deny_no_subscription
-    reason := "Active subscription required"
-}
-
-decision := "deny" if {
-    deny_site_limit
-    reason := "Site limit reached for current plan"
-}
-
-decision := "deny" if {
-    deny_user_limit
-    reason := "User limit reached for current plan"
-}
-
-decision := "deny" if {
-    deny_budget_exceeded
-    reason := "Insufficient budget"
-}
-
-decision := "require_approval" if {
-    require_approval_large_order
-    reason := "Order exceeds user limit — approval required"
-}
+decision := "deny" if deny_cross_tenant
+decision := "deny" if deny_no_subscription
+decision := "deny" if deny_feature_not_in_plan
+decision := "deny" if deny_quota_exceeded
 
 decision := "allow" if {
     allow
     not deny_cross_tenant
     not deny_no_subscription
-    not deny_site_limit
-    not deny_user_limit
-    not deny_budget_exceeded
+    not deny_feature_not_in_plan
+    not deny_quota_exceeded
 }
 
-reason := "Cross-tenant access is forbidden" if deny_cross_tenant
-reason := "Active subscription required" if deny_no_subscription
-reason := "Site limit reached for current plan" if deny_site_limit
-reason := "User limit reached for current plan" if deny_user_limit
-reason := "Insufficient budget" if deny_budget_exceeded
-reason := "Order exceeds user limit — approval required" if require_approval_large_order
-reason := "Allowed" if allow
+# ──────────────────────────────────────────────────────────────────
+# Reason strings
+# ──────────────────────────────────────────────────────────────────
+
+reason := "Cross-tenant access is forbidden"           if deny_cross_tenant
+reason := "Active subscription required"               if deny_no_subscription
+reason := "Feature not available in your current plan" if deny_feature_not_in_plan
+reason := "Plan quota reached for this resource type"  if deny_quota_exceeded
+reason := "Allowed"                                    if allow

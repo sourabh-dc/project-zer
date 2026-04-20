@@ -19,6 +19,14 @@ class Vendor:
     ack_sla_hours: int = 24
     shipment_sla_hours: int = 72
     active: bool = True
+    # Integration protocol: api | cxml | edi | email
+    preferred_protocol: str = "email"
+    api_endpoint_url: Optional[str] = None
+    cxml_endpoint_url: Optional[str] = None
+    edi_partner_id: Optional[str] = None
+    notification_email: Optional[str] = None
+    webhook_url: Optional[str] = None
+    onboarding_status: str = "pending"
     created_at: datetime = field(default_factory=utc_now)
 
 

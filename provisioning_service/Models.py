@@ -241,7 +241,7 @@ class UserOrgAssignment(Base):
 
 
 class Vendor(Base):
-    """Vendor model - suppliers and partners"""
+    """Vendor model - suppliers, partners, and integration configuration."""
     __tablename__ = "vendors"
     vendor_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -249,6 +249,36 @@ class Vendor(Base):
     contact_email = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
     status = Column(String(50), default="active", index=True)
+
+    # ── Integration & Communication ──────────────────────────────
+    # Preferred communication channel: api | cxml | edi | email
+    preferred_protocol = Column(String(20), nullable=True, default="email")
+    # Vendor-provided endpoints (for outbound integration)
+    api_endpoint_url = Column(String(1000), nullable=True)
+    api_auth_type = Column(String(50), nullable=True)          # bearer | basic | api_key | oauth2 | hmac
+    api_auth_credentials = Column(JSONB, nullable=True)        # encrypted creds (key/secret/token)
+    cxml_endpoint_url = Column(String(1000), nullable=True)    # cXML PunchOut / PO endpoint
+    cxml_from_identity = Column(String(255), nullable=True)    # our identity in cXML From header
+    cxml_to_identity = Column(String(255), nullable=True)      # vendor identity in cXML To header
+    cxml_shared_secret = Column(String(500), nullable=True)    # SharedSecret for cXML auth
+    edi_partner_id = Column(String(100), nullable=True)        # EDI interchange qualifier + ID
+    edi_interchange_qualifier = Column(String(10), nullable=True)  # ISA qualifier (e.g. ZZ, 01)
+    edi_protocol = Column(String(20), nullable=True)           # as2 | sftp | van
+    edi_connection_config = Column(JSONB, nullable=True)       # host, port, credentials
+    notification_email = Column(String(255), nullable=True)    # fallback email for PO delivery
+    webhook_url = Column(String(1000), nullable=True)          # webhook for order updates
+    webhook_secret = Column(String(500), nullable=True)        # HMAC secret for webhook signatures
+
+    # ── Vendor Onboarding Metadata ───────────────────────────────
+    onboarding_status = Column(String(30), nullable=True, default="pending")  # pending | verified | active | suspended
+    payment_terms = Column(String(50), nullable=True)          # net_30 | net_60 | cod | prepaid
+    return_policy = Column(String(50), nullable=True)          # full | partial | no_returns
+    lead_time_days = Column(Integer, nullable=True)
+    minimum_order_minor = Column(BigInteger, nullable=True)
+    tax_id = Column(String(100), nullable=True)
+    duns_number = Column(String(20), nullable=True)            # Dun & Bradstreet
+    vendor_metadata = Column(JSONB, nullable=True)             # freeform onboarding data
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

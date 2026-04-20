@@ -19,6 +19,10 @@ from provisioning_service.Schemas import (
     MandateActivateRequest, MandateActivateResponse,
     SubscriptionContext,
 )
+from provisioning_service.core.helpers.signin_context import (
+    build_subscription_context, build_tenant_context,
+    build_balance_context, build_rbac_context,
+)
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event, dispatch_outbox_to_queue
 from provisioning_service.utils.metrics import req_total
@@ -721,46 +725,31 @@ async def tenant_login(
 
         refresh_token = issue_refresh_token(user, db)
 
-        # ── Build subscription context for sign-in response ─────────
-        sub_ctx = None
-        active_sub = db.query(TenantSubscription).filter(
-            TenantSubscription.tenant_id == user.tenant_id,
-            TenantSubscription.is_active == True,
-        ).first()
-        if active_sub:
-            plan = db.query(SubscriptionPlan).filter(
-                SubscriptionPlan.code == active_sub.plan_code
-            ).first()
-            feature_rows = db.query(PlanFeature.feature_code).filter(
-                PlanFeature.plan_code == active_sub.plan_code
-            ).all()
-            features = [f[0] for f in feature_rows]
-
-            trial_ends = None
-            if active_sub.is_trial and active_sub.current_period_end:
-                trial_ends = active_sub.current_period_end.isoformat()
-
-            sub_ctx = SubscriptionContext(
-                plan_code=active_sub.plan_code,
-                plan_name=plan.name if plan else active_sub.plan_code,
-                billing_cycle=active_sub.billing_cycle,
-                is_active=active_sub.is_active,
-                is_trial=active_sub.is_trial,
-                trial_ends_at=trial_ends,
-                current_period_end=active_sub.current_period_end.isoformat() if active_sub.current_period_end else None,
-                features=features,
-            )
+        # ── Build full status-check context for sign-in response ─────────
+        sub_ctx = build_subscription_context(db, user.tenant_id)
+        tenant_ctx = build_tenant_context(db, user.tenant_id)
+        balance_ctx = build_balance_context(db, user.user_id, user.tenant_id)
+        rbac_ctx = build_rbac_context(
+            roles=all_roles,
+            permissions=perm_list,
+            feature_codes=sub_ctx.features if sub_ctx else [],
+        )
 
         return LoginResponse(
             user_id=str(user.user_id),
             tenant_id=str(user.tenant_id),
             email=user.email,
             display_name=user.display_name,
+            first_name=user.first_name,
+            last_name=user.last_name,
             last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
             token=token,
             expiring_at=jwt_expires_at,
             refresh_token=refresh_token,
             subscription=sub_ctx,
+            tenant=tenant_ctx,
+            balance=balance_ctx,
+            rbac=rbac_ctx,
         )
 
     except HTTPException:

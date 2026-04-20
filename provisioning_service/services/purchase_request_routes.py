@@ -2,6 +2,16 @@
 purchase_request_routes.py
 --------------------------
 Submit purchase requests, check budget headroom, manage approval workflows.
+
+Policy gates
+------------
+All access-control and budget decisions are delegated to OPA via
+require_policy().  Resource context is computed by resource_loaders.py
+and passed as enriched dicts to the policy engine:
+
+  purchase_request.create  — budget headroom, blocked flag, self-approve flag
+  purchase_request.decide  — SOX SoD (requester ≠ approver), task ownership
+  purchase_request.issue_po — basic RBAC
 """
 
 import uuid
@@ -19,9 +29,12 @@ from provisioning_service.Schemas import PurchaseRequestCreate, ApprovalDecision
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
-from provisioning_service.core.budget_engine import check_request_headroom
 from provisioning_service.core.approval_engine import resolve_workflow, advance_workflow
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
+from provisioning_service.core.helpers.resource_loaders import (
+    purchase_request_create_resource,
+    purchase_request_decide_resource,
+)
 from provisioning_service.core.period_calculator import get_current_period
 from provisioning_service.utils.logger import logger
 
@@ -37,15 +50,27 @@ async def submit_purchase_request(
     req: PurchaseRequestCreate,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.place")),
-    policy=Depends(require_policy("purchase_request.create")),
+    # Resource loader computes budget headroom once; DI cache reuses it in
+    # both the budget_ctx binding below and inside require_policy.
+    budget_ctx: dict = Depends(purchase_request_create_resource),
+    policy_result: dict = Depends(
+        require_policy(
+            "purchase_request.create",
+            resource_loader=purchase_request_create_resource,
+            # OPA returns "require_approval" when the request needs a workflow;
+            # we must not raise here — the route handles routing instead.
+            pass_on_require_approval=True,
+        )
+    ),
 ):
     """
     Submit a purchase request.
 
-    1. Resolve the active financial period.
-    2. Run budget headroom check (CC version + company cap + user limits).
-    3. If self-approve criteria met → auto-approve and emit PO event.
-    4. Otherwise build an ApprovalWorkflow using the applicable policy.
+    OPA handles:
+      - deny  → budget blocked (CC insufficient / company hard cap)
+      - deny  → cross-tenant / no subscription
+      - allow → can_self_approve (auto-approve path)
+      - require_approval → needs workflow (user window limits breached)
     """
     tenant_id    = _tid(ctx)
     requester_id = _uid(ctx)
@@ -58,27 +83,10 @@ async def submit_purchase_request(
     if not cc:
         raise HTTPException(404, "Cost centre not found")
 
-    # Resolve current period
+    # Period resolved by the resource loader — reuse from budget_ctx.
     current_period = get_current_period(db, tenant_id)
     year_id   = current_period.year_id   if current_period else None
     period_id = current_period.period_id if current_period else None
-
-    # Budget headroom check
-    budget_check = check_request_headroom(
-        db,
-        tenant_id=tenant_id,
-        requester_id=requester_id,
-        cost_centre_id=uuid.UUID(req.cost_centre_id),
-        amount_minor=req.amount_minor,
-        year_id=year_id,
-        period_id=period_id,
-    )
-
-    if budget_check.is_blocked:
-        raise HTTPException(
-            422,
-            f"Request blocked: {budget_check.block_reason}"
-        )
 
     # Build reference number
     count = db.query(PurchaseRequest).filter(
@@ -106,9 +114,12 @@ async def submit_purchase_request(
     db.add(purchase_req)
     db.flush()
 
-    if budget_check.can_self_approve:
-        # Auto-approve
-        purchase_req.status = "approved"
+    # OPA decision drives the self-approve vs workflow branch.
+    opa_decision = policy_result.get("decision", "allow")
+
+    if opa_decision == "allow":
+        # Self-approve: all window limits within range.
+        purchase_req.status      = "approved"
         purchase_req.approval_mode = "self_approved"
         purchase_req.approved_by = requester_id
         purchase_req.approved_at = datetime.now(timezone.utc)
@@ -125,9 +136,9 @@ async def submit_purchase_request(
 
         return _request_dict(purchase_req)
 
-    # Need approval → find applicable policy
-    policy = _resolve_policy(db, tenant_id, uuid.UUID(req.cost_centre_id))
-    if not policy:
+    # require_approval: route through an approval workflow.
+    approval_policy = _resolve_policy(db, tenant_id, uuid.UUID(req.cost_centre_id))
+    if not approval_policy:
         raise HTTPException(
             422,
             "No active approval policy found for this cost centre. "
@@ -135,7 +146,7 @@ async def submit_purchase_request(
         )
 
     purchase_req.approval_mode = "workflow"
-    workflow = resolve_workflow(db, purchase_req, policy)
+    workflow = resolve_workflow(db, purchase_req, approval_policy)
     db.commit()
 
     try:
@@ -236,18 +247,18 @@ async def get_purchase_request(
     return {
         **_request_dict(pr),
         "workflow": {
-            "workflow_id": str(workflow.workflow_id) if workflow else None,
-            "status": workflow.status if workflow else None,
+            "workflow_id":         str(workflow.workflow_id) if workflow else None,
+            "status":              workflow.status if workflow else None,
             "current_stage_order": workflow.current_stage_order if workflow else None,
         } if workflow else None,
         "tasks": [
             {
-                "task_id": str(t.task_id),
-                "stage_order": t.stage_order,
+                "task_id":          str(t.task_id),
+                "stage_order":      t.stage_order,
                 "assignee_user_id": str(t.assignee_user_id) if t.assignee_user_id else None,
-                "status": t.status,
-                "decided_at": t.decided_at.isoformat() if t.decided_at else None,
-                "note": t.note,
+                "status":           t.status,
+                "decided_at":       t.decided_at.isoformat() if t.decided_at else None,
+                "note":             t.note,
             }
             for t in tasks
         ],
@@ -264,14 +275,24 @@ async def decide_task(
     req: ApprovalDecisionRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.approve")),
-    policy=Depends(require_policy("purchase_request.decide")),
+    # OPA: checks SOX SoD (requester ≠ decider) + RBAC.
+    # resource_loader pre-fetches task→workflow→request→policy from DB.
+    # DI cache means the same queries are not repeated in advance_workflow's
+    # own lookups (which are independent; duplication is intentional for
+    # decoupling advance_workflow from the API layer).
+    policy_result: dict = Depends(
+        require_policy(
+            "purchase_request.decide",
+            resource_loader=purchase_request_decide_resource,
+        )
+    ),
 ):
     """
     Approve, reject, or escalate an approval task.
-    SOX SoD is enforced here: requester cannot approve their own request.
+    SOX SoD is enforced by OPA before this handler is reached.
     """
-    tenant_id    = _tid(ctx)
-    decided_by   = _uid(ctx)
+    tenant_id  = _tid(ctx)
+    decided_by = _uid(ctx)
 
     try:
         tid = uuid.UUID(task_id)
@@ -298,7 +319,6 @@ async def decide_task(
 
     db.commit()
 
-    # Emit outbox event
     workflow = db.query(ApprovalWorkflow).filter(
         ApprovalWorkflow.workflow_id == task.workflow_id
     ).first()
@@ -319,7 +339,9 @@ async def issue_po(
     request_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("orders.manage")),
-    policy=Depends(require_policy("purchase_request.issue_po", resource_from="none")),
+    policy_result: dict = Depends(
+        require_policy("purchase_request.issue_po", resource_from="none")
+    ),
 ):
     """Mark an approved request as PO issued."""
     tenant_id = _tid(ctx)
@@ -328,7 +350,7 @@ async def issue_po(
     if pr.status != "approved":
         raise HTTPException(400, f"Request is in status '{pr.status}'; must be 'approved' to issue PO")
 
-    pr.status = "po_issued"
+    pr.status      = "po_issued"
     pr.po_issued_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -341,7 +363,8 @@ async def issue_po(
     except Exception as e:
         logger.warning(f"Outbox failed: {e}")
 
-    return {"request_id": request_id, "status": "po_issued", "po_issued_at": pr.po_issued_at.isoformat()}
+    return {"request_id": request_id, "status": "po_issued",
+            "po_issued_at": pr.po_issued_at.isoformat()}
 
 
 # =============================================================================
@@ -372,7 +395,6 @@ def _get_pr_or_404(db, request_id, tenant_id):
 
 def _resolve_policy(db, tenant_id: uuid.UUID, cost_centre_id: uuid.UUID):
     """Find the most specific active policy: CC-level first, then tenant-wide."""
-    # 1. CC-specific
     policy = db.query(ApprovalPolicy).filter(
         ApprovalPolicy.tenant_id == tenant_id,
         ApprovalPolicy.cost_centre_id == cost_centre_id,
@@ -380,7 +402,6 @@ def _resolve_policy(db, tenant_id: uuid.UUID, cost_centre_id: uuid.UUID):
     ).first()
     if policy:
         return policy
-    # 2. Tenant-wide fallback
     return db.query(ApprovalPolicy).filter(
         ApprovalPolicy.tenant_id == tenant_id,
         ApprovalPolicy.cost_centre_id.is_(None),
@@ -392,22 +413,21 @@ def _request_dict(pr):
     if not pr:
         return None
     return {
-        "request_id": str(pr.request_id),
-        "tenant_id": str(pr.tenant_id),
-        "requester_id": str(pr.requester_id),
-        "cost_centre_id": str(pr.cost_centre_id),
-        "vendor_id": str(pr.vendor_id) if pr.vendor_id else None,
-        "category_id": str(pr.category_id) if pr.category_id else None,
+        "request_id":       str(pr.request_id),
+        "tenant_id":        str(pr.tenant_id),
+        "requester_id":     str(pr.requester_id),
+        "cost_centre_id":   str(pr.cost_centre_id),
+        "vendor_id":        str(pr.vendor_id) if pr.vendor_id else None,
+        "category_id":      str(pr.category_id) if pr.category_id else None,
         "reference_number": pr.reference_number,
-        "description": pr.description,
-        "amount_minor": pr.amount_minor,
-        "currency": pr.currency,
-        "status": pr.status,
-        "approval_mode": pr.approval_mode,
-        "approved_by": str(pr.approved_by) if pr.approved_by else None,
-        "approved_at": pr.approved_at.isoformat() if pr.approved_at else None,
-        "po_issued_at": pr.po_issued_at.isoformat() if pr.po_issued_at else None,
-        "po_reference": pr.po_reference,
-        "created_at": pr.created_at.isoformat() if pr.created_at else None,
+        "description":      pr.description,
+        "amount_minor":     pr.amount_minor,
+        "currency":         pr.currency,
+        "status":           pr.status,
+        "approval_mode":    pr.approval_mode,
+        "approved_by":      str(pr.approved_by) if pr.approved_by else None,
+        "approved_at":      pr.approved_at.isoformat() if pr.approved_at else None,
+        "po_issued_at":     pr.po_issued_at.isoformat() if pr.po_issued_at else None,
+        "po_reference":     pr.po_reference,
+        "created_at":       pr.created_at.isoformat() if pr.created_at else None,
     }
-

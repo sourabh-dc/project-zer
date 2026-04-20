@@ -15,8 +15,9 @@ advance_workflow(db, task_id, decision, decided_by_id, note)
     → Records the decision, escalates if needed, advances to next stage,
       or marks the workflow complete/rejected.
 
-check_sox_sod(requester_id, approver_id)
-    → Raises ValueError if requester == approver (SOX Segregation-of-Duties).
+NOTE: SOX Segregation-of-Duties is enforced by OPA (procurement.rego,
+purchase_request.decide rule) before advance_workflow is ever called.
+The Python-side check has been removed; do not re-add it here.
 """
 
 from __future__ import annotations
@@ -26,21 +27,6 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
-
-
-# ---------------------------------------------------------------------------
-# SOX / SoD guard
-# ---------------------------------------------------------------------------
-
-def check_sox_sod(
-    requester_id: uuid.UUID,
-    approver_id: uuid.UUID,
-    sox_enforced: bool = True,
-) -> None:
-    if sox_enforced and str(requester_id) == str(approver_id):
-        raise ValueError(
-            "SOX Segregation-of-Duties violation: the requester cannot approve their own request."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -351,9 +337,8 @@ def advance_workflow(
         ApprovalPolicy.policy_id == workflow.policy_id
     ).first()
 
-    # SOX guard
-    if policy and policy.sox_sod_enforced:
-        check_sox_sod(request.requester_id, decided_by_id, sox_enforced=True)
+    # SOX SoD is enforced by OPA (purchase_request.decide) before this
+    # function is reached — no duplicate check needed here.
 
     # Record decision
     task.status = decision if decision in ("approved", "rejected", "escalated") else "approved"

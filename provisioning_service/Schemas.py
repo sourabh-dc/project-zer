@@ -324,6 +324,20 @@ class VendorUpdateRequest(BaseModel):
     contact_email: Optional[str] = None
     description: Optional[str] = Field(None, max_length=500)
     status: Optional[str] = None
+    # Integration fields
+    preferred_protocol: Optional[str] = Field(None, description="api | cxml | edi | email")
+    api_endpoint_url: Optional[str] = None
+    cxml_endpoint_url: Optional[str] = None
+    edi_partner_id: Optional[str] = None
+    notification_email: Optional[str] = None
+    webhook_url: Optional[str] = None
+    onboarding_status: Optional[str] = None
+    payment_terms: Optional[str] = None
+    return_policy: Optional[str] = None
+    lead_time_days: Optional[int] = Field(None, ge=0)
+    minimum_order_minor: Optional[int] = Field(None, ge=0)
+    tax_id: Optional[str] = None
+    duns_number: Optional[str] = None
 
 
 class CostCentreUpdateRequest(BaseModel):
@@ -341,6 +355,18 @@ class LoginRequest(BaseModel):
     password: str = Field(description="User password")
 
 
+class FeatureLimitStatus(BaseModel):
+    """Per-feature usage snapshot returned at sign-in."""
+    code: str
+    name: str
+    limit: Optional[int] = None
+    used: int = 0
+    remaining: Optional[int] = None
+    reset_period: str = "none"
+    resets_at: Optional[str] = None
+    exceeded: bool = False
+
+
 class SubscriptionContext(BaseModel):
     """Subscription info included in sign-in response."""
     plan_code: Optional[str] = None
@@ -351,19 +377,55 @@ class SubscriptionContext(BaseModel):
     trial_ends_at: Optional[str] = None
     current_period_end: Optional[str] = None
     features: Optional[List[str]] = None
+    feature_limits: Optional[List[FeatureLimitStatus]] = None
+    any_limit_exceeded: bool = False
+
+
+class TenantContext(BaseModel):
+    """Resolved tenant info returned at sign-in."""
+    tenant_id: str
+    tenant_name: str
+    tenant_type: str
+    default_currency: Optional[str] = None
+    timezone: Optional[str] = None
+    locale: Optional[str] = None
+    industry: Optional[str] = None
+    logo: Optional[str] = None
+    is_active: bool = True
+
+
+class BalanceContext(BaseModel):
+    """Financial balance snapshot for the user's cost centres."""
+    total_budget_minor: int = 0
+    total_committed_minor: int = 0
+    total_spent_minor: int = 0
+    total_available_minor: int = 0
+    currency: Optional[str] = None
+
+
+class RBACContext(BaseModel):
+    """Roles, permissions, and feature flags for the signed-in user."""
+    roles: List[str] = Field(default_factory=list)
+    permissions: List[str] = Field(default_factory=list)
+    feature_flags: List[str] = Field(default_factory=list)
 
 
 class LoginResponse(BaseModel):
-    """Login response — now includes full subscription context."""
+    """Login response — full status check on every sign-in."""
     user_id: str
     tenant_id: str
     email: str
     display_name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     last_login_at: Optional[str] = None
     token: str
     expiring_at: datetime
     refresh_token: Optional[str] = None
     subscription: Optional[SubscriptionContext] = None
+    tenant: Optional[TenantContext] = None
+    balance: Optional[BalanceContext] = None
+    rbac: Optional[RBACContext] = None
 
 
 # ── Mandate schemas ──────────────────────────────────────────────

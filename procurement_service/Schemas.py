@@ -93,3 +93,71 @@ class ReallocateLineIn(BaseModel):
     order_line_id: str
     new_vendor_id: str
     reason: str
+
+
+# =============================================================================
+# VENDOR INTEGRATION SCHEMAS
+# =============================================================================
+
+class VendorIntegrationConfig(BaseModel):
+    """Configure a vendor's integration endpoint and protocol."""
+    preferred_protocol: str = Field(
+        default="email",
+        description="Communication protocol: api | cxml | edi | email",
+    )
+    # API integration
+    api_endpoint_url: Optional[str] = None
+    api_auth_type: Optional[str] = Field(
+        default=None, description="Auth type: bearer | basic | api_key | oauth2 | hmac"
+    )
+    api_auth_header: Optional[str] = None
+    api_auth_token: Optional[str] = None
+    # cXML integration
+    cxml_endpoint_url: Optional[str] = None
+    cxml_from_identity: Optional[str] = None
+    cxml_to_identity: Optional[str] = None
+    cxml_shared_secret: Optional[str] = None
+    # EDI integration
+    edi_partner_id: Optional[str] = None
+    edi_interchange_qualifier: Optional[str] = None
+    edi_protocol: Optional[str] = Field(
+        default=None, description="Transport: as2 | sftp | van"
+    )
+    edi_connection_config: Optional[dict[str, Any]] = None
+    # Notifications
+    notification_email: Optional[str] = None
+    webhook_url: Optional[str] = None
+    webhook_secret: Optional[str] = None
+
+
+class VendorOnboardingUpdate(BaseModel):
+    """Update vendor onboarding metadata."""
+    onboarding_status: Optional[str] = None
+    payment_terms: Optional[str] = None
+    return_policy: Optional[str] = None
+    lead_time_days: Optional[int] = Field(default=None, ge=0)
+    minimum_order_minor: Optional[int] = Field(default=None, ge=0)
+    tax_id: Optional[str] = None
+    duns_number: Optional[str] = None
+    vendor_metadata: Optional[dict[str, Any]] = None
+
+
+class VendorFulfillmentUpdate(BaseModel):
+    """Vendor-facing update on an order / PO status."""
+    status: str = Field(description="acknowledged | shipped | partially_shipped | cancelled")
+    tracking_number: Optional[str] = None
+    estimated_delivery: Optional[str] = None
+    lines: Optional[list[ShipmentLineIn]] = None
+    note: Optional[str] = None
+
+
+class OrderDispatchPayload(BaseModel):
+    """Internal representation of an order dispatched to a vendor via any protocol."""
+    po_id: str
+    po_number: str
+    vendor_id: str
+    tenant_id: str
+    ship_to: dict[str, Any]
+    lines: list[dict[str, Any]]
+    currency: str = "GBP"
+    note: Optional[str] = None

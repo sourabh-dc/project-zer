@@ -2,6 +2,12 @@
 budget_change_request_routes.py
 --------------------------------
 Top-up, bring-forward, and reallocation requests that require approval.
+
+Policy gates
+------------
+- budget_change.bring_forward: OPA checks from-version headroom (from_available < amount → deny).
+- budget_change.top_up / reallocation / decide: basic RBAC via OPA.
+All inline headroom checks have been removed from this file.
 """
 
 import uuid
@@ -19,6 +25,7 @@ from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
+from provisioning_service.core.helpers.resource_loaders import bring_forward_resource
 from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/budget-change-requests", tags=["Budget Change Requests"])
@@ -33,25 +40,20 @@ async def request_bring_forward(
     req: BringForwardRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
-    policy=Depends(require_policy("budget_change.bring_forward")),
+    # OPA: deny if from_available_minor < amount_minor.
+    policy_result: dict = Depends(
+        require_policy("budget_change.bring_forward", resource_loader=bring_forward_resource)
+    ),
 ):
     """
     Request to pull future-period budget into the current period.
-    Routes to cost-centre manager / SLT for approval.
+    OPA validates that the future period has sufficient available headroom.
     """
     tenant_id    = _tid(ctx)
     requester_id = _uid(ctx)
 
     from_v = _get_version_or_404(db, req.from_version_id, tenant_id)
     to_v   = _get_version_or_404(db, req.to_version_id, tenant_id)
-
-    # Validate annual ceiling won't be breached (combined budget across both periods unchanged)
-    available_in_from = from_v.budget_minor - from_v.committed_minor - from_v.spent_minor
-    if available_in_from < req.amount_minor:
-        raise HTTPException(
-            400,
-            f"Future period only has {available_in_from} available; cannot bring forward {req.amount_minor}"
-        )
 
     change_req = BudgetChangeRequest(
         change_req_id=uuid.uuid4(),
@@ -89,7 +91,9 @@ async def request_top_up(
     justification: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
-    policy=Depends(require_policy("budget_change.top_up", resource_from="none")),
+    policy_result: dict = Depends(
+        require_policy("budget_change.top_up", resource_from="none")
+    ),
 ):
     """Request additional budget for a CC period from the central pool."""
     tenant_id    = _tid(ctx)
@@ -130,7 +134,9 @@ async def request_reallocation(
     cost_centre_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.request")),
-    policy=Depends(require_policy("budget_change.reallocation")),
+    policy_result: dict = Depends(
+        require_policy("budget_change.reallocation")
+    ),
 ):
     """Request a transfer of budget from one CC version to another."""
     tenant_id    = _tid(ctx)
@@ -194,13 +200,13 @@ async def decide_change_request(
     req: BudgetChangeDecision,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("budget.manage")),
-    policy=Depends(require_policy("budget_change.decide")),
+    policy_result: dict = Depends(require_policy("budget_change.decide")),
 ):
     """
     Approve or reject a budget change request.
     On approval the underlying budget versions are updated and a ledger entry is written.
     """
-    tenant_id  = _tid(ctx)
+    tenant_id   = _tid(ctx)
     approver_id = _uid(ctx)
 
     try:
@@ -315,18 +321,17 @@ def _outbox(db, tenant_id, event_type, data):
 
 def _change_req_dict(cr):
     return {
-        "change_req_id": str(cr.change_req_id),
-        "request_type": cr.request_type,
-        "cost_centre_id": str(cr.cost_centre_id),
+        "change_req_id":   str(cr.change_req_id),
+        "request_type":    cr.request_type,
+        "cost_centre_id":  str(cr.cost_centre_id),
         "from_version_id": str(cr.from_version_id) if cr.from_version_id else None,
-        "to_version_id": str(cr.to_version_id),
-        "amount_minor": cr.amount_minor,
-        "currency": cr.currency,
-        "justification": cr.justification,
-        "status": cr.status,
-        "approved_by": str(cr.approved_by) if cr.approved_by else None,
-        "approved_at": cr.approved_at.isoformat() if cr.approved_at else None,
+        "to_version_id":   str(cr.to_version_id),
+        "amount_minor":    cr.amount_minor,
+        "currency":        cr.currency,
+        "justification":   cr.justification,
+        "status":          cr.status,
+        "approved_by":     str(cr.approved_by) if cr.approved_by else None,
+        "approved_at":     cr.approved_at.isoformat() if cr.approved_at else None,
         "rejection_reason": cr.rejection_reason,
-        "created_at": cr.created_at.isoformat() if cr.created_at else None,
+        "created_at":      cr.created_at.isoformat() if cr.created_at else None,
     }
-

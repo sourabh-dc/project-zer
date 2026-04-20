@@ -7,19 +7,23 @@ Provides:
   - require_policy(): FastAPI dependency factory usable with Depends()
 
 Usage in endpoints:
-    @router.post("/orders")
-    async def create_order(
-        req: OrderRequest,
-        ctx = Depends(check_user_authorization("orders.create")),          # Gate 1: RBAC
-        policy = Depends(require_policy("order.create", resource_from="body")),  # Gate 2: Policy
-    ):
-        ...
+
+    # Gate 1: RBAC
+    ctx = Depends(check_user_authorization("orders.place"))
+
+    # Gate 2: Policy (body as resource)
+    policy = Depends(require_policy("order.create"))
+
+    # Gate 2: Policy with DB-enriched resource context
+    policy = Depends(require_policy("purchase_request.create",
+                                    resource_loader=purchase_request_create_resource,
+                                    pass_on_require_approval=True))
 """
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
-from fastapi import HTTPException, Request, Security
+from fastapi import Depends, HTTPException, Request, Security
 from starlette import status
 
 from provisioning_service.core.config import SETTINGS
@@ -27,9 +31,9 @@ from provisioning_service.core.user_auth import decode_jwt_with_settings
 from provisioning_service.utils.logger import logger
 
 # ---------------------------------------------------------------------------
-# Settings — policy engine URL
+# Settings
 # ---------------------------------------------------------------------------
-POLICY_ENGINE_URL = getattr(SETTINGS, "POLICY_ENGINE_URL", "http://localhost:8004")
+POLICY_ENGINE_URL      = getattr(SETTINGS, "POLICY_ENGINE_URL", "http://localhost:8004")
 POLICY_EVALUATE_TIMEOUT = float(getattr(SETTINGS, "POLICY_EVALUATE_TIMEOUT", 5.0))
 
 
@@ -80,16 +84,16 @@ class PolicyClient:
             HTTPException 403 on deny / 502 on policy engine error / 504 on timeout.
         """
         payload = {
-            "action": action,
-            "subject": subject,
-            "resource": resource,
-            "tenant_id": tenant_id,
+            "action":         action,
+            "subject":        subject,
+            "resource":       resource,
+            "tenant_id":      tenant_id,
             "correlation_id": correlation_id,
         }
 
         try:
             start = time.perf_counter()
-            resp = await self.client.post("/evaluate", json=payload)
+            resp  = await self.client.post("/evaluate", json=payload)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
 
             if resp.status_code != 200:
@@ -124,6 +128,20 @@ policy_client = PolicyClient()
 
 
 # ---------------------------------------------------------------------------
+# Internal helper — build subject dict from JWT claims
+# ---------------------------------------------------------------------------
+
+def _subject_from_claims(claims: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "user_id":     claims.get("sub"),
+        "tenant_id":   claims.get("tenant_id"),
+        "roles":       claims.get("roles", []),
+        "permissions": claims.get("permissions", []),
+        "email":       claims.get("email"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # FastAPI dependency factory
 # ---------------------------------------------------------------------------
 
@@ -132,46 +150,84 @@ def require_policy(
     *,
     resource_from: str = "body",
     resource_fields: Optional[list] = None,
+    resource_loader: Optional[Callable] = None,
+    pass_on_require_approval: bool = False,
 ):
-    """Dependency factory for Gate 2 (Policy Engine).
+    """
+    Dependency factory for Gate 2 (Policy Engine).
 
-    Usage:
-        policy = Depends(require_policy("order.create"))
-        policy = Depends(require_policy("order.create", resource_fields=["order_total", "quantity"]))
-
-    Args:
-        action: Policy action code, e.g. "order.create", "cost_centre.create"
-        resource_from: Where to extract resource context from.
-                       "body" → uses the parsed request body (req)
-                       "none" → empty resource dict
-        resource_fields: Optional list of field names to extract from the request body.
-                         If None, the entire body dict is sent as resource context.
+    Parameters
+    ----------
+    action : str
+        Policy action code, e.g. ``"purchase_request.create"``.
+    resource_from : str
+        When ``resource_loader`` is None: ``"body"`` extracts from the
+        request JSON body; ``"none"`` sends an empty resource dict.
+    resource_fields : list | None
+        Optional subset of body fields to forward as resource context.
+    resource_loader : callable | None
+        A FastAPI dependency (async or sync function) that returns a
+        ``Dict[str, Any]`` to use as the OPA resource context.  When
+        provided, ``resource_from`` and ``resource_fields`` are ignored.
+        FastAPI's DI cache ensures the loader is executed only once per
+        request even if it appears in multiple ``Depends()``.
+    pass_on_require_approval : bool
+        When ``True``, a ``require_approval`` OPA decision does **not**
+        raise an exception — the result dict is returned so the route
+        body can branch on ``result["decision"]``.  Use this for actions
+        like ``purchase_request.create`` where ``require_approval`` means
+        "proceed, but create an approval workflow".
 
     The dependency:
-        1. Extracts subject from JWT claims (user_id, tenant_id, roles, permissions)
-        2. Extracts resource from request body
-        3. Calls policy engine POST /evaluate
-        4. If decision == "deny" → raises HTTPException 403
-        5. If decision == "require_approval" → raises HTTPException 202 with approval info
-        6. If decision == "allow" → returns the full evaluation result dict
+      1. Extracts subject from JWT claims
+      2. Extracts/computes resource context
+      3. Calls policy engine POST /evaluate
+      4. ``deny``              → raises HTTPException 403
+      5. ``require_approval``  → raises HTTPException 202 **unless**
+                                 ``pass_on_require_approval=True``
+      6. ``allow``             → returns the full evaluation result dict
     """
 
-    async def dependency(
+    # ------------------------------------------------------------------
+    # Branch A: caller supplies a resource_loader dependency
+    # ------------------------------------------------------------------
+    if resource_loader is not None:
+
+        async def _with_loader(
+            request: Request,
+            claims: Dict[str, Any] = Security(decode_jwt_with_settings),
+            loaded_resource: Dict[str, Any] = Depends(resource_loader),
+        ) -> Dict[str, Any]:
+            subject   = _subject_from_claims(claims)
+            tenant_id = claims.get("tenant_id", "")
+
+            resource = dict(loaded_resource)
+            if "tenant_id" not in resource and tenant_id:
+                resource["tenant_id"] = tenant_id
+
+            result = await policy_client.evaluate(
+                action=action,
+                subject=subject,
+                resource=resource,
+                tenant_id=tenant_id,
+                correlation_id=request.headers.get("x-correlation-id"),
+            )
+
+            return _handle_decision(result, pass_on_require_approval)
+
+        return _with_loader
+
+    # ------------------------------------------------------------------
+    # Branch B: extract resource from request body (original behaviour)
+    # ------------------------------------------------------------------
+
+    async def _from_body(
         request: Request,
         claims: Dict[str, Any] = Security(decode_jwt_with_settings),
     ) -> Dict[str, Any]:
-        # Build subject from JWT claims
-        subject = {
-            "user_id": claims.get("sub"),
-            "tenant_id": claims.get("tenant_id"),
-            "roles": claims.get("roles", []),
-            "permissions": claims.get("permissions", []),
-            "email": claims.get("email"),
-        }
-
+        subject   = _subject_from_claims(claims)
         tenant_id = claims.get("tenant_id", "")
 
-        # Build resource from request body
         resource: Dict[str, Any] = {}
         if resource_from == "body":
             try:
@@ -184,11 +240,9 @@ def require_policy(
             except Exception:
                 pass  # no body or not JSON — resource stays empty
 
-        # Ensure tenant_id is in resource for cross-tenant checks
         if "tenant_id" not in resource and tenant_id:
             resource["tenant_id"] = tenant_id
 
-        # Call policy engine
         result = await policy_client.evaluate(
             action=action,
             subject=subject,
@@ -197,31 +251,41 @@ def require_policy(
             correlation_id=request.headers.get("x-correlation-id"),
         )
 
-        decision = result.get("decision", "allow")
+        return _handle_decision(result, pass_on_require_approval)
 
-        if decision == "deny":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "policy_decision": "deny",
-                    "reason": result.get("reason", "Denied by policy"),
-                    "matched_policies": result.get("matched_policies", []),
-                },
-            )
+    return _from_body
 
-        if decision == "require_approval":
-            raise HTTPException(
-                status_code=202,
-                detail={
-                    "policy_decision": "require_approval",
-                    "reason": result.get("reason", "Approval required"),
-                    "matched_policies": result.get("matched_policies", []),
-                    "approval_required": True,
-                },
-            )
 
-        # "allow" — return result so the endpoint can inspect if needed
-        return result
+# ---------------------------------------------------------------------------
+# Shared decision handler
+# ---------------------------------------------------------------------------
 
-    return dependency
+def _handle_decision(result: Dict[str, Any], pass_on_require_approval: bool) -> Dict[str, Any]:
+    decision = result.get("decision", "allow")
 
+    if decision == "deny":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "policy_decision":   "deny",
+                "reason":            result.get("reason", "Denied by policy"),
+                "matched_policies":  result.get("matched_policies", []),
+            },
+        )
+
+    if decision == "require_approval":
+        if pass_on_require_approval:
+            # Caller handles routing — return result so route can branch.
+            return result
+        raise HTTPException(
+            status_code=202,
+            detail={
+                "policy_decision": "require_approval",
+                "reason":          result.get("reason", "Approval required"),
+                "matched_policies": result.get("matched_policies", []),
+                "approval_required": True,
+            },
+        )
+
+    # "allow"
+    return result

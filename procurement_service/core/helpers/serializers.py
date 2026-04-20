@@ -7,6 +7,25 @@ def vendor_dict(vendor):
         "name": vendor.name,
         "primary_email": vendor.primary_email,
         "channel": vendor.channel,
+        "preferred_protocol": getattr(vendor, "preferred_protocol", "email"),
+        "onboarding_status": getattr(vendor, "onboarding_status", "pending"),
+    }
+
+
+def vendor_integration_dict(vendor):
+    """Full vendor record including integration configuration."""
+    return {
+        "vendor_id": vendor.vendor_id,
+        "name": vendor.name,
+        "primary_email": vendor.primary_email,
+        "channel": vendor.channel,
+        "preferred_protocol": getattr(vendor, "preferred_protocol", "email"),
+        "api_endpoint_url": getattr(vendor, "api_endpoint_url", None),
+        "cxml_endpoint_url": getattr(vendor, "cxml_endpoint_url", None),
+        "edi_partner_id": getattr(vendor, "edi_partner_id", None),
+        "notification_email": getattr(vendor, "notification_email", None),
+        "webhook_url": getattr(vendor, "webhook_url", None),
+        "onboarding_status": getattr(vendor, "onboarding_status", "pending"),
     }
 
 

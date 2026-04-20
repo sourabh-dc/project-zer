@@ -21,7 +21,14 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
-from provisioning_service.core.entitlement_helpers import check_feature_limit, record_feature_usage
+from provisioning_service.core.entitlement_helpers import record_feature_usage
+from provisioning_service.core.helpers.resource_loaders import (
+    site_quota_resource,
+    store_quota_resource,
+    user_quota_resource,
+    vendor_quota_resource,
+    cost_centre_quota_resource,
+)
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 from provisioning_service.utils.metrics import req_total, req_duration
@@ -239,13 +246,10 @@ async def create_site(
         req: SiteRequest,
         db: Session = Depends(get_db),
         ctx = Depends(check_user_authorization("sites.manage")),
-        policy=Depends(require_policy("site.create")),
+        policy=Depends(require_policy("site.create", resource_loader=site_quota_resource)),
 ):
     """Create a new site and associate it with a tenant"""
     try:
-        # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "sites.manage", count=1)
-        
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
         if not tenant:
@@ -641,16 +645,13 @@ async def create_store(
         req: StoreRequest,
         db: Session = Depends(get_db),
         ctx = Depends(check_user_authorization("stores.manage")),
-        policy=Depends(require_policy("store.create")),
+        policy=Depends(require_policy("store.create", resource_loader=store_quota_resource)),
 ):
     """Create a new store under a site for the user's tenant"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_store", status="start").inc()
-        
-        # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "stores.manage", count=1)
-        
+
         # Verify site exists and is accessible by the user's tenant
         if req.site_id:
             site_tenant = db.query(SiteTenant).filter(
@@ -935,15 +936,12 @@ async def create_user(
         req: UserRequest,
         db: Session = Depends(get_db),
         ctx = Depends(check_user_authorization("users.manage")),
-        policy=Depends(require_policy("user.create")),
+        policy=Depends(require_policy("user.create", resource_loader=user_quota_resource)),
 ):
     """Create a new user"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_user", status="start").inc()
-        
-        # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "users.manage", count=1)
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -1214,15 +1212,12 @@ async def create_vendor(
         req: VendorRequest,
         db: Session = Depends(get_db),
         ctx = Depends(check_user_authorization("vendors.manage")),
-        policy=Depends(require_policy("vendor.create")),
+        policy=Depends(require_policy("vendor.create", resource_loader=vendor_quota_resource)),
 ):
     """Create a new vendor"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_vendor", status="start").inc()
-        
-        # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "vendors.manage", count=1)
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
@@ -1512,18 +1507,12 @@ async def create_cost_centre(
         req: CostCentreRequest,
         db: Session = Depends(get_db),
         ctx = Depends(check_user_authorization("costcentre.manage")),
-        policy=Depends(require_policy("cost_centre.create")),
+        policy=Depends(require_policy("cost_centre.create", resource_loader=cost_centre_quota_resource)),
 ):
     """Create a new cost centre"""
     start = datetime.now()
     try:
         req_total.labels(operation="create_cost_centre", status="start").inc()
-
-        # Check entitlement limit (feature). If feature not in plan, this will raise.
-        try:
-            check_feature_limit(db, req.tenant_id, "cost_centres", count=1)
-        except HTTPException:
-            raise
 
         # Verify tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()

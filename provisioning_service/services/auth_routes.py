@@ -19,6 +19,10 @@ from provisioning_service.Schemas import (
     ForgotPasswordRequest, PasswordResetConfirmRequest,
     LoginResponse, SubscriptionContext,
 )
+from provisioning_service.core.helpers.signin_context import (
+    build_subscription_context, build_tenant_context,
+    build_balance_context, build_rbac_context,
+)
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
@@ -329,44 +333,52 @@ async def confirm_reset_password(req: PasswordResetConfirmRequest, db: Session =
         logger.error(f"Password reset confirmation failed: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
-'''To modify this endpoint, add more Details about tenant'''
 @router.get("/whoami", status_code=200)
 async def whoami(
-    tenant_id: str,
     db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("subscriptions.tenant.view")),
 ):
     """
-    Return basic identity and subscription details for the authenticated user.
+    Return full status check for the authenticated user: subscription,
+    limits, balance, tenant info, and RBAC context.
     """
-    sub = db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == tenant_id,
-        TenantSubscription.is_active.is_(True)
-    ).first()
+    import uuid as _uuid
+    tenant_id = _uuid.UUID(ctx["tenant_id"]) if isinstance(ctx, dict) else ctx.tenant_id
+    user_id = _uuid.UUID(ctx["user_id"]) if isinstance(ctx, dict) else ctx.user_id
 
-    subscription = None
-    if sub:
-        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == sub.plan_code).first()
-        price = db.query(PlanPrice).filter(PlanPrice.plan_code == sub.plan_code).first()
-        subscription = {
-            "plan_code": sub.plan_code,
-            "plan_name": plan.name if plan else None,
-            "is_active": sub.is_active,
-            "is_trial": sub.is_trial,
-            "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
-            "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
-            "billing_cycle": sub.billing_cycle,
-            "currency": price.currency if price else None,
-            "catalog_price": {
-                "monthly_minor": price.price_monthly_minor if price else None,
-                "quarterly_minor": price.price_quarterly_minor if price else None,
-                "yearly_minor": price.price_yearly_minor if price else None,
-                "currency": price.currency if price else None,
-            } if price else None,
-        }
+    sub_ctx = build_subscription_context(db, tenant_id)
+    tenant_ctx = build_tenant_context(db, tenant_id)
+    balance_ctx = build_balance_context(db, user_id, tenant_id)
+
+    # Pull roles/permissions from JWT claims
+    roles = ctx.get("roles", []) if isinstance(ctx, dict) else []
+    permissions = ctx.get("permissions", []) if isinstance(ctx, dict) else []
+    rbac_ctx = build_rbac_context(
+        roles=roles,
+        permissions=permissions,
+        feature_codes=sub_ctx.features if sub_ctx else [],
+    )
+
+    # Also include pricing info for the plan
+    price = None
+    if sub_ctx and sub_ctx.plan_code:
+        price_row = db.query(PlanPrice).filter(PlanPrice.plan_code == sub_ctx.plan_code).first()
+        if price_row:
+            price = {
+                "monthly_minor": price_row.price_monthly_minor,
+                "quarterly_minor": price_row.price_quarterly_minor,
+                "yearly_minor": price_row.price_yearly_minor,
+                "currency": price_row.currency,
+            }
 
     return {
-        "tenant_id": tenant_id,
-        "subscription": subscription,
+        "user_id": str(user_id),
+        "tenant_id": str(tenant_id),
+        "subscription": sub_ctx.model_dump() if sub_ctx else None,
+        "tenant": tenant_ctx.model_dump() if tenant_ctx else None,
+        "balance": balance_ctx.model_dump() if balance_ctx else None,
+        "rbac": rbac_ctx.model_dump() if rbac_ctx else None,
+        "catalog_price": price,
     }
 
 @router.post("/azure/token-exchange", response_model=LoginResponse, status_code=200)
@@ -484,38 +496,15 @@ async def azure_token_exchange(
     token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
     refresh_token = issue_refresh_token(user, db)
 
-    # Build subscription context
-    sub_ctx = None
-    active_sub = db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == user.tenant_id,
-        TenantSubscription.is_active == True,
-    ).first()
-    if active_sub:
-        plan = db.query(SubscriptionPlan).filter(
-            SubscriptionPlan.code == active_sub.plan_code
-        ).first()
-        feature_rows = db.query(PlanFeature.feature_code).filter(
-            PlanFeature.plan_code == active_sub.plan_code
-        ).all()
-        features = [f[0] for f in feature_rows]
-
-        trial_ends = None
-        if active_sub.is_trial and active_sub.current_period_end:
-            trial_ends = active_sub.current_period_end.isoformat()
-
-        sub_ctx = SubscriptionContext(
-            plan_code=active_sub.plan_code,
-            plan_name=plan.name if plan else active_sub.plan_code,
-            billing_cycle=active_sub.billing_cycle,
-            is_active=active_sub.is_active,
-            is_trial=active_sub.is_trial,
-            trial_ends_at=trial_ends,
-            current_period_end=(
-                active_sub.current_period_end.isoformat()
-                if active_sub.current_period_end else None
-            ),
-            features=features,
-        )
+    # Build full status-check context
+    sub_ctx = build_subscription_context(db, user.tenant_id)
+    tenant_ctx = build_tenant_context(db, user.tenant_id)
+    balance_ctx = build_balance_context(db, user.user_id, user.tenant_id)
+    rbac_ctx = build_rbac_context(
+        roles=all_roles,
+        permissions=perm_list,
+        feature_codes=sub_ctx.features if sub_ctx else [],
+    )
 
     logger.info(f"Azure SSO login for {user.email} (tenant {user.tenant_id})")
 
@@ -535,11 +524,16 @@ async def azure_token_exchange(
         tenant_id=str(user.tenant_id),
         email=user.email,
         display_name=user.display_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
         token=token,
         expiring_at=jwt_expires_at,
         refresh_token=refresh_token,
         subscription=sub_ctx,
+        tenant=tenant_ctx,
+        balance=balance_ctx,
+        rbac=rbac_ctx,
     )
 
 

@@ -5,10 +5,12 @@ from procurement_service.services.ops_routes import router as ops_router
 from procurement_service.services.order_routes import router as order_router
 from procurement_service.services.procurement_routes import router as procurement_router
 from procurement_service.services.vendor_routes import router as vendor_router
+from procurement_service.services.vendor_integration_routes import router as vendor_integration_router
 
 
 ALL_ROUTERS = [
     vendor_router,
+    vendor_integration_router,
     order_router,
     procurement_router,
     fulfilment_router,
