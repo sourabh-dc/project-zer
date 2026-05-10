@@ -63,7 +63,6 @@ services:
       ORDERS_PORT: 8008
       LOG_LEVEL: INFO
       ALLOW_ORIGINS: "*"
-      POLICY_ENGINE_URL: http://localhost:8004
     ports:
       - "8008:8008"
     depends_on:

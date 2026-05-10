@@ -256,11 +256,6 @@ def _handle_vendor_notification(db, event: OutboxEvent):
 
 async def process_notifications():
     """Listen to service bus queue and process vendor notification events."""
-    if environment == "local":
-        logger.info("Notification worker disabled in local environment, using polling fallback")
-        await _poll_fallback()
-        return
-
     from azure.identity.aio import DefaultAzureCredential
     from azure.servicebus.aio import ServiceBusClient
     from orders_service.core.config import SETTINGS

@@ -17,10 +17,6 @@ class MessagingClient:
     async def start(self):
         from orders_service.core.config import SETTINGS
 
-        if environment == "local":
-            logger.info("Service bus disabled in local environment")
-            return
-
         from azure.identity.aio import DefaultAzureCredential
         from azure.servicebus.aio import ServiceBusClient
 

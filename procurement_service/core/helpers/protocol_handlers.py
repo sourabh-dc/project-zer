@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import textwrap
 import uuid
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from typing import Any, Dict, List, Optional
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 import httpx
+
+from procurement_service.core.helpers.cxml_parser import parse_cxml_response
 
 from procurement_service.utils.logger import logger
 
@@ -211,15 +214,34 @@ async def dispatch_cxml(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, content=cxml_doc, headers=headers)
-        # cXML returns 200 with status in body; check for "200" in response
-        success = resp.status_code == 200 and "200" in resp.text[:500]
+
+        response_body = resp.text[:2000]
+        status_code = None
+        status_text = None
+        if resp.text:
+            parsed = parse_cxml_response(resp.text)
+            if parsed.success and parsed.status_code:
+                status_code = parsed.status_code
+                status_text = parsed.status_text
+                response_body = f"cXML Response {status_code} {status_text or ''}".strip()
+
+        if resp.status_code != 200:
+            success = False
+        elif status_code is None:
+            success = "200" in resp.text[:500]
+        else:
+            try:
+                success = int(status_code) < 300
+            except ValueError:
+                success = status_code.startswith("2")
+
         return DispatchResult(
             success=success,
             protocol="cxml",
             vendor_id=vendor.vendor_id,
             po_id=payload.get("po_id", ""),
             response_status=resp.status_code,
-            response_body=resp.text[:2000],
+            response_body=response_body,
         )
     except Exception as exc:
         logger.error(f"cXML dispatch to {url} failed: {exc}")
@@ -317,8 +339,7 @@ async def dispatch_edi(
     """
     Generate an EDI 850 document and transmit it.
 
-    Currently supports HTTP POST for EDI-over-API gateways.
-    AS2 and SFTP would be added as transport plugins.
+    Supports EDI-over-API/VAN, AS2 (HTTP), and SFTP drop transports.
     """
     try:
         edi_doc = build_edi_850(vendor, payload)
@@ -363,8 +384,70 @@ async def dispatch_edi(
                 po_id=payload.get("po_id", ""), error=str(exc),
             )
 
-    # SFTP / AS2 — stub for future implementation
-    logger.warning(f"EDI protocol '{edi_protocol}' not yet implemented; document generated but not transmitted")
+    if edi_protocol == "as2":
+        url = edi_config.get("url") or edi_config.get("endpoint")
+        if not url:
+            return DispatchResult(
+                success=False, protocol="edi", vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""),
+                error="No AS2 endpoint URL in edi_connection_config",
+            )
+
+        headers = {
+            "Content-Type": "application/edi-x12",
+            "AS2-From": edi_config.get("as2_from", "ZEROQUE"),
+            "AS2-To": edi_config.get("as2_to", getattr(vendor, "edi_partner_id", "PARTNER") or "PARTNER"),
+            "Subject": edi_config.get("subject", "EDI 850 Purchase Order"),
+            "Message-ID": f"<{uuid.uuid4()}@zeroque.local>",
+        }
+        if edi_config.get("auth_header") and edi_config.get("auth_token"):
+            headers[edi_config["auth_header"]] = edi_config["auth_token"]
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, content=edi_doc, headers=headers)
+            return DispatchResult(
+                success=200 <= resp.status_code < 300,
+                protocol="edi",
+                vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""),
+                response_status=resp.status_code,
+                response_body=resp.text[:2000],
+            )
+        except Exception as exc:
+            logger.error(f"EDI AS2 dispatch failed: {exc}")
+            return DispatchResult(
+                success=False, protocol="edi", vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""), error=str(exc),
+            )
+
+    if edi_protocol == "sftp":
+        outbound_dir = edi_config.get("outbound_dir") or edi_config.get("drop_dir")
+        if not outbound_dir:
+            return DispatchResult(
+                success=False, protocol="edi", vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""),
+                error="No outbound_dir configured for SFTP transport",
+            )
+        try:
+            os.makedirs(outbound_dir, exist_ok=True)
+            filename = f"edi_850_{payload.get('po_number', payload.get('po_id', 'po'))}_{uuid.uuid4().hex}.edi"
+            file_path = os.path.join(outbound_dir, filename)
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write(edi_doc)
+            return DispatchResult(
+                success=True, protocol="edi", vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""),
+                response_body=f"EDI 850 dropped to {file_path}",
+            )
+        except Exception as exc:
+            logger.error(f"EDI SFTP drop failed: {exc}")
+            return DispatchResult(
+                success=False, protocol="edi", vendor_id=vendor.vendor_id,
+                po_id=payload.get("po_id", ""), error=str(exc),
+            )
+
+    logger.warning(f"EDI protocol '{edi_protocol}' not implemented; document generated but not transmitted")
     return DispatchResult(
         success=True, protocol="edi", vendor_id=vendor.vendor_id,
         po_id=payload.get("po_id", ""),

@@ -98,24 +98,17 @@ deny_cost_centre_limit  if { input.action == "cost_centre.create";  deny_quota_e
 # ──────────────────────────────────────────────────────────────────
 
 decision := "deny" if deny_cross_tenant
-decision := "deny" if deny_no_subscription
-decision := "deny" if deny_feature_not_in_plan
-decision := "deny" if deny_quota_exceeded
-
-decision := "allow" if {
-    allow
-    not deny_cross_tenant
-    not deny_no_subscription
-    not deny_feature_not_in_plan
-    not deny_quota_exceeded
-}
+else := "deny" if deny_no_subscription
+else := "deny" if deny_feature_not_in_plan
+else := "deny" if deny_quota_exceeded
+else := "allow" if allow
 
 # ──────────────────────────────────────────────────────────────────
 # Reason strings
 # ──────────────────────────────────────────────────────────────────
 
 reason := "Cross-tenant access is forbidden"           if deny_cross_tenant
-reason := "Active subscription required"               if deny_no_subscription
-reason := "Feature not available in your current plan" if deny_feature_not_in_plan
-reason := "Plan quota reached for this resource type"  if deny_quota_exceeded
-reason := "Allowed"                                    if allow
+else := "Active subscription required"               if deny_no_subscription
+else := "Feature not available in your current plan" if deny_feature_not_in_plan
+else := "Plan quota reached for this resource type"  if deny_quota_exceeded
+else := "Allowed"                                    if allow

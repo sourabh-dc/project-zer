@@ -18,7 +18,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-_DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/zeroque")
+_DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/zeroque_dev")
 
 _engine = create_engine(
     _DB_URL,

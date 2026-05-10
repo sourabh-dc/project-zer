@@ -14,7 +14,7 @@ from provisioning_service.Models import (
     Mandate, TenantSubscription, SubscriptionPlan, PlanFeature, PlanPrice,
 )
 from provisioning_service.Schemas import (
-    TenantRequest, LoginRequest, LoginResponse,
+    LoginRequest, LoginResponse,
     MandateCreateRequest, MandateResponse,
     MandateActivateRequest, MandateActivateResponse,
     SubscriptionContext,
@@ -209,7 +209,7 @@ async def validate_otp(
 # MANDATE-FIRST ONBOARDING (New Flow)
 # =====================================================================
 
-@router.post("/mandate", response_model=MandateResponse, status_code=201)
+@router.post("/register", response_model=MandateResponse, status_code=201)
 async def create_mandate(
     req: MandateCreateRequest,
     db: Session = Depends(get_db),
@@ -548,70 +548,6 @@ async def activate_mandate(
         db.rollback()
         logger.error(f"Mandate activation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to activate mandate")
-
-
-# =====================================================================
-# LEGACY SIGNUP (kept for backwards compatibility)
-# =====================================================================
-
-@router.post("/tenant-signup", status_code=201)
-async def create_tenant(
-        req: TenantRequest,
-        db: Session = Depends(get_db)
-):
-    """Create a new tenant (legacy — prefer /onboarding/mandate + /onboarding/activate)"""
-    try:
-        # Check if tenant exists
-        existing = db.query(Tenant).filter(Tenant.email == req.email).first()
-        if existing:
-            raise HTTPException(status_code=409, detail="Tenant email already exists")
-
-        tenant = Tenant(
-            tenant_id=uuid.uuid4(),
-            tenant_name=getattr(req, "tenant_name", getattr(req, "name", None)),
-            tenant_type=req.type,
-            registration_number=req.registration_number,
-            email=req.email,
-            billing_email=getattr(req, "billing_email", None),
-            billing_address=getattr(req, "billing_address", None),
-            primary_domain=getattr(req, "primary_domain", None),
-            phone=req.phone,
-            default_currency=getattr(req, "default_currency", None),
-            timezone=getattr(req, "timezone", None),
-            locale=getattr(req, "locale", "en_GB"),
-            owner_user_id=getattr(req, "owner_user_id", None),
-            industry=getattr(req, "industry", None),
-            tech_contact_email=getattr(req, "tech_contact_email", None),
-            support_contact_email=getattr(req, "support_contact_email", None),
-            # store raw logo bytes (schema/DB must have a matching binary column)
-            logo=getattr(req, "logo", None),
-            active=True if getattr(req, "active", None) is None else req.active,
-        )
-
-        db.add(tenant)
-        db.commit()
-        db.refresh(tenant)
-
-        # Create outbox event record so worker can process and update status
-        event_data = req.dict()
-        event_data["tenant_id"] = str(tenant.tenant_id)
-
-        outbox = create_outbox_event(db, tenant.tenant_id, "tenant.signup", event_data, status="pending")
-        db.commit()
-
-        try:
-            from provisioning_service.core.sb_client import messaging_service
-            await messaging_service.send_outbox_message(str(outbox.id))
-        except Exception as e:
-            # The outbox worker will pick this up later if the notify fails.
-            logger.warning(f"Failed to notify Service Bus: {e}")
-
-        return {"tenant_id": str(tenant.tenant_id), "status": "Signup initiated"}
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_tenant", status="error").inc()
-        logger.error(f"Tenant creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/tenant-signin", response_model=LoginResponse, status_code=200)

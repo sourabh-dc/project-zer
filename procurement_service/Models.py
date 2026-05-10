@@ -22,8 +22,16 @@ class Vendor:
     # Integration protocol: api | cxml | edi | email
     preferred_protocol: str = "email"
     api_endpoint_url: Optional[str] = None
+    api_auth_type: Optional[str] = None
+    api_auth_credentials: Optional[dict[str, Any]] = None
     cxml_endpoint_url: Optional[str] = None
+    cxml_from_identity: Optional[str] = None
+    cxml_to_identity: Optional[str] = None
+    cxml_shared_secret: Optional[str] = None
     edi_partner_id: Optional[str] = None
+    edi_interchange_qualifier: Optional[str] = None
+    edi_protocol: Optional[str] = None
+    edi_connection_config: Optional[dict[str, Any]] = None
     notification_email: Optional[str] = None
     webhook_url: Optional[str] = None
     onboarding_status: str = "pending"

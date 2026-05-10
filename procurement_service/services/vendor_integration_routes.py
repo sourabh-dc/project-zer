@@ -12,6 +12,9 @@ Endpoints:
   POST /vendors/{vendor_id}/webhook/test    — Test webhook connectivity
 """
 
+import hashlib
+import hmac
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
@@ -37,6 +40,116 @@ from procurement_service.utils.logger import logger
 
 
 router = APIRouter(tags=["vendor-integration"])
+
+
+def _find_vendor_po(container, *, vendor_id: str, tenant_id: str, po_number: Optional[str] = None) -> Optional[object]:
+    if not po_number:
+        return None
+    for po in container.platform.store.purchase_orders.values():
+        if po.vendor_id == vendor_id and po.tenant_id == tenant_id and po.po_number == po_number:
+            return po
+    return None
+
+
+def _match_po_line_id(container, po, *, line_number: Optional[str] = None, sku: Optional[str] = None) -> Optional[str]:
+    if line_number and str(line_number).isdigit():
+        index = int(line_number)
+        if 1 <= index <= len(po.line_ids):
+            return po.line_ids[index - 1]
+
+    if sku:
+        for line_id in po.line_ids:
+            line = container.platform.store.po_lines[line_id]
+            if line.sku == sku:
+                return line_id
+    return None
+
+
+def _to_minor(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(Decimal(str(value)) * 100)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _verify_webhook_signature(secret: Optional[str], body: bytes, signature: Optional[str]) -> bool:
+    if not secret:
+        return True
+    if not signature:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+def _apply_cxml_result(container, *, vendor_id: str, tenant_id: str, result) -> None:
+    if result.document_type == "ConfirmationRequest":
+        po_number = result.data.get("order_id")
+        po = _find_vendor_po(container, vendor_id=vendor_id, tenant_id=tenant_id, po_number=po_number)
+        if not po:
+            raise HTTPException(404, "Purchase order not found for confirmation")
+
+        decisions = []
+        errors = []
+        for line in result.data.get("lines", []):
+            po_line_id = _match_po_line_id(container, po, line_number=line.get("line_number"))
+            if not po_line_id:
+                errors.append(f"No PO line match for line_number={line.get('line_number')}")
+                continue
+
+            status_raw = (line.get("status") or "accept").lower()
+            if status_raw in ("accept", "accepted"):
+                status = "accepted"
+            elif status_raw in ("reject", "rejected"):
+                status = "rejected"
+            else:
+                status = "accepted_with_changes"
+
+            qty = line.get("quantity_confirmed") or line.get("quantity") or 0
+            decisions.append(
+                {
+                    "po_line_id": po_line_id,
+                    "accepted_quantity": int(qty),
+                    "proposed_unit_price_minor": _to_minor(line.get("unit_price")),
+                    "status": status,
+                    "reason": "cxml_confirmation",
+                }
+            )
+
+        if errors:
+            raise HTTPException(422, {"errors": errors, "document_type": result.document_type})
+
+        container.platform.vendor_acknowledge(po.po_id, decisions)
+
+    elif result.document_type == "ShipNoticeRequest":
+        po_number = result.data.get("order_id")
+        po = _find_vendor_po(container, vendor_id=vendor_id, tenant_id=tenant_id, po_number=po_number)
+        if not po:
+            raise HTTPException(404, "Purchase order not found for ship notice")
+
+        tracking_number = result.data.get("tracking_number") or result.data.get("shipment_id")
+        if not tracking_number:
+            raise HTTPException(422, "Ship notice missing tracking number")
+
+        shipment_lines = []
+        errors = []
+        for line in result.data.get("lines", []):
+            po_line_id = _match_po_line_id(container, po, line_number=line.get("line_number"), sku=line.get("sku"))
+            if not po_line_id:
+                errors.append(f"No PO line match for line_number={line.get('line_number')}")
+                continue
+            shipment_lines.append(
+                {
+                    "po_line_id": po_line_id,
+                    "quantity": int(line.get("quantity") or 0),
+                }
+            )
+
+        if errors:
+            raise HTTPException(422, {"errors": errors, "document_type": result.document_type})
+
+        container.platform.create_shipment(po.po_id, tracking_number, shipment_lines)
 
 
 # =============================================================================
@@ -189,6 +302,8 @@ async def dispatch_purchase_order(
             f"po.dispatched.{result.protocol}",
             payload.po_id,
         )
+        if result.protocol == "cxml" and result.response_body:
+            container.platform.store.emit("po.cxml.response", payload.po_id)
 
     if not result.success:
         logger.warning(f"PO dispatch failed for vendor {vendor_id}: {result.error}")
@@ -370,7 +485,58 @@ async def receive_vendor_cxml(
         logger.warning(f"cXML parse errors from vendor {vendor_id}: {result.errors}")
         raise HTTPException(422, {"errors": result.errors, "document_type": result.document_type})
 
+    _apply_cxml_result(container, vendor_id=vendor_id, tenant_id=ctx.tenant_id, result=result)
+
     logger.info(f"Received cXML {result.document_type} from vendor {vendor_id}")
+    return {
+        "document_type": result.document_type,
+        "payload_id": result.payload_id,
+        "data": result.data,
+    }
+
+
+# =============================================================================
+# INBOUND: cXML vendor webhook
+# =============================================================================
+
+@router.post("/vendors/{vendor_id}/webhook/cxml")
+async def receive_vendor_cxml_webhook(
+    vendor_id: str,
+    request: Request,
+    x_webhook_signature: Optional[str] = Header(default=None),
+):
+    """
+    Vendor callback endpoint for cXML payloads.
+
+    If webhook_secret is configured for the vendor, requests must include
+    an X-Webhook-Signature header with an HMAC-SHA256 hex digest of the body.
+    """
+    body = await request.body()
+    xml_str = body.decode("utf-8")
+
+    container = get_container()
+    vendor = container.platform.store.vendors.get(vendor_id)
+    if not vendor:
+        raise HTTPException(404, "Vendor not found")
+
+    if not _verify_webhook_signature(getattr(vendor, "webhook_secret", None), body, x_webhook_signature):
+        raise HTTPException(401, "Invalid webhook signature")
+
+    result = parse_cxml(xml_str)
+
+    with container.lock:
+        container.platform.store.emit(
+            f"vendor.cxml.{result.document_type.lower()}",
+            vendor_id,
+        )
+
+    if not result.success:
+        logger.warning(f"cXML parse errors from vendor {vendor_id}: {result.errors}")
+        raise HTTPException(422, {"errors": result.errors, "document_type": result.document_type})
+
+    _apply_cxml_result(container, vendor_id=vendor_id, tenant_id=vendor.tenant_id, result=result)
+
+    logger.info(f"Received cXML webhook {result.document_type} from vendor {vendor_id}")
     return {
         "document_type": result.document_type,
         "payload_id": result.payload_id,
@@ -414,6 +580,110 @@ async def receive_vendor_edi(
     if not result.success:
         logger.warning(f"EDI parse errors from vendor {vendor_id}: {result.errors}")
         raise HTTPException(422, {"errors": result.errors, "transaction_type": result.transaction_type})
+
+    if result.transaction_type == "855":
+        po_number = result.data.get("po_number")
+        po = _find_vendor_po(container, vendor_id=vendor_id, tenant_id=ctx.tenant_id, po_number=po_number)
+        if not po:
+            raise HTTPException(404, "Purchase order not found for 855")
+
+        decisions = []
+        errors = []
+        for line in result.data.get("lines", []):
+            po_line_id = _match_po_line_id(
+                container,
+                po,
+                line_number=line.get("line_number"),
+                sku=line.get("product_id"),
+            )
+            if not po_line_id:
+                errors.append(f"No PO line match for line_number={line.get('line_number')}")
+                continue
+
+            ack_status = (line.get("ack_status") or "IA").upper()
+            if ack_status == "IA":
+                status = "accepted"
+            elif ack_status == "IR":
+                status = "rejected"
+            else:
+                status = "accepted_with_changes"
+
+            qty = line.get("quantity_accepted") or line.get("quantity_ordered") or 0
+            decisions.append(
+                {
+                    "po_line_id": po_line_id,
+                    "accepted_quantity": int(qty),
+                    "proposed_unit_price_minor": _to_minor(line.get("unit_price")),
+                    "status": status,
+                    "reason": "edi_855",
+                }
+            )
+
+        if errors:
+            raise HTTPException(422, {"errors": errors, "transaction_type": result.transaction_type})
+
+        container.platform.vendor_acknowledge(po.po_id, decisions)
+
+    elif result.transaction_type == "856":
+        po_number = result.data.get("po_number")
+        po = _find_vendor_po(container, vendor_id=vendor_id, tenant_id=ctx.tenant_id, po_number=po_number)
+        if not po:
+            raise HTTPException(404, "Purchase order not found for 856")
+
+        tracking_number = result.data.get("tracking_number")
+        if not tracking_number:
+            raise HTTPException(422, "ASN missing tracking number")
+
+        shipment_lines = []
+        errors = []
+        for line in result.data.get("shipped_items", []):
+            po_line_id = _match_po_line_id(container, po, line_number=line.get("line_number"))
+            if not po_line_id:
+                errors.append(f"No PO line match for line_number={line.get('line_number')}")
+                continue
+            shipment_lines.append(
+                {
+                    "po_line_id": po_line_id,
+                    "quantity": int(line.get("quantity_shipped") or 0),
+                }
+            )
+
+        if errors:
+            raise HTTPException(422, {"errors": errors, "transaction_type": result.transaction_type})
+
+        container.platform.create_shipment(po.po_id, tracking_number, shipment_lines)
+
+    elif result.transaction_type == "810":
+        po_number = result.data.get("po_number")
+        po = _find_vendor_po(container, vendor_id=vendor_id, tenant_id=ctx.tenant_id, po_number=po_number)
+        if not po:
+            raise HTTPException(404, "Purchase order not found for 810")
+
+        invoice_number = result.data.get("invoice_number") or result.control_number or "EDI-810"
+        invoice_lines = []
+        errors = []
+        for line in result.data.get("lines", []):
+            po_line_id = _match_po_line_id(container, po, line_number=line.get("line_number"), sku=line.get("product_id"))
+            if not po_line_id:
+                errors.append(f"No PO line match for line_number={line.get('line_number')}")
+                continue
+            qty = int(line.get("quantity_invoiced") or 0)
+            unit_price_minor = _to_minor(line.get("unit_price"))
+            if unit_price_minor is None:
+                errors.append(f"Invalid unit_price for line_number={line.get('line_number')}")
+                continue
+            invoice_lines.append(
+                {
+                    "po_line_id": po_line_id,
+                    "billed_quantity": qty,
+                    "billed_unit_price_minor": unit_price_minor,
+                }
+            )
+
+        if errors:
+            raise HTTPException(422, {"errors": errors, "transaction_type": result.transaction_type})
+
+        container.platform.create_invoice(ctx.tenant_id, po.po_id, invoice_number, invoice_lines)
 
     logger.info(f"Received EDI {result.transaction_type} from vendor {vendor_id}")
     return {

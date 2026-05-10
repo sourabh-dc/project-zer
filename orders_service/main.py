@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from orders_service.Models import Base
 from orders_service.core.db_config import engine
-from orders_service.core.policy_client import policy_client
 from orders_service.core.sb_client import messaging_service
 from orders_service.services.orders_routes import router as orders_router
 from orders_service.services.vendor_routes import router as vendor_router
@@ -47,10 +46,6 @@ async def lifespan(app: FastAPI):
         await messaging_service.close()
     except Exception as e:
         logger.warning(f"Service bus client close failed: {e}")
-    try:
-        await policy_client.close()
-    except Exception as e:
-        logger.warning(f"Policy client close failed: {e}")
 
 
 

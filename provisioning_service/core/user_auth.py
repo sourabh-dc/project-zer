@@ -216,10 +216,11 @@ async def decode_jwt_with_settings(creds: HTTPAuthorizationCredentials = Securit
 def check_user_authorization(permission: str):
     async def dependency(claims: Dict[str, Any] = Security(decode_jwt_with_settings)):
         try:
+            claims = dict(claims)
             claim_perms = claims.get("permissions")
             if isinstance(claim_perms, list):
                 if "*" in claim_perms or permission in claim_perms:
-                    claims['user_id'] = claims.pop('sub')
+                    claims["user_id"] = claims.get("sub")
                     return claims
 
             roles = claims.get("roles") or claims.get("role") or []
@@ -246,7 +247,7 @@ def check_user_authorization(permission: str):
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Authorization lookup failed")
 
             if match_count and match_count > 0:
-                claims['user_id'] = claims.pop('sub')
+                claims["user_id"] = claims.get("sub")
                 return claims
 
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")

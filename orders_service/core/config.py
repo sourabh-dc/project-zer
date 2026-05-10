@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 
 load_dotenv()
 
-environment = os.getenv("ENVIRONMENT").lower()
+environment = os.getenv("ENVIRONMENT", "local").lower()
 
 if environment != "local":
     from azure.identity import DefaultAzureCredential

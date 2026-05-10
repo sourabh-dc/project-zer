@@ -1,13 +1,55 @@
 # ZeroQue API — Endpoint Testing Guide
 
-> **Base URL**: `http://localhost:8001`  
+> **Base URL**: `http://localhost:8000`  
 > **Auth**: All endpoints except onboarding/login require `Authorization: Bearer <jwt_token>`  
 > **Content-Type**: `application/json` (unless noted)
 
 ---
 
+## 0. Service Setup (Provisioning)
+
+Start the provisioning API and its dependencies before running the tests below.
+
+### 0.1 Start Dependencies
+
+- **PostgreSQL (required)**: used by all endpoints and policy evaluation.
+- **OPA (required unless bypassed)**: policy engine calls OPA at `OPA_URL` (default `http://localhost:8181`).
+- **Redis (optional)**: cache only; service runs without it.
+- **Service Bus (optional)**: required only if you run the outbox worker.
+
+Optional integrations (only if you test those routes): Stripe, Azure Email, Event Grid.
+
+To bypass policy checks for local testing:
+
+```
+POLICY_ENGINE_BYPASS=true
+```
+
+### 0.2 Start the API (Uvicorn)
+
+```
+uvicorn provisioning_service.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Health check:
+
+```
+GET /health
+```
+
+### 0.3 Optional: Start the Outbox Worker
+
+Run this only if you want async provisioning tasks (tenant/user/product workers):
+
+```
+python provisioning_service/core/helpers/outbox_worker.py
+```
+
+---
+
 ## Table of Contents
 
+0. [Service Setup (Provisioning)](#0-service-setup-provisioning)
 1. [Platform Setup (Internal)](#1-platform-setup-internal)
 2. [Tenant Onboarding](#2-tenant-onboarding)
 3. [Authentication](#3-authentication)
@@ -34,6 +76,7 @@
 24. [Subscriptions](#24-subscriptions)
 25. [Payments (Stripe)](#25-payments-stripe)
 26. [Plans (Public)](#26-plans-public)
+27. [Health](#27-health)
 
 ---
 
@@ -49,7 +92,6 @@ POST /internal/permissions
 ```json
 {
   "code": "tenants.create",
-  "name": "Create Tenants",
   "description": "Permission to create tenants"
 }
 ```
@@ -60,7 +102,32 @@ POST /internal/permissions
 GET /internal/permissions
 ```
 
-### 1.3 Create Global Role
+### 1.3 Get Permission by Code
+
+```
+GET /internal/permissions/tenants.create
+```
+
+### 1.4 Update Permission
+
+```
+PUT /internal/permissions/tenants.create
+```
+```json
+{
+  "code": "tenants.create",
+  "description": "Updated: Permission to create tenants"
+}
+```
+
+### 1.5 Delete Permission
+
+```
+DELETE /internal/permissions/tenants.create
+```
+_Returns 204. Fails if the permission is assigned to any role._
+
+### 1.6 Create Global Role
 
 ```
 POST /internal/roles
@@ -72,19 +139,76 @@ POST /internal/roles
 }
 ```
 
-### 1.4 Map Permission to Role
+### 1.7 List Roles
 
 ```
-POST /internal/roles/map-permission
+GET /internal/roles
+```
+
+### 1.8 Get Role by Code
+
+```
+GET /internal/roles/tenant_admin
+```
+
+### 1.9 Update Role
+
+```
+PUT /internal/roles/tenant_admin
 ```
 ```json
 {
-  "role_code": "tenant_admin",
-  "permission_code": "tenants.create"
+  "code": "tenant_admin",
+  "description": "Full admin access — updated"
 }
 ```
 
-### 1.5 Create Subscription Plan
+### 1.10 Delete Role
+
+```
+DELETE /internal/roles/tenant_admin
+```
+_Returns 204. Fails if the role has assigned permissions or users._
+
+### 1.11 Add Permission to Role
+
+```
+POST /internal/roles/tenant_admin/permissions
+```
+```json
+{
+  "code": "tenants.create"
+}
+```
+
+### 1.12 Get Role Permissions
+
+```
+GET /internal/roles/tenant_admin/permissions
+```
+
+### 1.13 Remove Permission from Role
+
+```
+DELETE /internal/roles/tenant_admin/permissions/tenants.create
+```
+_Returns 204._
+
+### 1.14 Map Permission to Role (Legacy)
+
+```
+POST /internal/roles/map-permission?role_code=tenant_admin&permission_code=tenants.create
+```
+_Legacy endpoint — prefer `POST /internal/roles/{role_code}/permissions` instead._
+
+### 1.15 Remove Permission from Role (Legacy)
+
+```
+DELETE /internal/roles/delete-permission?role_code=tenant_admin&permission_code=tenants.create
+```
+_Legacy endpoint — prefer `DELETE /internal/roles/{role_code}/permissions/{permission_code}` instead._
+
+### 1.16 Create Subscription Plan
 
 ```
 POST /internal/plans
@@ -101,7 +225,43 @@ POST /internal/plans
 }
 ```
 
-### 1.6 Create Feature
+### 1.17 List Plans
+
+```
+GET /internal/plans
+```
+
+### 1.18 Get Plan by Code
+
+```
+GET /internal/plans/core_01
+```
+
+### 1.19 Update Plan
+
+```
+PUT /internal/plans/core_01
+```
+```json
+{
+  "code": "core_01",
+  "name": "Core Plan — Updated",
+  "description": "Updated basic plan for small businesses",
+  "price_monthly_minor": 10900,
+  "currency": "GBP",
+  "quarterly_discount_pct": 5.0,
+  "yearly_discount_pct": 12.0
+}
+```
+
+### 1.20 Delete Plan (Deactivate)
+
+```
+DELETE /internal/plans/core_01
+```
+_Returns 204. Soft-deletes (deactivates) the plan._
+
+### 1.21 Create Feature
 
 ```
 POST /internal/features
@@ -118,36 +278,70 @@ POST /internal/features
 }
 ```
 
-### 1.7 Map Feature to Plan
+### 1.22 List Features
+
+```
+GET /internal/features
+```
+_Optional query params: `active=true`, `cluster=catalog`_
+
+### 1.23 Get Feature by Code
+
+```
+GET /internal/features/products
+```
+
+### 1.24 Update Feature
+
+```
+PUT /internal/features/products
+```
+```json
+{
+  "code": "products",
+  "name": "Products — Updated",
+  "description": "Updated product count feature",
+  "cluster": "catalog",
+  "usage_type": "count",
+  "max_unit": "products",
+  "reset_period": "monthly"
+}
+```
+
+### 1.25 Delete Feature (Deactivate)
+
+```
+DELETE /internal/features/products
+```
+_Returns 204. Soft-deletes (deactivates) the feature._
+
+### 1.26 Map Feature to Plan
 
 ```
 PUT /internal/plans/core_01/features/products
 ```
-_No body required — just maps the feature to the plan._
+_No body required — just maps the feature to the plan. Optional body can override per-plan limits._
 
-### 1.8 List Plan Features
+### 1.27 List Plan Features
 
 ```
 GET /internal/plans/core_01/features
 ```
 
-### 1.9 List Roles
+### 1.28 Remove Feature from Plan
 
 ```
-GET /internal/roles
+DELETE /internal/plans/core_01/features/products
 ```
-
-### 1.10 Get Role Permissions
-
-```
-GET /internal/roles/tenant_admin/permissions
-```
+_Returns 204._
 
 ---
 
 ## 2. Tenant Onboarding
 
 > No authentication required for these endpoints.
+>
+> **Onboarding flow**: OTP (optional email verification) → `POST /onboarding/register` → collect card on frontend via Stripe.js → `POST /onboarding/activate`
 
 ### 2.1 Generate OTP
 
@@ -173,30 +367,34 @@ POST /onboarding/otp/validate
 }
 ```
 
-### 2.3 Tenant Signup
+### 2.3 Register (Step 1 — create billing mandate)
 
 ```
-POST /onboarding/tenant-signup
+POST /onboarding/register
 ```
+
+> Creates a Stripe Customer and a SetupIntent for off-session recurring charges ("Spotify model"). **No tenant or user rows are written yet.** The 7-day trial is mandatory and non-bypassable.
+
 ```json
 {
-  "tenant_name": "Acme Corporation",
-  "type": "customer",
-  "registration_number": "REG-2026-001",
   "email": "contact@acmecorp.com",
-  "billing_email": "billing@acmecorp.com",
+  "tenant_name": "Acme Corporation",
+  "tenant_type": "retailer",
   "admin_email": "admin@acmecorp.com",
   "admin_firstname": "John",
   "admin_lastname": "Smith",
   "password": "SecurePass1",
+  "plan_code": "core_01",
+  "billing_cycle": "monthly",
   "phone": "+447700900001",
-  "active": true,
   "default_currency": "GBP",
   "timezone": "Europe/London",
   "locale": "en_GB",
+  "industry": "Retail",
+  "registration_number": "REG-2026-001",
   "billing_address": "123 Business Road, London, EC1A 1BB",
   "primary_domain": "acmecorp.com",
-  "industry": "Retail",
+  "billing_email": "billing@acmecorp.com",
   "tech_contact_email": "tech@acmecorp.com",
   "support_contact_email": "support@acmecorp.com"
 }
@@ -205,15 +403,51 @@ POST /onboarding/tenant-signup
 **Response:**
 ```json
 {
-  "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
-  "status": "Signup initiated"
+  "mandate_id": "mnd_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "status": "pending",
+  "stripe_customer_id": "cus_ABC123",
+  "client_secret": "seti_ABC123_secret_XYZ"
 }
 ```
 
-> 📌 **Save** `tenant_id` — you will need it for all subsequent requests.  
-> The async worker creates the admin user, assigns `tenant_admin` role, and sends a welcome email.
+> 📌 **Save** `mandate_id` — needed for Step 2.  
+> Use `client_secret` with Stripe.js `confirmCardSetup()` on the frontend to collect the card.
 
-### 2.4 Tenant Sign-In (Login)
+### 2.4 Activate (Step 2 — confirm card, create tenant)
+
+```
+POST /onboarding/activate
+```
+
+> Step 2: called after the frontend has confirmed the Stripe SetupIntent via `confirmCardSetup()`. Creates the Tenant, User, and Subscription in the database and starts the 7-day trial.
+
+```json
+{
+  "mandate_id": "mnd_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+**Response:**
+```json
+{
+  "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
+  "mandate_id": "mnd_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "status": "active",
+  "subscription": {
+    "plan_code": "core_01",
+    "plan_name": "Core Plan",
+    "billing_cycle": "monthly",
+    "is_active": true,
+    "is_trial": true,
+    "trial_ends_at": "2026-04-27T00:00:00Z",
+    "current_period_end": "2026-05-20T00:00:00Z"
+  }
+}
+```
+
+> 📌 **Save** `tenant_id` — you will need it for all subsequent requests.
+
+### 2.5 Tenant Sign-In (Login)
 
 ```
 POST /onboarding/tenant-signin
@@ -232,10 +466,45 @@ POST /onboarding/tenant-signin
   "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
   "email": "admin@acmecorp.com",
   "display_name": "John Smith",
-  "last_login_at": "2026-03-15T10:00:00+00:00",
+  "first_name": "John",
+  "last_name": "Smith",
+  "last_login_at": "2026-04-20T10:00:00+00:00",
   "token": "eyJhbGciOiJIUzI1NiIs...",
-  "expiring_at": "2026-03-15T11:00:00+00:00",
-  "refresh_token": "rt_a1b2c3d4e5f6..."
+  "expiring_at": "2026-04-20T11:00:00+00:00",
+  "refresh_token": "rt_a1b2c3d4e5f6...",
+  "subscription": {
+    "plan_code": "core_01",
+    "plan_name": "Core Plan",
+    "billing_cycle": "monthly",
+    "is_active": true,
+    "is_trial": true,
+    "trial_ends_at": "2026-04-27T00:00:00Z",
+    "current_period_end": "2026-05-20T00:00:00Z",
+    "features": ["products", "catalog"],
+    "any_limit_exceeded": false
+  },
+  "tenant": {
+    "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
+    "tenant_name": "Acme Corporation",
+    "tenant_type": "customer",
+    "default_currency": "GBP",
+    "timezone": "Europe/London",
+    "locale": "en_GB",
+    "industry": "Retail",
+    "is_active": true
+  },
+  "balance": {
+    "total_budget_minor": 50000000,
+    "total_committed_minor": 0,
+    "total_spent_minor": 0,
+    "total_available_minor": 50000000,
+    "currency": "GBP"
+  },
+  "rbac": {
+    "roles": ["tenant_admin"],
+    "permissions": ["tenants.create", "catalog.products.view"],
+    "feature_flags": ["products", "catalog"]
+  }
 }
 ```
 
@@ -309,7 +578,17 @@ POST /authentication/reset-password/confirm
 }
 ```
 
-### 3.7 Health Check
+### 3.7 Azure AD / Entra ID Token Exchange
+
+```
+POST /authentication/azure/token-exchange?azure_token=<azure_access_or_id_token>
+```
+
+> Exchange an Azure AD B2C / Entra ID token for an internal JWT.  
+> **Flow:** Frontend authenticates via MSAL.js → sends Azure token here → backend validates against Azure JWKS → issues internal JWT with tenant_id, roles, and permissions.  
+> If the Azure user has no internal account yet, returns 404 — redirect to the register onboarding flow.
+
+### 3.8 Health Check
 
 ```
 GET /authentication/healthcheck
@@ -539,6 +818,7 @@ POST /provisioning/users
   "is_sso_enabled": false,
   "home_site_id": "<site_id>",
   "home_store_id": "<store_id>",
+  "home_org_unit_id": "<org_unit_id>",
   "all_locations": false
 }
 ```
@@ -565,7 +845,8 @@ PUT /provisioning/users/{user_id}
 ```json
 {
   "position": "Senior Procurement Manager",
-  "all_locations": true
+  "all_locations": true,
+  "is_active": true
 }
 ```
 
@@ -874,7 +1155,15 @@ PUT /provisioning/vendors/{vendor_id}
 ```json
 {
   "name": "OfficeMax Supplies International",
-  "description": "Updated vendor description"
+  "description": "Updated vendor description",
+  "status": "active",
+  "preferred_protocol": "api",
+  "api_endpoint_url": "https://api.officemax.co.uk/orders",
+  "notification_email": "notifications@officemax.co.uk",
+  "webhook_url": "https://api.officemax.co.uk/webhooks",
+  "payment_terms": "net30",
+  "lead_time_days": 3,
+  "minimum_order_minor": 5000
 }
 ```
 
@@ -904,6 +1193,27 @@ POST /provisioning/vendor-user
 
 ```
 GET /provisioning/vendor-user?vendor_id=<vendor_id>
+```
+
+### 11.8 Update Vendor User
+
+```
+PUT /provisioning/{user_id}
+```
+```json
+{
+  "email": "bob.updated@officemax.co.uk",
+  "first_name": "Robert",
+  "role": "vendor_rep",
+  "active": true,
+  "vendor_id": "<vendor_id>"
+}
+```
+
+### 11.9 Delete Vendor User
+
+```
+DELETE /provisioning/{user_id}
 ```
 
 ---
@@ -1088,7 +1398,6 @@ Content-Type: multipart/form-data
 ```
 | Field | Value |
 |-------|-------|
-| `tenant_id` | `fd563534-0686-4afa-bdaf-b386fc33f2c2` |
 | `file` | _(upload .xlsx file)_ |
 
 ---
@@ -1268,7 +1577,39 @@ POST /financial-calendars?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
 
 > 📌 **Save** `calendar_id` from the response.
 
-### 18.2 Create Financial Year
+### 18.2 List Calendars
+
+```
+GET /financial-calendars?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+```
+
+### 18.3 Get Calendar by ID
+
+```
+GET /financial-calendars/{calendar_id}
+```
+
+### 18.4 Update Calendar
+
+```
+PUT /financial-calendars/{calendar_id}
+```
+```json
+{
+  "name": "Acme FY2026 Calendar — Updated",
+  "description": "Updated description",
+  "is_active": true,
+  "is_default": true
+}
+```
+
+### 18.5 Delete Calendar
+
+```
+DELETE /financial-calendars/{calendar_id}?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+```
+
+### 18.6 Create Financial Year
 
 ```
 POST /financial-calendars/{calendar_id}/years?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
@@ -1286,13 +1627,25 @@ POST /financial-calendars/{calendar_id}/years?tenant_id=fd563534-0686-4afa-bdaf-
 
 > 📌 **Save** `year_id` from the response.
 
-### 18.3 Activate Financial Year
+### 18.7 List Years
+
+```
+GET /financial-calendars/{calendar_id}/years?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+```
+
+### 18.8 Activate Financial Year
 
 ```
 PUT /financial-calendars/{calendar_id}/years/{year_id}/activate?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
 ```
 
-### 18.4 Generate Periods (Auto)
+### 18.9 Close Financial Year
+
+```
+PUT /financial-calendars/{calendar_id}/years/{year_id}/close?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+```
+
+### 18.10 Generate Periods (Auto)
 
 ```
 POST /financial-calendars/{calendar_id}/years/{year_id}/generate-periods?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
@@ -1303,7 +1656,7 @@ POST /financial-calendars/{calendar_id}/years/{year_id}/generate-periods?tenant_
 }
 ```
 
-### 18.5 Create Period (Manual)
+### 18.11 Create Period (Manual)
 
 ```
 POST /financial-calendars/{calendar_id}/years/{year_id}/periods?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
@@ -1318,34 +1671,10 @@ POST /financial-calendars/{calendar_id}/years/{year_id}/periods?tenant_id=fd5635
 }
 ```
 
-### 18.6 List Periods
+### 18.12 List Periods
 
 ```
 GET /financial-calendars/{calendar_id}/years/{year_id}/periods?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
-```
-
-### 18.7 List Calendars
-
-```
-GET /financial-calendars?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
-```
-
-### 18.8 List Years
-
-```
-GET /financial-calendars/{calendar_id}/years?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
-```
-
-### 18.9 Close Financial Year
-
-```
-PUT /financial-calendars/{calendar_id}/years/{year_id}/close?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
-```
-
-### 18.10 Delete Calendar
-
-```
-DELETE /financial-calendars/{calendar_id}?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
 ```
 
 ---
@@ -1596,13 +1925,20 @@ POST /approval-policies?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
 }
 ```
 
-### 21.2 Get Approval Policy
+### 21.2 List Approval Policies
+
+```
+GET /approval-policies?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+```
+_Optional query params: `cost_centre_id=<cost_centre_id>`, `active_only=true`_
+
+### 21.3 Get Approval Policy
 
 ```
 GET /approval-policies/{policy_id}?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
 ```
 
-### 21.3 Delete Approval Policy (Deactivate)
+### 21.4 Delete Approval Policy (Deactivate)
 
 ```
 DELETE /approval-policies/{policy_id}?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
@@ -1855,46 +2191,59 @@ _No authentication required. Returns all active plans with monthly/quarterly/yea
 
 ---
 
+## 27. Health
+
+### 27.1 Global Health Check
+
+```
+GET /health
+```
+_No authentication required. Returns overall service health status._
+
+---
+
 ## Quick Setup Sequence
 
 Follow this order to set up a fully functional tenant from scratch:
 
 ```
-1.  POST /internal/permissions         ← Seed permissions (or auto-loaded from CSV)
-2.  POST /internal/roles               ← Create global roles
-3.  POST /internal/roles/map-permission ← Map permissions to roles
-4.  POST /internal/plans               ← Create subscription plans
-5.  POST /internal/features            ← Create features
+1.  POST /internal/permissions              ← Seed permissions
+2.  POST /internal/roles                   ← Create global roles
+3.  POST /internal/roles/{code}/permissions ← Add permissions to roles (preferred)
+4.  POST /internal/plans                   ← Create subscription plans
+5.  POST /internal/features                ← Create features
 6.  PUT  /internal/plans/{code}/features/{code}  ← Map features to plans
-7.  POST /onboarding/otp/generate      ← Send OTP to admin email
-8.  POST /onboarding/otp/validate      ← Validate OTP
-9.  POST /onboarding/tenant-signup     ← Create tenant + admin user
-10. POST /onboarding/tenant-signin     ← Login → get JWT token
-11. POST /provisioning/sites           ← Create site
-12. POST /provisioning/stores          ← Create store under site
-13. POST /provisioning/users           ← Create additional users
-14. POST /provisioning/roles           ← Create tenant-level roles
-15. POST /provisioning/users/{id}/roles ← Assign roles to users
-16. POST /provisioning/org_units       ← Create org units (departments)
-17. POST /provisioning/org_units/assignments ← Assign users to org units
-18. POST /provisioning/vendors         ← Create vendors
-19. POST /provisioning/cost-centres    ← Create cost centres with budgets
-20. POST /provisioning/users/{id}/cost-centres ← Assign users to cost centres
-21. POST /catalog/categories           ← Create product categories
-22. POST /catalog/products             ← Create products
-23. POST /catalog/store-products       ← Link products to stores
-24. POST /approved-ranges              ← Create approved ranges
-25. POST /approved-ranges/{id}/org-units   ← Map ranges to org units
-26. POST /approved-ranges/{id}/products    ← Add products to ranges
-27. POST /financial-calendars          ← Create financial calendar
-28. POST /financial-calendars/{id}/years   ← Create financial year
-29. PUT  /financial-calendars/{id}/years/{id}/activate ← Activate year
-30. POST /financial-calendars/{id}/years/{id}/generate-periods ← Generate periods
-31. POST /budgets/company-caps         ← Set company budget cap
-32. POST /budgets/cc-versions          ← Allocate budget to cost centres
-33. POST /user-budgets/assignments     ← Assign users to cost centres
-34. POST /user-budgets/limits          ← Set per-user spending limits
-35. POST /approval-policies            ← Create approval policies
-36. POST /purchase-requests            ← Create purchase request (tests full flow)
-```
 
+7.  POST /onboarding/otp/generate          ← (Optional) Verify admin email via OTP
+8.  POST /onboarding/otp/validate          ← (Optional) Validate OTP
+9.  POST /onboarding/register              ← Create Stripe customer + SetupIntent
+    (Frontend: call Stripe.js confirmCardSetup with client_secret)
+10. POST /onboarding/activate              ← Confirm card → creates tenant + user + subscription
+11. POST /onboarding/tenant-signin         ← Login → get JWT token
+12. POST /provisioning/sites               ← Create site
+13. POST /provisioning/stores              ← Create store under site
+14. POST /provisioning/users               ← Create additional users
+15. POST /provisioning/roles               ← Create tenant-level roles
+16. POST /provisioning/users/{id}/roles    ← Assign roles to users
+17. POST /provisioning/org_units           ← Create org units (departments)
+18. POST /provisioning/org_units/assignments ← Assign users to org units
+19. POST /provisioning/vendors             ← Create vendors
+20. POST /provisioning/cost-centres        ← Create cost centres with budgets
+21. POST /provisioning/users/{id}/cost-centres ← Assign users to cost centres
+22. POST /catalog/categories               ← Create product categories
+23. POST /catalog/products                 ← Create products
+24. POST /catalog/store-products           ← Link products to stores
+25. POST /approved-ranges                  ← Create approved ranges
+26. POST /approved-ranges/{id}/org-units   ← Map ranges to org units
+27. POST /approved-ranges/{id}/products    ← Add products to ranges
+28. POST /financial-calendars              ← Create financial calendar
+29. POST /financial-calendars/{id}/years   ← Create financial year
+30. PUT  /financial-calendars/{id}/years/{id}/activate ← Activate year
+31. POST /financial-calendars/{id}/years/{id}/generate-periods ← Generate periods
+32. POST /budgets/company-caps             ← Set company budget cap
+33. POST /budgets/cc-versions              ← Allocate budget to cost centres
+34. POST /user-budgets/assignments         ← Assign users to cost centres
+35. POST /user-budgets/limits              ← Set per-user spending limits
+36. POST /approval-policies                ← Create approval policies
+37. POST /purchase-requests                ← Create purchase request (tests full flow)
+```

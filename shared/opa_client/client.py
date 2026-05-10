@@ -18,9 +18,7 @@ Usage in a FastAPI service:
     ):
         ...
 
-The OPA client enriches the input document by calling the policy_service
-/evaluate endpoint for subject context (budget, roles, subscription, etc.)
-and then sends it to OPA for a deterministic Rego decision.
+The OPA client sends a deterministic input document to OPA for decision.
 """
 
 import logging
@@ -48,11 +46,9 @@ class OPAClient:
         self,
         opa_url: str = _DEFAULT_OPA_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        policy_service_url: Optional[str] = None,
     ):
         self.opa_url = opa_url.rstrip("/")
         self.timeout = timeout
-        self.policy_service_url = policy_service_url  # optional enrichment
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -67,27 +63,6 @@ class OPAClient:
             self._client = None
 
     # ------------------------------------------------------------------
-    # Subject enrichment (optional — calls policy_service for context)
-    # ------------------------------------------------------------------
-    async def _enrich_subject(
-        self, user_id: str, tenant_id: str
-    ) -> Dict[str, Any]:
-        """Fetch enriched user context from policy_service."""
-        if not self.policy_service_url:
-            return {}
-        try:
-            resp = await self.client.get(
-                f"{self.policy_service_url}/policies",
-                params={"tenant_id": tenant_id},
-                timeout=self.timeout,
-            )
-            if resp.status_code == 200:
-                return resp.json()
-        except Exception as exc:
-            logger.warning(f"Subject enrichment failed: {exc}")
-        return {}
-
-    # ------------------------------------------------------------------
     # Core evaluation
     # ------------------------------------------------------------------
     async def evaluate(
@@ -96,8 +71,6 @@ class OPAClient:
         subject: Dict[str, Any],
         resource: Dict[str, Any],
         action: str,
-        *,
-        enrich: bool = True,
     ) -> Dict[str, Any]:
         """Evaluate a Rego policy and return the decision document.
 
@@ -107,9 +80,6 @@ class OPAClient:
             subject:      Caller identity (user_id, tenant_id, roles, etc.).
             resource:     Resource context (the request body / entity data).
             action:       Action code, e.g. "site.create".
-            enrich:       If True and policy_service_url is set, fetch extra
-                          context (budget, subscription, approved products).
-
         Returns:
             OPA result document containing ``allow``, ``decision``, ``reason``.
 
@@ -122,17 +92,6 @@ class OPAClient:
             "action": action,
             "current_time": datetime.now(timezone.utc).isoformat(),
         }
-
-        # Optional enrichment from policy service
-        if enrich and self.policy_service_url:
-            extra = await self._enrich_subject(
-                subject.get("user_id", ""),
-                subject.get("tenant_id", ""),
-            )
-            if extra:
-                for k, v in extra.items():
-                    if k not in opa_input["subject"]:
-                        opa_input["subject"][k] = v
 
         url = f"{self.opa_url}/v1/data/{package_path}"
         payload = {"input": opa_input}
@@ -182,14 +141,12 @@ _opa_client: Optional[OPAClient] = None
 def init_opa_client(
     opa_url: str = _DEFAULT_OPA_URL,
     timeout: float = _DEFAULT_TIMEOUT,
-    policy_service_url: Optional[str] = None,
 ) -> OPAClient:
     """Initialise (or reinitialise) the module-level OPA client singleton."""
     global _opa_client
     _opa_client = OPAClient(
         opa_url=opa_url,
         timeout=timeout,
-        policy_service_url=policy_service_url,
     )
     return _opa_client
 

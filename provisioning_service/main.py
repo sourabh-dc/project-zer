@@ -27,8 +27,6 @@ from provisioning_service.services.purchase_request_routes import router as purc
 from provisioning_service.services.budget_change_request_routes import router as budget_change_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
-from provisioning_service.core.policy_client import policy_client
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -106,11 +104,6 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Messaging service stopped")
         except Exception as ex:
             logger.warning(f"Messaging service stop failed: {ex}")
-        try:
-            await policy_client.close()
-            logger.info("✅ Policy client closed")
-        except Exception as ex:
-            logger.warning(f"Policy client close failed: {ex}")
 
 
 app = FastAPI(title="Provisioning Service", version="1.0.0", lifespan=lifespan)

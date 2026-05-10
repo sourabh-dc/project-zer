@@ -703,7 +703,6 @@ Used for sending emails:
 
 ```
 provisioning_service  →  uvicorn ... --port 8001
-policy_service        →  uvicorn ... --port 8004
 graph_service         →  uvicorn ... --port 8005
 vector_service        →  uvicorn ... --port 8006
 intelligence_service  →  uvicorn ... --port 8007
@@ -738,7 +737,7 @@ CMD ["uvicorn", "zeroque_core_app:app", "--host", "0.0.0.0", "--port", "80"]
 ## 15. Key Design Decisions
 
 ### 1. Shared Database, Separate Services
-All services share one PostgreSQL database but have **zero code-level dependency** on each other. The policy_service reads `users`, `roles`, `budgets` tables via raw SQL, not by importing provisioning_service models.
+All services share one PostgreSQL database but have **zero code-level dependency** on each other. The policy engine reads `users`, `roles`, `budgets` tables via raw SQL, not by importing provisioning_service models.
 
 ### 2. Transactional Outbox (Not Message-First)
 Entity writes and outbox events are committed in the same database transaction. This guarantees no message is lost even if the Service Bus is temporarily down. The graph/vector services are **eventually consistent** projections.
