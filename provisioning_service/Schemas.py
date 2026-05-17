@@ -845,9 +845,10 @@ class ApprovedRangeOrgUnitRequest(BaseModel):
     org_unit_ids: List[str] = Field(min_length=1, description="List of org unit IDs to map")
 
 
-class ApprovedRangeProductRequest(BaseModel):
-    """Add product(s) to an approved range"""
-    product_ids: List[str] = Field(min_length=1, description="List of product IDs to add")
+class ApprovedRangeCategoryRequest(BaseModel):
+    """Add category/ies to an approved range (PRIMARY governance path)"""
+    category_ids: List[str] = Field(min_length=1, description="List of category IDs to include")
+    include_subcategories: bool = Field(default=True, description="If True, subcategories are also included")
 
 
 # ==================================================================================

@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sql_func
 
 from provisioning_service.Models import (
-    ApprovedRange, ApprovedRangeOrgUnit, ApprovedRangeProduct,
-    OrgUnit, Product, User,
+    ApprovedRange, ApprovedRangeOrgUnit, ApprovedRangeCategory,
+    OrgUnit, Category, User,
 )
 from provisioning_service.Schemas import (
     ApprovedRangeCreateRequest, ApprovedRangeUpdateRequest,
-    ApprovedRangeOrgUnitRequest, ApprovedRangeProductRequest,
+    ApprovedRangeOrgUnitRequest,
+    ApprovedRangeCategoryRequest,
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
@@ -107,8 +108,8 @@ async def list_approved_ranges(
 
     results = []
     for ar in items:
-        product_count = db.query(ApprovedRangeProduct).filter(
-            ApprovedRangeProduct.approved_range_id == ar.approved_range_id
+        category_count = db.query(ApprovedRangeCategory).filter(
+            ApprovedRangeCategory.approved_range_id == ar.approved_range_id
         ).count()
         org_unit_count = db.query(ApprovedRangeOrgUnit).filter(
             ApprovedRangeOrgUnit.approved_range_id == ar.approved_range_id
@@ -119,7 +120,7 @@ async def list_approved_ranges(
             "description": ar.description,
             "is_universal": ar.is_universal,
             "status": ar.status,
-            "product_count": product_count,
+            "category_count": category_count,
             "org_unit_count": org_unit_count,
             "created_at": ar.created_at.isoformat() if ar.created_at else None,
         })
@@ -151,8 +152,8 @@ async def get_approved_range(
         .all()
     )
 
-    product_count = db.query(ApprovedRangeProduct).filter(
-        ApprovedRangeProduct.approved_range_id == ar.approved_range_id
+    category_count = db.query(ApprovedRangeCategory).filter(
+        ApprovedRangeCategory.approved_range_id == ar.approved_range_id
     ).count()
 
     return {
@@ -161,7 +162,7 @@ async def get_approved_range(
         "description": ar.description,
         "is_universal": ar.is_universal,
         "status": ar.status,
-        "product_count": product_count,
+        "category_count": category_count,
         "org_units": [{"org_unit_id": str(ou[0]), "name": ou[1]} for ou in org_units],
         "created_by": str(ar.created_by) if ar.created_by else None,
         "created_at": ar.created_at.isoformat() if ar.created_at else None,
@@ -413,18 +414,22 @@ async def list_range_org_units(
 
 
 # =============================================================================
-# PRODUCT MEMBERSHIP
+# CATEGORY MEMBERSHIP (PRIMARY GOVERNANCE PATH)
 # =============================================================================
 
-@router.post("/{approved_range_id}/products", status_code=201)
-async def add_products_to_range(
+@router.post("/{approved_range_id}/categories", status_code=201)
+async def add_categories_to_range(
     approved_range_id: str,
-    req: ApprovedRangeProductRequest,
+    req: ApprovedRangeCategoryRequest,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("approved_range.add_products")),
+    policy=Depends(require_policy("approved_range.add_categories")),
 ):
-    """Add one or more products to an approved range."""
+    """Add one or more categories to an approved range (PRIMARY governance path).
+
+    All products in those categories (and optionally subcategories)
+    become approved for org units governed by this range.
+    """
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
     user_id = ctx.get("user_id") if isinstance(ctx, dict) else ctx.user_id
 
@@ -439,57 +444,46 @@ async def add_products_to_range(
     added = []
     skipped = []
 
-    for pid_str in req.product_ids:
-        pid = uuid.UUID(pid_str)
-        product = db.query(Product).filter(
-            Product.product_id == pid,
-            Product.tenant_id == tenant_id,
-            Product.status != "deleted",
+    for cid_str in req.category_ids:
+        cid = uuid.UUID(cid_str)
+        category = db.query(Category).filter(
+            Category.category_id == cid,
+            Category.status != "deleted",
         ).first()
-        if not product:
-            skipped.append({"product_id": pid_str, "reason": "Product not found"})
+        if not category:
+            skipped.append({"category_id": cid_str, "reason": "Category not found"})
             continue
 
-        exists = db.query(ApprovedRangeProduct).filter(
-            ApprovedRangeProduct.approved_range_id == ar.approved_range_id,
-            ApprovedRangeProduct.product_id == pid,
+        exists = db.query(ApprovedRangeCategory).filter(
+            ApprovedRangeCategory.approved_range_id == ar.approved_range_id,
+            ApprovedRangeCategory.category_id == cid,
         ).first()
         if exists:
-            skipped.append({"product_id": pid_str, "reason": "Already in range"})
+            skipped.append({"category_id": cid_str, "reason": "Already in range"})
             continue
 
-        arp = ApprovedRangeProduct(
+        mapping = ApprovedRangeCategory(
             id=uuid.uuid4(),
             approved_range_id=ar.approved_range_id,
-            product_id=pid,
-            added_by=user_id,
+            category_id=cid,
+            added_by=uuid.UUID(user_id) if user_id else None,
+            include_subcategories=req.include_subcategories,
         )
-        db.add(arp)
-        added.append(pid_str)
+        db.add(mapping)
+        added.append(cid_str)
 
     if added:
-        product_details = {}
-        for pid_str in added:
-            p = db.query(Product).filter(Product.product_id == uuid.UUID(pid_str)).first()
-            if p:
-                product_details[pid_str] = {
-                    "display_name": p.display_name,
-                    "sku": getattr(p, "sku", ""),
-                    "item_code": getattr(p, "item_code", ""),
-                    "category_id": str(p.category_id) if p.category_id else None,
-                }
-
         outbox = append_outbox_event(
             db,
             tenant_id=tenant_id,
             aggregate_type="approved_range",
             aggregate_id=ar.approved_range_id,
-            event_type="approved_range.products_added",
+            event_type="approved_range.categories_added",
             payload={
                 "approved_range_id": str(ar.approved_range_id),
-                "product_ids": added,
-                "product_details": product_details,
-                "tenant_id": str(tenant_id),
+                "category_ids": added,
+                "include_subcategories": req.include_subcategories,
+                "added_by": str(user_id) if user_id else None,
             },
         )
         db.commit()
@@ -500,15 +494,15 @@ async def add_products_to_range(
     return {"added": added, "skipped": skipped}
 
 
-@router.delete("/{approved_range_id}/products/{product_id}", status_code=204)
-async def remove_product_from_range(
+@router.delete("/{approved_range_id}/categories/{category_id}", status_code=204)
+async def remove_category_from_range(
     approved_range_id: str,
-    product_id: str,
+    category_id: str,
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
-    policy=Depends(require_policy("approved_range.remove_product", resource_from="none")),
+    policy=Depends(require_policy("approved_range.remove_category", resource_from="none")),
 ):
-    """Remove a product from an approved range."""
+    """Remove a category from an approved range."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
 
     ar = db.query(ApprovedRange).filter(
@@ -519,24 +513,24 @@ async def remove_product_from_range(
     if not ar:
         raise HTTPException(404, "Approved range not found")
 
-    arp = db.query(ApprovedRangeProduct).filter(
-        ApprovedRangeProduct.approved_range_id == ar.approved_range_id,
-        ApprovedRangeProduct.product_id == uuid.UUID(product_id),
+    mapping = db.query(ApprovedRangeCategory).filter(
+        ApprovedRangeCategory.approved_range_id == ar.approved_range_id,
+        ApprovedRangeCategory.category_id == uuid.UUID(category_id),
     ).first()
-    if not arp:
-        raise HTTPException(404, "Product not in this range")
+    if not mapping:
+        raise HTTPException(404, "Category not in this range")
 
-    db.delete(arp)
+    db.delete(mapping)
 
     outbox = append_outbox_event(
         db,
         tenant_id=tenant_id,
         aggregate_type="approved_range",
         aggregate_id=ar.approved_range_id,
-        event_type="approved_range.product_removed",
+        event_type="approved_range.category_removed",
         payload={
             "approved_range_id": str(ar.approved_range_id),
-            "product_id": product_id,
+            "category_id": category_id,
         },
     )
     db.commit()
@@ -544,16 +538,13 @@ async def remove_product_from_range(
     return None
 
 
-@router.get("/{approved_range_id}/products")
-async def list_range_products(
+@router.get("/{approved_range_id}/categories")
+async def list_range_categories(
     approved_range_id: str,
-    search: Optional[str] = Query(None),
-    limit: int = Query(100, le=500),
-    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
 ):
-    """List all products in an approved range."""
+    """List categories included in an approved range (from Postgres)."""
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
 
     ar = db.query(ApprovedRange).filter(
@@ -564,40 +555,27 @@ async def list_range_products(
     if not ar:
         raise HTTPException(404, "Approved range not found")
 
-    q = (
-        db.query(Product)
-        .join(ApprovedRangeProduct, ApprovedRangeProduct.product_id == Product.product_id)
+    rows = (
+        db.query(Category, ApprovedRangeCategory.include_subcategories)
+        .join(ApprovedRangeCategory, ApprovedRangeCategory.category_id == Category.category_id)
         .filter(
-            ApprovedRangeProduct.approved_range_id == ar.approved_range_id,
-            Product.status != "deleted",
+            ApprovedRangeCategory.approved_range_id == ar.approved_range_id,
+            Category.status != "deleted",
         )
+        .order_by(Category.name)
+        .all()
     )
 
-    if search:
-        from sqlalchemy import or_
-        q = q.filter(or_(
-            Product.display_name.ilike(f"%{search}%"),
-            Product.sku.ilike(f"%{search}%"),
-        ))
-
-    total = q.count()
-    items = q.order_by(Product.display_name).offset(offset).limit(limit).all()
-
     return {
-        "approved_range_id": str(ar.approved_range_id),
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "products": [
+        "approved_range_id": approved_range_id,
+        "categories": [
             {
-                "product_id": str(p.product_id),
-                "sku": p.sku,
-                "ean": p.ean,
-                "display_name": p.display_name,
-                "purchase_price_minor": p.purchase_price_minor,
-                "currency": p.currency,
-                "category_id": str(p.category_id) if p.category_id else None,
+                "category_id": str(cat.category_id),
+                "name": cat.name,
+                "code": cat.code,
+                "status": cat.status,
+                "include_subcategories": include_sub,
             }
-            for p in items
+            for cat, include_sub in rows
         ],
     }

@@ -920,18 +920,19 @@ class ApprovedRangeOrgUnit(Base):
     )
 
 
-class ApprovedRangeProduct(Base):
-    """Maps a product into an approved range (many-to-many)"""
-    __tablename__ = "approved_range_products"
+class ApprovedRangeCategory(Base):
+    """Maps a category into an approved range (many-to-many) — PRIMARY governance path"""
+    __tablename__ = "approved_range_categories"
 
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     approved_range_id = Column(SQLUUID(as_uuid=True), ForeignKey("approved_ranges.approved_range_id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False, index=True)
+    category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="CASCADE"), nullable=False, index=True)
     added_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    include_subcategories = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        Index('ix_ar_product_unique', 'approved_range_id', 'product_id', unique=True),
+        Index('ix_ar_category_unique', 'approved_range_id', 'category_id', unique=True),
     )
 
 
