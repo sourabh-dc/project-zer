@@ -4,7 +4,14 @@
 # Prerequisites:
 #   - PostgreSQL running (DATABASE_URL env var or localhost:5432)
 #   - OPA running at localhost:8181 (or set POLICY_ENGINE_BYPASS=true)
-#   - Service started: uvicorn provisioning_service.main:app --port 8000
+#   - Provisioning API:   uvicorn provisioning_service.main:app --port 8000
+#   - (optional) Provisioning Worker:
+#       python provisioning_service/core/helpers/outbox_worker.py
+#   - (optional) Data Intelligence API:
+#       uvicorn data_intelligence_service.main:app --port 8001
+#   - (optional) Data Intelligence Worker:
+#       python -m data_intelligence_service.workers.consumer_standalone
+#   - (optional) Neo4j + PgVector (required for graph/vector verification)
 #
 # Usage:
 #   ./test_provisioning.ps1
@@ -30,7 +37,16 @@ param(
     [string]$Token,
 
     [Parameter(Mandatory=$false)]
-    [switch]$StopOnFail
+    [switch]$StopOnFail,
+
+    [Parameter(Mandatory=$false)]
+    [string]$DataIntelUrl = "http://localhost:8001",
+
+    [Parameter(Mandatory=$false)]
+    [int]$OutboxWaitSeconds = 10,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$SkipDataIntelVerify
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,6 +106,57 @@ $script:AuthToken = $Token
 $script:TenantId   = $TenantId
 $script:AdminUserId = $null
 $state = @{}   # stores IDs as we go: site_id, store_id, etc.
+
+# ------------------------------------------------------------------
+# Data Intelligence Helpers (graph/vector worker verification)
+# ------------------------------------------------------------------
+function Invoke-DataIntel {
+    param(
+        [string]$Method = "GET",
+        [string]$Path,
+        [string]$Description = "",
+        [int]$ExpectedStatus = 200,
+        [bool]$AllowNotFound = $false
+    )
+    $uri = "$DataIntelUrl$Path"
+    $desc = if ($Description) { $Description } else { "DI $Method $Path" }
+
+    $headers = @{ "Content-Type" = "application/json" }
+    $params = @{ Uri = $uri; Method = $Method; Headers = $headers }
+
+    try {
+        $response = Invoke-RestMethod @params -StatusCodeVariable sc -SkipHttpErrorCheck
+        if ($sc -eq $ExpectedStatus -or $sc -eq 200 -or $sc -eq 201 -or $sc -eq 204) {
+            Write-Pass "$desc  ($sc)"
+        } elseif ($AllowNotFound -and ($sc -eq 404 -or $sc -eq 503)) {
+            Write-Warn "$desc — not found yet (worker may still be processing)  ($sc)"
+        } else {
+            Write-Fail "$desc — expected $ExpectedStatus, got $sc"
+        }
+        return @{ Body = $response; StatusCode = $sc }
+    }
+    catch {
+        Write-Fail "$desc — $_"
+        return $null
+    }
+}
+
+function Wait-ForOutbox {
+    param([string]$Label = "outbox events")
+    Write-Info "Waiting ${OutboxWaitSeconds}s for $Label to be consumed by data-intelligence worker..."
+    Start-Sleep -Seconds $OutboxWaitSeconds
+}
+
+function Check-DataIntelHealth {
+    $r = Invoke-DataIntel -Path "/health" -Description "DI GET /health" -AllowNotFound $true
+    if (-not $r -or $r.StatusCode -ne 200) {
+        Write-Warn "Data Intelligence service is not reachable at $DataIntelUrl"
+        Write-Warn "Start it with: uvicorn data_intelligence_service.main:app --port 8001"
+        Write-Warn "And the worker with: python -m data_intelligence_service.workers.consumer_standalone"
+        return $false
+    }
+    return $true
+}
 
 # ------------------------------------------------------------------
 # 0. Health Check
@@ -266,6 +333,20 @@ function q { "?tenant_id=$tid" }
 Write-Step "3. Authentication"
 Invoke-Api -Path "/authentication/whoami" -Description "GET /authentication/whoami"
 Invoke-Api -Path "/authentication/healthcheck" -Description "GET /authentication/healthcheck"
+
+# ------------------------------------------------------------------
+# 3.5 Data Intelligence — Health Check + Worker Status
+# ------------------------------------------------------------------
+if (-not $SkipDataIntelVerify) {
+    Write-Step "3.5 Data Intelligence Layer — Health Check"
+    $diAlive = Check-DataIntelHealth
+    if ($diAlive) {
+        Write-Info "Data Intelligence API reachable. Worker verification will run after provisioning."
+    } else {
+        Write-Warn "Proceeding without data-intelligence verification."
+        Write-Warn "Tip: Set `-SkipDataIntelVerify` to suppress this warning."
+    }
+}
 
 # ------------------------------------------------------------------
 # 4. Tenant Management
@@ -778,10 +859,74 @@ Invoke-Api -Path "/subscriptions/active$(q)" -Description "GET /subscriptions/ac
 Invoke-Api -Path "/subscriptions/whoami" -Description "GET /subscriptions/whoami"
 
 # ------------------------------------------------------------------
-# 24. Health (Final)
+# 24. Data Intelligence — Graph & Vector Verification
 # ------------------------------------------------------------------
-Write-Step "24. Final Health Check"
-Invoke-Api -Path "/health" -Description "GET /health (final)"
+if (-not $SkipDataIntelVerify) {
+    Write-Step "24. Data Intelligence — Graph & Vector Verification"
+
+    Write-Info "24.1 Waiting for outbox worker to consume provisioning events..."
+    Write-Info "     (The data-intelligence-worker polls outbox_event_delivery)"
+    Write-Info "     (Ensure the worker is running: python -m data_intelligence_service.workers.consumer_standalone)"
+    Wait-ForOutbox -Label "tenant, site, store, user, product, vendor, org_unit, category events"
+
+    Write-Info "24.2 Check tenant topology in Neo4j graph"
+    Invoke-DataIntel -Path "/graph/tenant/$tid/topology" `
+        -Description "DI GET /graph/tenant/{tenant_id}/topology" `
+        -AllowNotFound $true
+
+    if ($state.StoreId) {
+        Write-Info "24.3 Check store products in Neo4j graph"
+        Invoke-DataIntel -Path "/graph/store/$($state.StoreId)/products" `
+            -Description "DI GET /graph/store/{store_id}/products" `
+            -AllowNotFound $true
+    }
+
+    if ($state.ProductId) {
+        Write-Info "24.4 Check product-store mappings in Neo4j graph"
+        Invoke-DataIntel -Path "/graph/product/$($state.ProductId)/stores" `
+            -Description "DI GET /graph/product/{product_id}/stores" `
+            -AllowNotFound $true
+    }
+
+    if ($state.UserId) {
+        Write-Info "24.5 Check user context + hierarchy in Neo4j graph"
+        Invoke-DataIntel -Path "/graph/user-context/$($state.UserId)" `
+            -Description "DI GET /graph/user-context/{user_id}" `
+            -AllowNotFound $true
+        Invoke-DataIntel -Path "/graph/user-hierarchy/$($state.UserId)" `
+            -Description "DI GET /graph/user-hierarchy/{user_id}" `
+            -AllowNotFound $true
+    }
+
+    if ($state.UserId) {
+        Write-Info "24.6 Check approved products for user (graph + approved ranges)"
+        Invoke-DataIntel -Path "/graph/approved-products/$($state.UserId)" `
+            -Description "DI GET /graph/approved-products/{user_id}" `
+            -AllowNotFound $true
+    }
+
+    if ($state.OrgUnitId) {
+        Write-Info "24.7 Check approved products for org unit"
+        Invoke-DataIntel -Path "/graph/approved-products/org-unit/$($state.OrgUnitId)" `
+            -Description "DI GET /graph/approved-products/org-unit/{org_unit_id}" `
+            -AllowNotFound $true
+    }
+
+    Write-Info ""
+    Write-Info "NOTE: If any checks show 'not found', the data-intelligence worker"
+    Write-Info "may still be processing. Increase -OutboxWaitSeconds (default 10s)"
+    Write-Info "or check worker logs for errors."
+}
+
+# ------------------------------------------------------------------
+# 25. Health (Final)
+# ------------------------------------------------------------------
+Write-Step "25. Final Health Check"
+Invoke-Api -Path "/health" -Description "GET /health (provisioning)"
+
+if (-not $SkipDataIntelVerify) {
+    Invoke-DataIntel -Path "/health" -Description "DI GET /health (data-intelligence)" -AllowNotFound $true
+}
 
 # ------------------------------------------------------------------
 # Summary
@@ -791,22 +936,29 @@ Write-Host "============================================================" -Foreg
 Write-Host "              PROVISIONING TEST SUITE COMPLETE               " -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Base URL:     $BaseUrl"
-Write-Host "  Tenant ID:    $($state.TenantId)"
-Write-Host "  Admin User:   $($state.AdminUserId)"
-Write-Host "  Site:         $($state.SiteId)"
-Write-Host "  Store:        $($state.StoreId)"
-Write-Host "  User:         $($state.UserId)"
-Write-Host "  Org Unit:     $($state.OrgUnitId)"
-Write-Host "  Vendor:       $($state.VendorId)"
-Write-Host "  Cost Centre:  $($state.CostCentreId)"
-Write-Host "  Category:     $($state.CategoryId)"
-Write-Host "  Product:      $($state.ProductId)"
-Write-Host "  Approved Range: $($state.ApprovedRangeId)"
-Write-Host "  Calendar:     $($state.CalendarId)"
-Write-Host "  Year:         $($state.YearId)"
-Write-Host "  Purchase Req: $($state.PrId)"
+Write-Host "  Provisioning API:  $BaseUrl"
+Write-Host "  Data Intel API:    $DataIntelUrl"
+Write-Host "  Tenant ID:         $($state.TenantId)"
+Write-Host "  Admin User:        $($state.AdminUserId)"
+Write-Host "  Site:              $($state.SiteId)"
+Write-Host "  Store:             $($state.StoreId)"
+Write-Host "  User:              $($state.UserId)"
+Write-Host "  Org Unit:          $($state.OrgUnitId)"
+Write-Host "  Vendor:            $($state.VendorId)"
+Write-Host "  Cost Centre:       $($state.CostCentreId)"
+Write-Host "  Category:          $($state.CategoryId)"
+Write-Host "  Product:           $($state.ProductId)"
+Write-Host "  Approved Range:    $($state.ApprovedRangeId)"
+Write-Host "  Calendar:          $($state.CalendarId)"
+Write-Host "  Year:              $($state.YearId)"
+Write-Host "  Purchase Req:      $($state.PrId)"
 Write-Host ""
-Write-Host "  Use these IDs to re-run parts:"
+Write-Host "  Data Intelligence Graph Verification:"
+Write-Host "    /graph/tenant/$tid/topology"
+Write-Host "    /graph/store/$($state.StoreId)/products"
+Write-Host "    /graph/user-context/$($state.UserId)"
+Write-Host ""
+Write-Host "  Re-run commands:"
 Write-Host "    ./test_provisioning.ps1 -SkipSeed -SkipOnboarding -TenantId '$($state.TenantId)' -Token 'TOKEN'"
+Write-Host "    ./test_provisioning.ps1 -SkipSeed -SkipOnboarding -TenantId '$($state.TenantId)' -Token 'TOKEN' -SkipDataIntelVerify"
 Write-Host ""
