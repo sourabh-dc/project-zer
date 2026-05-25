@@ -1,11 +1,11 @@
-name: Deploy Orders Service (API + Worker)
+name: Deploy Provisioning Service (API + Worker)
 
 on:
   push:
     branches:
       - production
     paths:
-      - "orders_service/**"
+      - "provisioning_service/**"
       - "shared/**"
       - "requirements.txt"
   workflow_dispatch:
@@ -18,11 +18,11 @@ jobs:
       matrix:
         component:
           - name: api
-            dockerfile: orders_service/Dockerfile
-            image: ${{ secrets.ACR_NAME }}.azurecr.io/orders-api
+            dockerfile: provisioning_service/Dockerfile
+            image: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-api
           - name: worker
-            dockerfile: orders_service/Dockerfile.worker
-            image: ${{ secrets.ACR_NAME }}.azurecr.io/orders-worker
+            dockerfile: provisioning_service/Dockerfile.worker
+            image: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-worker
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,13 +55,13 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy orders-api
+      - name: Deploy provisioning-api
         uses: azure/container-apps-deploy-action@v2
         with:
           acrName: ${{ secrets.ACR_NAME }}
-          containerAppName: orders-api
+          containerAppName: provisioning-api
           resourceGroup: ${{ secrets.RESOURCE_GROUP }}
-          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/orders-api:${{ github.sha }}
+          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-api:${{ github.sha }}
 
   # ── Deploy Worker ────────────────────────────────────────────────
   deploy-worker:
@@ -73,10 +73,10 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy orders-worker
+      - name: Deploy provisioning-worker
         uses: azure/container-apps-deploy-action@v2
         with:
           acrName: ${{ secrets.ACR_NAME }}
-          containerAppName: orders-worker
+          containerAppName: provisioning-worker
           resourceGroup: ${{ secrets.RESOURCE_GROUP }}
-          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/orders-worker:${{ github.sha }}
+          imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-worker:${{ github.sha }}

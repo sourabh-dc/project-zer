@@ -1,0 +1,55 @@
+# Container App Ignore File
+# Files and directories to exclude from container builds
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+tests/
+test/
+*_test.py
+test_*.py
+
+# Deployment files
+deploy.ps1
+docker-compose*.yml
+.dockerignore
+
+# Data
+*.csv
+*.xlsx
+*.json
+!requirements*.json
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,22 @@
+# Worker Dockerfile for Orders Service Notification Worker
+# This runs as a standalone background worker processing notifications
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt /tmp/orders-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/orders-requirements.txt
+
+# Copy application code
+COPY . /app
+
+# Run the notification worker (no HTTP server)
+CMD ["python", "-m", "orders_service.workers.notification_worker_standalone"]

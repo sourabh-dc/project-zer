@@ -1,7 +1,8 @@
-# Using Python 3.11 (3.13 has dependency issues)
+# Worker Dockerfile for Provisioning Service Outbox Worker
+# This runs as a standalone background worker processing Service Bus messages
+
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies
@@ -19,8 +20,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all application code
 COPY . .
 
-# Expose port
-EXPOSE 80
-
-# Run the application
-CMD ["uvicorn", "procurement_service.main:app", "--host", "0.0.0.0", "--port", "80"]
+# Run the outbox worker (no HTTP server, pure background worker)
+CMD ["python", "-m", "provisioning_service.core.helpers.outbox_worker"]
