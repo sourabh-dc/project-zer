@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from typing import Dict, Any, Optional
 
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, func, UUID, BigInteger, text, Text, JSON, \
@@ -37,6 +37,7 @@ class Tenant(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Site(Base):
@@ -64,6 +65,7 @@ class Site(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Store(Base):
@@ -92,6 +94,7 @@ class Store(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class User(Base):
@@ -127,6 +130,7 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_users_tenant_email_unique", "tenant_id", "email", unique=True),
@@ -140,6 +144,8 @@ class Role(Base):
     code = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class UserRole(Base):
@@ -159,6 +165,8 @@ class Permission(Base):
     code = Column(String(150), unique=True, nullable=False, index=True)
     description = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class RolePermission(Base):
@@ -221,6 +229,7 @@ class OrgUnit(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     # Relationships
     tenant = relationship("Tenant", backref=backref("org_units", cascade="all, delete-orphan"))
@@ -250,7 +259,7 @@ class Vendor(Base):
     description = Column(String(500), nullable=True)
     status = Column(String(50), default="active", index=True)
 
-    # ── Integration & Communication ──────────────────────────────
+    # â”€â”€ Integration & Communication â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Preferred communication channel: api | cxml | edi | email
     preferred_protocol = Column(String(20), nullable=True, default="email")
     # Vendor-provided endpoints (for outbound integration)
@@ -269,7 +278,7 @@ class Vendor(Base):
     webhook_url = Column(String(1000), nullable=True)          # webhook for order updates
     webhook_secret = Column(String(500), nullable=True)        # HMAC secret for webhook signatures
 
-    # ── Vendor Onboarding Metadata ───────────────────────────────
+    # â”€â”€ Vendor Onboarding Metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     onboarding_status = Column(String(30), nullable=True, default="pending")  # pending | verified | active | suspended
     payment_terms = Column(String(50), nullable=True)          # net_30 | net_60 | cod | prepaid
     return_policy = Column(String(50), nullable=True)          # full | partial | no_returns
@@ -281,6 +290,7 @@ class Vendor(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class ColourGroup(Base):
@@ -306,6 +316,7 @@ class Colour(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Size(Base):
@@ -320,6 +331,7 @@ class Size(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Fit(Base):
@@ -332,6 +344,7 @@ class Fit(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class UosLabel(Base):
@@ -345,6 +358,7 @@ class UosLabel(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class CostCentre(Base):
@@ -369,6 +383,7 @@ class CostCentre(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class CostCenterBudget(Base):
@@ -404,6 +419,7 @@ class CostCenterBudget(Base):
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class UserCostCentre(Base):
@@ -435,6 +451,7 @@ class UserCostCentre(Base):
     # Audit
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     user = relationship("User", back_populates="cost_centres", foreign_keys=[user_id])
     cost_centre = relationship("CostCentre", back_populates="members", foreign_keys=[cost_centre_id])
@@ -452,6 +469,7 @@ class SubscriptionPlan(Base):
     created_by = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class PlanPrice(Base):
@@ -466,6 +484,7 @@ class PlanPrice(Base):
     price_yearly_minor = Column(Numeric, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Feature(Base):
@@ -497,6 +516,7 @@ class PlanFeature(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class TenantSubscription(Base):
@@ -517,6 +537,7 @@ class TenantSubscription(Base):
     cancellation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     status = Column(String(20), default="active")  # active, trialing, past_due, canceled, unpaid
 
     # Grace period & payment failure tracking
@@ -527,7 +548,7 @@ class TenantSubscription(Base):
 
 class Mandate(Base):
     """
-    Billing mandate — created BEFORE any tenant/user data is persisted.
+    Billing mandate â€” created BEFORE any tenant/user data is persisted.
 
     A mandate captures the billing intent (plan, trial flag, Stripe customer)
     and acts as the gate: tenant + admin user are only created once the
@@ -581,6 +602,7 @@ class Mandate(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -597,6 +619,7 @@ class SubscriptionUsage(Base):
     period_end = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     
     # Composite index for efficient usage lookups
     __table_args__ = (
@@ -624,6 +647,7 @@ class StoreProduct(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     
     __table_args__ = (
         Index('ix_store_product_unique', 'store_id', 'product_id', unique=True),
@@ -642,6 +666,7 @@ class Category(Base):
     active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class Product(Base):
@@ -659,16 +684,16 @@ class Product(Base):
     # Relationships
     vendor_id = Column(SQLUUID(as_uuid=True), ForeignKey("vendors.vendor_id", ondelete="SET NULL"), nullable=True, index=True)
     category_id = Column(SQLUUID(as_uuid=True), ForeignKey("categories.category_id", ondelete="SET NULL"), nullable=True, index=True)
-    brand_id = Column(SQLUUID(as_uuid=True), nullable=True, index=True)  # FK → brands
+    brand_id = Column(SQLUUID(as_uuid=True), nullable=True, index=True)  # FK â†’ brands
     manufacturer = Column(String(255), nullable=True)  # Manufacturer name (free text)
 
     # Matrix (variant) fields
     is_matrix_item = Column(Boolean, nullable=False, default=False)  # TRUE if product has colour/size/fit variants
     matrix_type = Column(String(20), nullable=False, server_default=text("'standalone'"))  # standalone / parent / child
     matrix_parent_id = Column(SQLUUID(as_uuid=True), ForeignKey("products.product_id", ondelete="SET NULL"), nullable=True, index=True)  # Self-ref for children
-    colour_id = Column(SQLUUID(as_uuid=True), ForeignKey("colours.colour_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → colours
-    size_id = Column(SQLUUID(as_uuid=True), ForeignKey("sizes.size_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → sizes
-    fit_id = Column(SQLUUID(as_uuid=True), ForeignKey("fits.fit_id", ondelete="SET NULL"), nullable=True, index=True)  # FK → fits
+    colour_id = Column(SQLUUID(as_uuid=True), ForeignKey("colours.colour_id", ondelete="SET NULL"), nullable=True, index=True)  # FK â†’ colours
+    size_id = Column(SQLUUID(as_uuid=True), ForeignKey("sizes.size_id", ondelete="SET NULL"), nullable=True, index=True)  # FK â†’ sizes
+    fit_id = Column(SQLUUID(as_uuid=True), ForeignKey("fits.fit_id", ondelete="SET NULL"), nullable=True, index=True)  # FK â†’ fits
     item_option = Column(String(255), nullable=True)  # Domain-specific option (Glove Type, etc.)
 
     # Description fields
@@ -689,9 +714,9 @@ class Product(Base):
 
     # Packaging
     outer_quantity = Column(Integer, nullable=True)  # Quantity in outer packaging
-    outer_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK → uos_labels
+    outer_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK â†’ uos_labels
     inner_quantity = Column(Integer, nullable=True)  # Quantity in inner packaging
-    inner_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK → uos_labels
+    inner_label_id = Column(Integer, ForeignKey("uos_labels.label_id", ondelete="SET NULL"), nullable=True)  # FK â†’ uos_labels
     reorder_multiple = Column(Integer, nullable=True)  # Minimum reorder multiple
 
     # Pricing
@@ -729,6 +754,7 @@ class Product(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete timestamp
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=True)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_products_tenant_sku_unique", "tenant_id", "sku", unique=True),
@@ -765,6 +791,7 @@ class Variant(Base):
     active = Column(Boolean, default=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class SpendingEvent(Base):
@@ -817,6 +844,7 @@ class VendorUser(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index('ix_vendor_users_vendor_email_unique', 'vendor_id', 'email', unique=True),
@@ -828,7 +856,7 @@ class VendorUser(Base):
 # ==================================================================================
 
 class Carrier(Base):
-    """Carrier / logistics provider — global entity"""
+    """Carrier / logistics provider â€” global entity"""
     __tablename__ = "carriers"
 
     carrier_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -840,10 +868,11 @@ class Carrier(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class TenantCarrier(Base):
-    """Tenant ↔ Carrier mapping (ALLOWS_CARRIER edge in graph)"""
+    """Tenant â†” Carrier mapping (ALLOWS_CARRIER edge in graph)"""
     __tablename__ = "tenant_carriers"
 
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -856,6 +885,7 @@ class TenantCarrier(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index('ix_tenant_carrier_unique', 'tenant_id', 'carrier_id', unique=True),
@@ -863,7 +893,7 @@ class TenantCarrier(Base):
 
 
 class UserApprover(Base):
-    """User ↔ CostCentre approval mapping (IS_APPROVER_FOR edge in graph)"""
+    """User â†” CostCentre approval mapping (IS_APPROVER_FOR edge in graph)"""
     __tablename__ = "user_approvers"
 
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -876,6 +906,7 @@ class UserApprover(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index('ix_user_approver_unique', 'user_id', 'cost_centre_id', unique=True),
@@ -900,6 +931,7 @@ class ApprovedRange(Base):
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index('ix_approved_range_tenant_name', 'tenant_id', 'name', unique=True),
@@ -921,7 +953,7 @@ class ApprovedRangeOrgUnit(Base):
 
 
 class ApprovedRangeCategory(Base):
-    """Maps a category into an approved range (many-to-many) — PRIMARY governance path"""
+    """Maps a category into an approved range (many-to-many) â€” PRIMARY governance path"""
     __tablename__ = "approved_range_categories"
 
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -954,7 +986,7 @@ class FinancialCalendar(Base):
     description = Column(Text, nullable=True)
     # gregorian | 445 | 454 | 444 | custom
     calendar_type = Column(String(20), nullable=False, default="gregorian", index=True)
-    start_month   = Column(Integer, nullable=False, default=1)   # 1=January … 12=December
+    start_month   = Column(Integer, nullable=False, default=1)   # 1=January â€¦ 12=December
     currency      = Column(String(3), nullable=True, default="GBP")
     is_active     = Column(Boolean, nullable=False, default=True, index=True)
     is_default    = Column(Boolean, nullable=False, default=False)
@@ -962,6 +994,7 @@ class FinancialCalendar(Base):
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_financial_calendar_tenant_name", "tenant_id", "name", unique=True),
@@ -994,6 +1027,7 @@ class FinancialYear(Base):
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     calendar = relationship("FinancialCalendar", backref="years", foreign_keys=[calendar_id])
 
@@ -1025,6 +1059,8 @@ class FinancialPeriod(Base):
     end_date      = Column(Date, nullable=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     year = relationship("FinancialYear", backref="periods", foreign_keys=[year_id])
 
@@ -1063,6 +1099,7 @@ class CompanyBudgetCap(Base):
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_company_cap_tenant_year", "tenant_id", "year_id", unique=True),
@@ -1090,7 +1127,7 @@ class CostCentreBudgetVersion(Base):
     year_id        = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
                             nullable=False, index=True)
     period_id      = Column(SQLUUID(as_uuid=True), ForeignKey("financial_periods.period_id", ondelete="SET NULL"),
-                            nullable=True, index=True)  # NULL → annual allocation
+                            nullable=True, index=True)  # NULL â†’ annual allocation
     tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
                             nullable=False, index=True)
     currency       = Column(String(3), nullable=False, default="GBP")
@@ -1111,6 +1148,7 @@ class CostCentreBudgetVersion(Base):
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     cost_centre = relationship("CostCentre", backref="budget_versions", foreign_keys=[cost_centre_id])
     year        = relationship("FinancialYear", backref="cc_budget_versions", foreign_keys=[year_id])
@@ -1167,6 +1205,7 @@ class UserCostCentreAssignment(Base):
     assigned_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_user_cc_assign_unique", "user_id", "cost_centre_id", unique=True),
@@ -1180,8 +1219,8 @@ class UserBudgetLimit(Base):
     for monthly + one for annual).
 
     limit_type:
-        requester – controls whether order routes for approval (routing constraint)
-        approver  – signing authority; deducted at commitment (binding control)
+        requester â€“ controls whether order routes for approval (routing constraint)
+        approver  â€“ signing authority; deducted at commitment (binding control)
 
     window_type:
         transaction | week | month | quarter | year
@@ -1196,7 +1235,7 @@ class UserBudgetLimit(Base):
     year_id        = Column(SQLUUID(as_uuid=True), ForeignKey("financial_years.year_id", ondelete="CASCADE"),
                             nullable=False, index=True)
     period_id      = Column(SQLUUID(as_uuid=True), ForeignKey("financial_periods.period_id", ondelete="SET NULL"),
-                            nullable=True, index=True)   # NULL → applies to the whole year
+                            nullable=True, index=True)   # NULL â†’ applies to the whole year
     tenant_id      = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
                             nullable=False, index=True)
     currency       = Column(String(3), nullable=False, default="GBP")
@@ -1221,6 +1260,7 @@ class UserBudgetLimit(Base):
     created_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     __table_args__ = (
         Index("ix_user_limit_unique", "user_id", "cost_centre_id", "year_id", "limit_type", "window_type", unique=True),
@@ -1261,6 +1301,7 @@ class ApprovalPolicy(Base):
     created_by  = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     stages = relationship("ApprovalStage", back_populates="policy",
                           order_by="ApprovalStage.stage_order", cascade="all, delete-orphan")
@@ -1278,7 +1319,7 @@ class ApprovalStage(Base):
     stage_id      = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     policy_id     = Column(SQLUUID(as_uuid=True), ForeignKey("approval_policies.policy_id", ondelete="CASCADE"),
                            nullable=False, index=True)
-    stage_order   = Column(Integer, nullable=False)          # 1, 2, 3 …
+    stage_order   = Column(Integer, nullable=False)          # 1, 2, 3 â€¦
     name          = Column(String(255), nullable=True)       # e.g. "Line Manager", "Finance Director"
     parallel_allowed = Column(Boolean, nullable=False, default=False)
     min_approvers    = Column(Integer, nullable=False, default=1)  # approvals needed to pass stage
@@ -1322,10 +1363,10 @@ class ApprovalStageApprover(Base):
     """
     Defines who can approve at a given stage.
     approver_type:
-        user               – specific user
-        org_unit_manager   – manager of the requester's org unit
-        hierarchy_traversal – walk OrgUnit tree using manager_user_id chain
-        role               – any user holding a specific role in the cost centre
+        user               â€“ specific user
+        org_unit_manager   â€“ manager of the requester's org unit
+        hierarchy_traversal â€“ walk OrgUnit tree using manager_user_id chain
+        role               â€“ any user holding a specific role in the cost centre
     """
     __tablename__ = "approval_stage_approvers"
 
@@ -1387,6 +1428,7 @@ class PurchaseRequest(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     requester = relationship("User", foreign_keys=[requester_id], backref="purchase_requests")
     workflow  = relationship("ApprovalWorkflow", back_populates="request",
@@ -1412,6 +1454,7 @@ class ApprovalWorkflow(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     request = relationship("PurchaseRequest", back_populates="workflow")
     tasks   = relationship("ApprovalTask", back_populates="workflow", cascade="all, delete-orphan")
@@ -1446,6 +1489,7 @@ class ApprovalTask(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
     workflow = relationship("ApprovalWorkflow", back_populates="tasks")
 
@@ -1460,9 +1504,9 @@ class BudgetChangeRequest(Base):
     These are themselves routed through the approval engine.
 
     request_type:
-        top_up         – add funds from central pool to a CC version
-        bring_forward  – pull future-period budget into current period
-        reallocation   – transfer between two CC versions (debit/credit)
+        top_up         â€“ add funds from central pool to a CC version
+        bring_forward  â€“ pull future-period budget into current period
+        reallocation   â€“ transfer between two CC versions (debit/credit)
     """
     __tablename__ = "budget_change_requests"
 
@@ -1493,6 +1537,7 @@ class BudgetChangeRequest(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 # ==================================================================================
@@ -1548,3 +1593,4 @@ class AuditLog(Base):
     ip_address: Mapped[Optional[str]] = mapped_column(nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+

@@ -1,47 +1,4 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-We need to apply the suggested edit to the original code. The original code has a list of constraints, and the suggested edit adds a new entry ("Category", "category_id") to that list. Also, the suggested edit has a slightly different structure (the `def init_constraints()` function definition is repeated but we only need to modify the list). The original code's `init_constraints` function has 8 entries; the suggested edit adds the 9th entry "Category" after "Product". Also note that the original code includes imports and driver functions, which should remain unchanged. So we output the complete file with only the constraint list modified.
+"""We need to apply the suggested edit to the original code. The original code has a list of constraints, and the suggested edit adds a new entry ("Category", "category_id") to that list. Also, the suggested edit has a slightly different structure (the `def init_constraints()` function definition is repeated but we only need to modify the list). The original code's `init_constraints` function has 8 entries; the suggested edit adds the 9th entry "Category" after "Product". Also note that the original code includes imports and driver functions, which should remain unchanged. So we output the complete file with only the constraint list modified.
 
 
 Thus, final output is the original code with the line `("Product", "product_id"),` followed by `("Category", "category_id"),` (indented appropriately) and then `("Carrier", "carrier_id"),` stays.
@@ -54,20 +11,11 @@ We need to ensure the exact formatting: the constraints list should have the new
         ("Role", "role_id"),
         ("ApprovedRange", "approved_range_id"),
         ("Product", "product_id"),
-
-
-
-
-
-
-
-
-
         ("Category", "category_id"),
         ("Carrier", "carrier_id"),
 
 That's the only change. Everything else stays same.```
-"""
+
 Graph Service — Neo4j driver wrapper.
 
 Provides session management and constraint initialization
@@ -131,4 +79,3 @@ def init_constraints():
                 logger.warning(f"Constraint {label}.{prop} creation warning: {exc}")
 
         logger.info(f"Neo4j constraints initialized ({len(constraints)} labels)")
-We must output only the code, no explanation.

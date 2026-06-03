@@ -52,12 +52,6 @@ _OUTBOX_WORKER_EVENT_TYPES = frozenset({
     'mandate.activated',
 })
 
-_VECTOR_SERVICE_AGGREGATE_TYPES = frozenset({
-    'product',
-    'category',
-})
-
-
 def _determine_consumers(event_type: str, aggregate_type: str) -> list:
     """Return the list of consumer names that should receive delivery rows."""
     consumers = []
@@ -65,11 +59,8 @@ def _determine_consumers(event_type: str, aggregate_type: str) -> list:
     if event_type in _OUTBOX_WORKER_EVENT_TYPES:
         consumers.append('outbox_worker')
 
-    # graph_service gets ALL pending events
-    consumers.append('graph_service')
-
-    if aggregate_type in _VECTOR_SERVICE_AGGREGATE_TYPES:
-        consumers.append('vector_service')
+    # data_intelligence_service (graph + vector merged) gets ALL pending events
+    consumers.append('data_intelligence_service')
 
     return consumers
 

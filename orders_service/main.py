@@ -1,4 +1,3 @@
-import asyncio
 import os
 import traceback
 from contextlib import asynccontextmanager
@@ -32,16 +31,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Service bus client start failed: {e}")
 
-    from orders_service.core.workers.notification_worker import process_notifications
-    notification_task = asyncio.create_task(process_notifications())
-
     yield
 
-    notification_task.cancel()
-    try:
-        await notification_task
-    except asyncio.CancelledError:
-        pass
     try:
         await messaging_service.close()
     except Exception as e:
