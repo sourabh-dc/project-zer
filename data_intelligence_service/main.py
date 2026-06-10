@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from data_intelligence_service.core.config import SETTINGS
 from data_intelligence_service.core.logger import logger
+from data_intelligence_service.intelligence.middleware.auth import ApiKeyMiddleware
 from data_intelligence_service.core.neo4j_client import init_constraints, close_driver
 from data_intelligence_service.vector.pg_vector import init_pgvector, similarity_search
 from data_intelligence_service.vector.embeddings import embed_text
@@ -32,8 +33,9 @@ from data_intelligence_service.graph.queries.store_products import (
 # Vector handler
 from data_intelligence_service.vector.handlers.product_embedding_handler import handle as vector_product_handler
 
-# Intelligence router
-from data_intelligence_service.intelligence.agents.query_router import route_and_execute
+# Intelligence agent (LangGraph) + memory
+from data_intelligence_service.intelligence.agents.agent import run_agent
+from data_intelligence_service.intelligence.agents import memory as _mem
 
 
 def _register_handlers():
@@ -87,10 +89,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ZeroQue Data Intelligence Service",
-    version="0.1.0",
+    version="0.2.0",
     description="Unified Graph, Vector, and Intelligence Service",
     lifespan=lifespan,
 )
+
+app.add_middleware(ApiKeyMiddleware)
 
 
 # ── Health ──────────────────────────────────────────────────────────
@@ -195,11 +199,14 @@ class QueryRequest(BaseModel):
     question: str
     tenant_id: str
     user_id: Optional[str] = None
+    session_id: Optional[str] = None   # pass same value across turns for memory
 
 class QueryResponse(BaseModel):
     answer: str
     data: list
     query_plan: dict
+    routing_meta: Dict[str, Any] = {}
+    session_id: Optional[str] = None   # echo for client tracking
 
 @app.post("/intelligence/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
@@ -207,12 +214,36 @@ async def query(req: QueryRequest):
         raise HTTPException(503, "Intelligence service not configured — AZURE_OPENAI_API_KEY required")
 
     try:
-        result = await route_and_execute(
+        result = await run_agent(
             question=req.question,
             tenant_id=req.tenant_id,
             user_id=req.user_id,
+            session_id=req.session_id,
         )
-        return QueryResponse(**result)
+        if result.get("blocked"):
+            raise HTTPException(400, result.get("error", "Request not permitted"))
+        return QueryResponse(
+            answer=result["answer"],
+            data=result["data"],
+            query_plan=result.get("query_plan") or {},
+            routing_meta=result.get("routing_meta") or {},
+            session_id=result.get("session_id"),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Query failed: {exc}", exc_info=True)
         raise HTTPException(500, f"Query execution failed: {exc}")
+
+
+@app.delete("/intelligence/session/{session_id}")
+async def clear_session(session_id: str, tenant_id: str = Query(...)):
+    """Clear conversation memory for a session (user presses 'New conversation')."""
+    _mem.clear_session(tenant_id, session_id)
+    return {"cleared": True, "session_id": session_id}
+
+
+@app.get("/intelligence/sessions/stats")
+async def session_stats():
+    """Diagnostic: number of active sessions in memory."""
+    return {"active_sessions": _mem.active_sessions()}
