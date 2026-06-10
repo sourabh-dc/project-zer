@@ -72,6 +72,13 @@ _T1_VECTOR = [
     r"\bsearch\s+for\b",
     r"\bsemantically\s+(similar|related|close)\b",
     r"\bnearest\s+(products?|matches?)\b",
+    # Descriptive / adjective-led product searches — user describes what they need
+    r"\b(eco[\s\-]?friendly|sustainable|biodegradable|green)\b.{0,30}(product|clean|supply|item)",
+    r"\b(antibacterial|antimicrobial|disinfect|sanitiz\w*)\b",
+    r"\bsomething\s+(for|to)\b.{0,30}(clean|protect|safe|stor|wash|wipe|sanitiz)",
+    r"\bwhat\s+(can\s+i\s+use|do\s+we\s+have)\b.{0,30}(for|to)\b",
+    r"\bi\s+need\s+something\s+(for|to)\b",
+    r"\b(product|item|supply|consumable)s?\s+(for|to)\b",
 ]
 
 # ---------------------------------------------------------------------------

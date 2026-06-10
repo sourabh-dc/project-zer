@@ -179,6 +179,21 @@ Q: "What is the org hierarchy for Operations?"
 
 Q: "How much did we spend on PPE last quarter?"
 → sql: purchase_requests / order_items JOIN products JOIN categories WHERE category='PPE'.
+
+Q: "Find eco-friendly cleaning products"
+→ vector: semantic search — enrich the text: "eco-friendly green sustainable biodegradable cleaning products environmentally safe".
+
+Q: "Show me antibacterial surface wipes for kitchens"
+→ vector: semantic search — "antibacterial surface wipes kitchen hygiene disinfectant cleaning".
+
+Q: "I need something for cold storage hand protection"
+→ vector: semantic search — "cold storage freezer gloves hand protection insulated PPE".
+
+Q: "What can I use to clean industrial machinery?"
+→ vector: semantic search — "industrial machinery cleaning degreaser solvent heavy duty maintenance".
+
+Q: "Products for warehouse safety"
+→ vector: semantic search — "warehouse safety PPE protective equipment high visibility hard hat boots".
 """
 
 _SAFETY_SYSTEM = """\
