@@ -388,6 +388,31 @@ def node_plan(state: AgentState) -> AgentState:
     if engine_hint not in ("unknown",):
         hint_line = f"\n⚑ Routing hint: likely a '{engine_hint}' query.\n"
 
+    # ── Derived Knowledge injection ─────────────────────────────────────────────
+    # Fetch precomputed business facts relevant to this engine type and inject
+    # them as business context into the planner prompt.
+    # WHY: LLMs generate more accurate queries when they know current business
+    # state (e.g. "top spend category is PPE") without having to query for it.
+    # Facts are silently omitted if not yet computed or if DB is unavailable.
+    derived_context = ""
+    try:
+        from data_intelligence_service.intelligence.derived.models import FACT_ENGINE_RELEVANCE
+        from data_intelligence_service.intelligence.derived.store import get_facts_for_query
+        relevant_fact_types = FACT_ENGINE_RELEVANCE.get(engine_hint, [])
+        if relevant_fact_types and plan_attempts == 0:  # skip on retry to save tokens
+            facts = get_facts_for_query(tenant_id, relevant_fact_types)
+            if facts:
+                snippets = "\n\n".join(f.to_context_snippet() for f in facts)
+                derived_context = (
+                    f"\n━━━ BUSINESS CONTEXT (precomputed facts — use to inform your plan) ━━━\n"
+                    f"{snippets}\n"
+                    f"━━━ (End of business context) ━━━\n"
+                )
+                logger.info(f"[Agent] Injected {len(facts)} derived facts into planner prompt")
+    except Exception as exc:
+        # Non-fatal: derived context is a best-effort enhancement, not a hard requirement
+        logger.warning(f"[Agent] Derived fact injection failed (skipping): {exc}")
+
     llm = _make_llm(temperature=0.0)
 
     messages = [SystemMessage(content=_PLANNER_SYSTEM)]
@@ -398,7 +423,8 @@ def node_plan(state: AgentState) -> AgentState:
     context_section = f"\n{context_block}\n" if context_block else ""
 
     if schema_errors and plan_attempts > 0:
-        # Correction mode — feed errors back
+        # Correction mode — feed schema errors back to LLM for self-correction
+        # Skip derived context on retry to keep the prompt focused on the fix
         error_list = "\n".join(f"  - {e}" for e in schema_errors)
         messages += [
             HumanMessage(content=(
@@ -418,6 +444,7 @@ def node_plan(state: AgentState) -> AgentState:
             f"{schema_block}\n{hint_line}\n"
             f"Tenant ID: {tenant_id}\n"
             f"{context_section}"
+            f"{derived_context}"
             f"Question: {question}\n\nGenerate the query plan as JSON."
         )))
 

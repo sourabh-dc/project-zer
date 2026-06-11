@@ -33,10 +33,12 @@ from data_intelligence_service.graph.queries.store_products import (
 # Vector handler
 from data_intelligence_service.vector.handlers.product_embedding_handler import handle as vector_product_handler
 
-# Intelligence agent (LangGraph) + memory
+# Intelligence agent (LangGraph) + memory + derived knowledge
 from data_intelligence_service.intelligence.agents.agent import run_agent
 from data_intelligence_service.intelligence.agents import memory as _mem
 from data_intelligence_service.intelligence.observability import metrics as _metrics
+from data_intelligence_service.intelligence.derived import handlers as derived_handlers
+from data_intelligence_service.intelligence.derived.store import ensure_table_exists
 
 
 def _register_handlers():
@@ -62,6 +64,15 @@ def _register_handlers():
     # Vector handlers
     register_handler("product", vector_product_handler)
 
+    # Derived knowledge handlers — recompute precomputed facts when data changes.
+    # These run AFTER the graph/vector handlers so the graph is already updated
+    # when facts that depend on graph data (approved_product_count) are computed.
+    register_handler("purchase_request", derived_handlers.handle_purchase_request)
+    register_handler("approved_range",   derived_handlers.handle_approved_range)
+    register_handler("budget",           derived_handlers.handle_budget)
+    register_handler("policy",           derived_handlers.handle_policy)
+    register_handler("org_unit",         derived_handlers.handle_org_unit)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,9 +81,13 @@ async def lifespan(app: FastAPI):
     # Graph init
     init_constraints()
     _register_handlers()
-    
+
     # Vector init
     init_pgvector()
+
+    # Derived knowledge table — create if not exists (idempotent)
+    # In staging/prod, run migrations/001_derived_knowledge.sql instead
+    ensure_table_exists()
 
     # Intelligence init
     if not SETTINGS.AZURE_OPENAI_API_KEY:
