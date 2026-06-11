@@ -222,8 +222,9 @@ class QueryResponse(BaseModel):
     data: list
     query_plan: dict
     routing_meta: Dict[str, Any] = {}
-    trace: Dict[str, Any] = {}         # per-query explainability (engine, latency, tokens, steps)
-    session_id: Optional[str] = None   # echo for client tracking
+    permission_meta: Dict[str, Any] = {}  # user context summary — roles, scope, admin flag
+    trace: Dict[str, Any] = {}            # per-query explainability (engine, latency, tokens, steps)
+    session_id: Optional[str] = None      # echo for client tracking
 
 @app.post("/intelligence/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
@@ -244,6 +245,7 @@ async def query(req: QueryRequest):
             data=result["data"],
             query_plan=result.get("query_plan") or {},
             routing_meta=result.get("routing_meta") or {},
+            permission_meta=result.get("permission_meta") or {},
             trace=result.get("trace") or {},
             session_id=result.get("session_id"),
         )

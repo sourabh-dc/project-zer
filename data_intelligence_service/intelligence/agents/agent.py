@@ -110,6 +110,11 @@ class AgentState(TypedDict):
     user_id: Optional[str]
     session_id: Optional[str]          # conversation session — None = stateless
 
+    # Permission context — populated in node_guardrail from graph + approved_universe
+    # Reused across all nodes: avoids repeated graph traversals within one query
+    user_context: Optional[Dict]       # full governance context from get_user_context()
+    approved_ids: Optional[Any]        # "__all__" | List[str] — product filter
+
     # Routing
     engine_hint: str          # sql | graph | vector | hybrid | unknown
     routing_tier: int
@@ -154,6 +159,11 @@ fetches the exact data needed to answer it accurately.
 6. Parameterise user values: :param_name (SQL), $param_name (Cypher).
 7. Never string-concatenate user input into queries.
 8. Max 6 steps per plan.
+9. PRODUCT GOVERNANCE: When querying products (tables: products, order_items, approved_range_products)
+   and the question is about what a specific user can see or order, add:
+   AND p.product_id = ANY(CAST(:approved_ids AS UUID[]))
+   The :approved_ids param contains the user's pre-approved product list.
+   Omit this filter for admin/aggregate queries (counts, spend totals by tenant).
 
 ━━━ ENGINE GUIDE ━━━
 sql    → exact data: product details, spend totals, counts, budgets, order history,
@@ -257,9 +267,9 @@ Rules:
 # ---------------------------------------------------------------------------
 
 async def node_guardrail(state: AgentState) -> AgentState:
-    """Safety check — first node, runs before any LLM or DB call.
+    """Safety check + permission enforcement — first node, runs before any LLM or DB call.
 
-    WHY two tiers?
+    WHY two tiers of content safety?
       Tier 1 (regex) is instant and catches 95% of attacks.
       Tier 2 (LLM) is only triggered for suspicious patterns — it catches
       sophisticated prompt injection that regex misses, but we avoid the
@@ -269,12 +279,26 @@ async def node_guardrail(state: AgentState) -> AgentState:
       If our safety LLM is down, we don't want the entire service to fail.
       The regex check already caught the obvious attacks. The LLM check is
       a defence-in-depth layer, not a hard gate.
+
+    WHY build user_context here (not in node_execute)?
+      Fetching the user's graph context is a network call (Neo4j). Doing it
+      once in guardrail means all downstream nodes (plan, execute) can reuse
+      the same context without additional graph traversals. The approved_ids
+      fetched here are used for both SQL and vector filtering in node_execute.
+
+    WHY fail-open on permission graph failure?
+      The DIS API is already protected by X-API-Key at the middleware level.
+      If Neo4j is temporarily unavailable, denying ALL queries would be wrong.
+      The API key is sufficient gate; graph-based permissions are a bonus layer.
     """
-    question = state["question"]
+    question  = state["question"]
+    user_id   = state.get("user_id")
+    tenant_id = state["tenant_id"]
     qt: QueryTrace = state.get("trace") or QueryTrace()
 
-    with span_node("guardrail", {"query.length": len(question)}):
-        # Tier 1: regex (no LLM) — always run first, no cost
+    with span_node("guardrail", {"query.length": len(question), "has_user_id": bool(user_id)}):
+
+        # ── Content safety Tier 1: regex (no LLM, no cost) ───────────────────
         result = check_fast(question)
         if not result.allowed:
             logger.warning(f"[Agent] guardrail BLOCK tier=1 category={result.category} q={question[:60]}")
@@ -283,9 +307,48 @@ async def node_guardrail(state: AgentState) -> AgentState:
             qt.guardrail_tier = 1
             return {**state, "trace": qt, "error": result.reason, "answer": result.reason, "next": "error"}
 
-        # Tier 2: LLM safety — only for questions with injection-like signals
-        # Heuristic: long questions and questions containing control phrases are
-        # more likely to be adversarial. Normal procurement questions are short.
+        # ── Permission enforcement — build user context from graph ─────────────
+        # Runs AFTER regex safety (cheap gate first) and BEFORE LLM safety
+        # (we want permission check even if LLM check is skipped for short questions)
+        user_ctx = {}
+        approved_ids: Any = "__all__"
+        try:
+            from data_intelligence_service.intelligence.permissions.context import (
+                build_user_permission_context, get_approved_ids,
+            )
+            from data_intelligence_service.intelligence.permissions.policy_client import (
+                check_intelligence_permission,
+            )
+
+            user_ctx    = build_user_permission_context(user_id, tenant_id)
+            approved_ids = get_approved_ids(user_ctx)
+
+            perm_result = check_intelligence_permission(
+                user_ctx=user_ctx,
+                question=question,
+                correlation_id=qt.query_id if hasattr(qt, "query_id") else None,
+            )
+            if not perm_result["allowed"]:
+                reason = perm_result["reason"]
+                logger.warning(f"[Agent] Permission DENIED user={user_id}: {reason}")
+                _metrics.record_guardrail_block(category="permission_denied", tier=1)
+                qt.guardrail_passed = False
+                qt.guardrail_tier = 1
+                return {
+                    **state,
+                    "trace": qt,
+                    "user_context": user_ctx,
+                    "approved_ids": approved_ids,
+                    "error": reason,
+                    "answer": reason,
+                    "next": "error",
+                }
+        except Exception as exc:
+            # Fail-open: graph unavailable does not block the query.
+            # API key auth is sufficient. Log for monitoring.
+            logger.warning(f"[Agent] Permission context build failed (fail-open): {exc}")
+
+        # ── Content safety Tier 2: LLM — only for suspicious patterns ─────────
         needs_llm_check = (
             len(question) > 200
             or "you are" in question.lower()
@@ -301,14 +364,31 @@ async def node_guardrail(state: AgentState) -> AgentState:
                     _metrics.record_guardrail_block(category="llm_flagged", tier=2)
                     qt.guardrail_passed = False
                     qt.guardrail_tier = 2
-                    return {**state, "trace": qt, "error": result2.reason, "answer": result2.reason, "next": "error"}
+                    return {
+                        **state,
+                        "trace": qt,
+                        "user_context": user_ctx,
+                        "approved_ids": approved_ids,
+                        "error": result2.reason,
+                        "answer": result2.reason,
+                        "next": "error",
+                    }
             except Exception as exc:
                 # Fail-open: LLM safety unavailable is not a reason to break the service
                 logger.warning(f"[Agent] LLM safety check failed (allowed through): {exc}")
 
-    logger.info(f"[Agent] guardrail PASS q={question[:60]}")
+    logger.info(
+        f"[Agent] guardrail PASS q={question[:60]} "
+        f"user={user_id} approved={'__all__' if approved_ids == '__all__' else len(approved_ids)}"
+    )
     qt.guardrail_passed = True
-    return {**state, "trace": qt, "next": "classify"}
+    return {
+        **state,
+        "trace":        qt,
+        "user_context": user_ctx,
+        "approved_ids": approved_ids,
+        "next": "classify",
+    }
 
 
 def node_classify(state: AgentState) -> AgentState:
@@ -557,6 +637,9 @@ async def node_execute(state: AgentState) -> AgentState:
     steps = plan.get("steps", [])
     step_results: List[Dict] = []
 
+    # approved_ids was fetched once in node_guardrail — reuse here, no extra graph call
+    approved_ids: Any = state.get("approved_ids", "__all__")
+
     qt: QueryTrace = state.get("trace") or QueryTrace()
     import time as _time
 
@@ -578,7 +661,7 @@ async def node_execute(state: AgentState) -> AgentState:
                 logger.warning(f"[Agent] step {i} depends_on step {dep_idx} returned no IDs")
 
         step_start = _time.monotonic()
-        data, err = await _run_step(engine, query, params, tenant_id, user_id)
+        data, err = await _run_step(engine, query, params, tenant_id, user_id, approved_ids)
         step_latency_ms = (_time.monotonic() - step_start) * 1000
 
         result_row = {
@@ -683,16 +766,38 @@ def node_error(state: AgentState) -> AgentState:
 # ---------------------------------------------------------------------------
 
 async def _run_step(
-    engine: str, query: str, params: Dict, tenant_id: str, user_id: Optional[str]
+    engine: str,
+    query: str,
+    params: Dict,
+    tenant_id: str,
+    user_id: Optional[str],
+    approved_ids: Any = "__all__",
 ) -> tuple[List[Dict], Optional[str]]:
+    """Execute one plan step against the appropriate engine.
+
+    approved_ids is passed from state (fetched once in node_guardrail).
+    For SQL: if products are referenced, approved_ids are added to params
+             so the LLM-generated query can filter with :approved_ids.
+    For vector: approved_ids are passed directly to the pgvector filter.
+    """
     try:
         if engine == "sql":
+            # Inject approved_ids into SQL params when a product filter is needed.
+            # The planner prompt includes a rule: "Add AND product_id = ANY(:approved_ids)
+            # when querying products and approved_ids is available".
+            # We always supply it so the LLM can reference it if it chose to.
+            if approved_ids != "__all__" and approved_ids:
+                params = {**params, "approved_ids": approved_ids}
             return execute_readonly_sql(query, params), None
+
         elif engine == "graph":
             graph_params = {k: v for k, v in params.items() if k in ("tenant_id", "prior_ids")}
             return execute_readonly_cypher(query, graph_params), None
+
         elif engine == "vector":
-            return await _vector_search(query, tenant_id, user_id), None
+            # Reuse approved_ids from state — already fetched in guardrail
+            return await _vector_search(query, tenant_id, approved_ids), None
+
         else:
             return [], f"Unknown engine: {engine}"
     except Exception as exc:
@@ -700,25 +805,34 @@ async def _run_step(
         return [], str(exc)
 
 
-async def _vector_search(query_text: str, tenant_id: str, user_id: Optional[str]) -> List[Dict]:
+async def _vector_search(query_text: str, tenant_id: str, approved_ids: Any = "__all__") -> List[Dict]:
+    """Semantic product search with permission-filtered results.
+
+    approved_ids comes from the user's governance context (built in node_guardrail).
+    We no longer fetch approved_ids here — that would be a duplicate graph call.
+
+    WHY trust approved_ids from state?
+      node_guardrail runs before any other node. If it passed, approved_ids is
+      already set. If Neo4j was down, approved_ids defaults to '__all__' — fail-open.
+    """
     try:
         import data_intelligence_service.vector.embeddings as _emb
         import data_intelligence_service.vector.pg_vector as _vec
-        import data_intelligence_service.graph.queries.approved_universe as _gov
 
         embedding = _emb.embed_text(query_text)
-        approved_ids = ["__all__"]
-        if user_id:
-            try:
-                result = _gov.get_approved_product_ids(tenant_id, user_id, is_admin=False)
-                approved_ids = ["__all__"] if result == "__all__" else result
-            except Exception as exc:
-                logger.warning(f"[Agent] governance fetch failed: {exc}")
-                approved_ids = []
+        # Normalise: pgvector expects ["__all__"] or a list of strings
+        if approved_ids == "__all__":
+            filter_ids = ["__all__"]
+        elif not approved_ids:
+            # Empty list = user has no approved products — return nothing
+            logger.info("[Agent] vector search: user has no approved products, returning empty")
+            return []
+        else:
+            filter_ids = approved_ids
 
         raw = _vec.similarity_search(
             tenant_id=tenant_id, query_embedding=embedding,
-            approved_product_ids=approved_ids, top_k=20,
+            approved_product_ids=filter_ids, top_k=20,
         )
         threshold = SETTINGS.VECTOR_SIMILARITY_THRESHOLD
         return [r for r in raw if r.get("similarity", 0) >= threshold]
@@ -812,6 +926,9 @@ async def run_agent(
         "tenant_id":          tenant_id,
         "user_id":            user_id,
         "session_id":         session_id,
+        # user_context + approved_ids populated in node_guardrail via graph traversal
+        "user_context":       None,
+        "approved_ids":       "__all__",
         "engine_hint":        "unknown",
         "routing_tier":       3,
         "routing_confidence": 0.0,
@@ -832,6 +949,17 @@ async def run_agent(
         final_trace.finish()
 
     is_blocked = bool(final_state.get("error") and not final_state.get("plan"))
+
+    # Summarise permission context for API response — don't expose full approved_ids list
+    user_ctx = final_state.get("user_context") or {}
+    approved = final_state.get("approved_ids", "__all__")
+    permission_meta = {
+        "user_id":    user_ctx.get("user_id"),
+        "is_admin":   user_ctx.get("is_admin", False),
+        "roles":      [r.get("code") for r in user_ctx.get("roles", [])],
+        "approved_product_scope": "__all__" if approved == "__all__" else f"{len(approved)} products",
+    }
+
     return {
         "answer":       final_state.get("answer", ""),
         "data":         final_state.get("step_results", []),
@@ -842,6 +970,7 @@ async def run_agent(
             "confidence": final_state.get("routing_confidence"),
             "attempts":   final_state.get("plan_attempts"),
         },
+        "permission_meta": permission_meta,
         "trace":      final_trace.to_dict(),
         "blocked":    is_blocked,
         "error":      final_state.get("error"),
