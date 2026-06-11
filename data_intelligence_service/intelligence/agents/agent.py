@@ -42,6 +42,11 @@ from data_intelligence_service.intelligence.routing.schema_validator import (
 )
 from data_intelligence_service.intelligence.agents.guardrails import check_fast, check_with_llm
 from data_intelligence_service.intelligence.agents import memory as _mem
+from data_intelligence_service.intelligence.observability.otel import (
+    setup_tracing, span_node, span_llm_call, record_token_usage,
+)
+from data_intelligence_service.intelligence.observability.trace import QueryTrace, StepTrace
+from data_intelligence_service.intelligence.observability import metrics as _metrics
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +64,13 @@ def _setup_langsmith():
         logger.info("[Agent] LangSmith tracing disabled (set LANGSMITH_API_KEY to enable)")
 
 _setup_langsmith()
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry tracing — auto-enabled based on env vars
+# Langfuse: set LANGFUSE_SECRET_KEY + LANGFUSE_PUBLIC_KEY + LANGFUSE_HOST
+# Generic OTLP: set OTEL_EXPORTER_OTLP_ENDPOINT
+# ---------------------------------------------------------------------------
+setup_tracing(service_name="zeroque-intelligence")
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +126,9 @@ class AgentState(TypedDict):
     # Output
     answer: str
     error: Optional[str]
+
+    # Observability — built incrementally across nodes, returned in API response
+    trace: Optional[Any]      # QueryTrace instance
 
     # Control
     next: str                 # next node name (for conditional routing)
@@ -256,35 +271,44 @@ async def node_guardrail(state: AgentState) -> AgentState:
       a defence-in-depth layer, not a hard gate.
     """
     question = state["question"]
+    qt: QueryTrace = state.get("trace") or QueryTrace()
 
-    # Tier 1: regex (no LLM) — always run first, no cost
-    result = check_fast(question)
-    if not result.allowed:
-        logger.warning(f"[Agent] guardrail BLOCK tier=1 category={result.category} q={question[:60]}")
-        return {**state, "error": result.reason, "answer": result.reason, "next": "error"}
+    with span_node("guardrail", {"query.length": len(question)}):
+        # Tier 1: regex (no LLM) — always run first, no cost
+        result = check_fast(question)
+        if not result.allowed:
+            logger.warning(f"[Agent] guardrail BLOCK tier=1 category={result.category} q={question[:60]}")
+            _metrics.record_guardrail_block(category=result.category or "unknown", tier=1)
+            qt.guardrail_passed = False
+            qt.guardrail_tier = 1
+            return {**state, "trace": qt, "error": result.reason, "answer": result.reason, "next": "error"}
 
-    # Tier 2: LLM safety — only for questions with injection-like signals
-    # Heuristic: long questions and questions containing control phrases are
-    # more likely to be adversarial. Normal procurement questions are short.
-    needs_llm_check = (
-        len(question) > 200
-        or "you are" in question.lower()
-        or "ignore" in question.lower()
-        or "pretend" in question.lower()
-    )
-    if needs_llm_check:
-        try:
-            llm = _make_llm(temperature=0.0)
-            result2 = check_with_llm(question, llm)
-            if not result2.allowed:
-                logger.warning(f"[Agent] guardrail BLOCK tier=2 q={question[:60]}")
-                return {**state, "error": result2.reason, "answer": result2.reason, "next": "error"}
-        except Exception as exc:
-            # Fail-open: LLM safety unavailable is not a reason to break the service
-            logger.warning(f"[Agent] LLM safety check failed (allowed through): {exc}")
+        # Tier 2: LLM safety — only for questions with injection-like signals
+        # Heuristic: long questions and questions containing control phrases are
+        # more likely to be adversarial. Normal procurement questions are short.
+        needs_llm_check = (
+            len(question) > 200
+            or "you are" in question.lower()
+            or "ignore" in question.lower()
+            or "pretend" in question.lower()
+        )
+        if needs_llm_check:
+            try:
+                llm = _make_llm(temperature=0.0)
+                result2 = check_with_llm(question, llm)
+                if not result2.allowed:
+                    logger.warning(f"[Agent] guardrail BLOCK tier=2 q={question[:60]}")
+                    _metrics.record_guardrail_block(category="llm_flagged", tier=2)
+                    qt.guardrail_passed = False
+                    qt.guardrail_tier = 2
+                    return {**state, "trace": qt, "error": result2.reason, "answer": result2.reason, "next": "error"}
+            except Exception as exc:
+                # Fail-open: LLM safety unavailable is not a reason to break the service
+                logger.warning(f"[Agent] LLM safety check failed (allowed through): {exc}")
 
     logger.info(f"[Agent] guardrail PASS q={question[:60]}")
-    return {**state, "next": "classify"}
+    qt.guardrail_passed = True
+    return {**state, "trace": qt, "next": "classify"}
 
 
 def node_classify(state: AgentState) -> AgentState:
@@ -296,10 +320,23 @@ def node_classify(state: AgentState) -> AgentState:
       not the graph schema — keeps the prompt smaller and the plan more focused.
       The classifier also gives us confidence metadata for observability.
     """
-    engine_hint, tier, confidence = classify(state["question"])
+    qt: QueryTrace = state.get("trace") or QueryTrace()
+
+    with span_node("classify", {"question": state["question"][:120]}) as span:
+        engine_hint, tier, confidence = classify(state["question"])
+        span.set_attribute("routing.engine", engine_hint)
+        span.set_attribute("routing.tier",   tier)
+        span.set_attribute("routing.confidence", confidence)
+
     logger.info(f"[Agent] classify: tier={tier} engine={engine_hint} conf={confidence:.2f}")
+
+    qt.engine = engine_hint
+    qt.tier = tier
+    qt.confidence = confidence
+
     return {
         **state,
+        "trace": qt,
         "engine_hint": engine_hint,
         "routing_tier": tier,
         "routing_confidence": confidence,
@@ -384,9 +421,20 @@ def node_plan(state: AgentState) -> AgentState:
             f"Question: {question}\n\nGenerate the query plan as JSON."
         )))
 
+    qt: QueryTrace = state.get("trace") or QueryTrace()
+
     try:
-        response = llm.invoke(messages)
-        raw = response.content
+        with span_llm_call("plan", SETTINGS.AZURE_OPENAI_LLM_DEPLOYMENT,
+                           {"engine_hint": engine_hint, "plan_attempt": plan_attempts}) as span:
+            response = llm.invoke(messages)
+            raw = response.content
+
+            # Extract token usage for metrics and trace
+            token_usage = record_token_usage(span, response)
+            qt.tokens_prompt     += token_usage["prompt"]
+            qt.tokens_completion += token_usage["completion"]
+            qt.tokens_total      += token_usage["total"]
+            _metrics.record_llm_tokens("plan", token_usage["prompt"], token_usage["completion"])
 
         # Extract JSON from response — reasoning models may wrap JSON in markdown fences
         import re as _re
@@ -397,10 +445,15 @@ def node_plan(state: AgentState) -> AgentState:
         logger.info(f"[Agent] plan generated: type={plan.get('query_type')} steps={len(plan.get('steps', []))}")
     except Exception as exc:
         logger.error(f"[Agent] plan generation failed: {exc}")
-        return {**state, "error": str(exc), "answer": f"Failed to generate query plan: {exc}", "next": "error"}
+        return {**state, "trace": qt, "error": str(exc), "answer": f"Failed to generate query plan: {exc}", "next": "error"}
+
+    qt.plan_attempts = plan_attempts + 1
+    # Update engine from plan if the LLM overrode the hint
+    qt.engine = plan.get("query_type", qt.engine)
 
     return {
         **state,
+        "trace": qt,
         "plan": plan,
         "plan_attempts": plan_attempts + 1,
         "schema_errors": [],
@@ -422,33 +475,40 @@ def node_schema_check(state: AgentState) -> AgentState:
       error than to spin in a retry loop burning tokens.
     """
     plan = state.get("plan", {})
+    qt: QueryTrace = state.get("trace") or QueryTrace()
 
-    # Structural validation first — check required fields, step limits, engine values
-    try:
-        warnings = validate_plan(plan)
-        if warnings:
-            logger.warning(f"[Agent] plan warnings: {warnings}")
-    except PlanValidationError as exc:
-        return {**state, "error": str(exc), "answer": str(exc), "next": "error"}
+    with span_node("schema_check", {"plan.steps": len(plan.get("steps", []))}) as span:
+        # Structural validation first — check required fields, step limits, engine values
+        try:
+            warnings = validate_plan(plan)
+            if warnings:
+                logger.warning(f"[Agent] plan warnings: {warnings}")
+        except PlanValidationError as exc:
+            span.set_attribute("validation.error", str(exc))
+            return {**state, "trace": qt, "error": str(exc), "answer": str(exc), "next": "error"}
 
-    # Schema validation — check every table, column, node label, relationship type
-    sql_schema = get_schema_description()
-    graph_schema = get_graph_schema_description()
-    sql_dict = build_sql_schema_dict(sql_schema)
-    graph_dict = parse_graph_schema(graph_schema)
-    errors = validate_plan_schema(plan, sql_dict, graph_dict)
+        # Schema validation — check every table, column, node label, relationship type
+        sql_schema = get_schema_description()
+        graph_schema = get_graph_schema_description()
+        sql_dict = build_sql_schema_dict(sql_schema)
+        graph_dict = parse_graph_schema(graph_schema)
+        errors = validate_plan_schema(plan, sql_dict, graph_dict)
 
-    if errors:
-        logger.warning(f"[Agent] schema errors detected: {errors}")
-        if state.get("plan_attempts", 0) < 2:
-            # Feed errors back to LLM for self-correction
-            return {**state, "schema_errors": errors, "next": "plan"}
-        else:
-            msg = f"Could not generate a valid query after corrections. Schema errors: {errors}"
-            return {**state, "error": msg, "answer": msg, "next": "error"}
+        span.set_attribute("schema.errors_count", len(errors))
+        span.set_attribute("schema.passed", len(errors) == 0)
+
+        if errors:
+            logger.warning(f"[Agent] schema errors detected: {errors}")
+            qt.schema_errors = errors
+            if state.get("plan_attempts", 0) < 2:
+                _metrics.record_plan_retry()
+                return {**state, "trace": qt, "schema_errors": errors, "next": "plan"}
+            else:
+                msg = f"Could not generate a valid query after corrections. Schema errors: {errors}"
+                return {**state, "trace": qt, "error": msg, "answer": msg, "next": "error"}
 
     logger.info("[Agent] schema check passed")
-    return {**state, "schema_errors": [], "next": "execute"}
+    return {**state, "trace": qt, "schema_errors": [], "next": "execute"}
 
 
 async def node_execute(state: AgentState) -> AgentState:
@@ -470,6 +530,9 @@ async def node_execute(state: AgentState) -> AgentState:
     steps = plan.get("steps", [])
     step_results: List[Dict] = []
 
+    qt: QueryTrace = state.get("trace") or QueryTrace()
+    import time as _time
+
     for i, step in enumerate(steps):
         engine = step.get("engine", "")
         query = step.get("query", "")
@@ -487,18 +550,31 @@ async def node_execute(state: AgentState) -> AgentState:
             else:
                 logger.warning(f"[Agent] step {i} depends_on step {dep_idx} returned no IDs")
 
+        step_start = _time.monotonic()
         data, err = await _run_step(engine, query, params, tenant_id, user_id)
-        step_results.append({
+        step_latency_ms = (_time.monotonic() - step_start) * 1000
+
+        result_row = {
             "step": i,
             "engine": engine,
             "description": step.get("description", ""),
             "data": data,
             "row_count": len(data),
             **({"error": err} if err else {}),
-        })
+        }
+        step_results.append(result_row)
         logger.info(f"[Agent] step {i} ({engine}): {len(data)} rows" + (f" ERROR: {err}" if err else ""))
 
-    return {**state, "step_results": step_results, "next": "summarize"}
+        qt.steps.append(StepTrace(
+            step_index=i,
+            engine=engine,
+            description=step.get("description", ""),
+            rows_returned=len(data),
+            latency_ms=step_latency_ms,
+            error=err,
+        ))
+
+    return {**state, "trace": qt, "step_results": step_results, "next": "summarize"}
 
 
 def node_summarize(state: AgentState) -> AgentState:
@@ -543,9 +619,18 @@ def node_summarize(state: AgentState) -> AgentState:
         )),
     ]
 
+    qt: QueryTrace = state.get("trace") or QueryTrace()
+
     try:
-        response = llm.invoke(messages)
-        answer = response.content
+        with span_llm_call("summarize", SETTINGS.AZURE_OPENAI_LLM_DEPLOYMENT,
+                           {"result.steps": len(step_results)}) as span:
+            response = llm.invoke(messages)
+            answer = response.content
+            token_usage = record_token_usage(span, response)
+            qt.tokens_prompt     += token_usage["prompt"]
+            qt.tokens_completion += token_usage["completion"]
+            qt.tokens_total      += token_usage["total"]
+            _metrics.record_llm_tokens("summarize", token_usage["prompt"], token_usage["completion"])
     except Exception as exc:
         logger.error(f"[Agent] summarization failed: {exc}")
         answer = f"Query executed but summarization failed: {exc}\n\nRaw results: {results_text[:2000]}"
@@ -554,7 +639,11 @@ def node_summarize(state: AgentState) -> AgentState:
     engine = (plan.get("query_type") or state.get("engine_hint") or "unknown")
     _mem.save_turn(tenant_id, session_id, question, answer, engine)
 
-    return {**state, "answer": answer, "next": END}
+    qt.finish()
+    _metrics.record_query(engine=qt.engine, tier=qt.tier, latency_ms=qt.latency_ms, success=True)
+    _metrics.set_active_sessions(_mem.active_sessions())
+
+    return {**state, "trace": qt, "answer": answer, "next": END}
 
 
 def node_error(state: AgentState) -> AgentState:
@@ -688,6 +777,9 @@ async def run_agent(
         error        — Error message if something failed
         session_id   — Echo of session_id for client tracking
     """
+    # Create a fresh QueryTrace — passed through agent state and enriched at each node
+    qt = QueryTrace()
+
     initial_state: AgentState = {
         "question":           question,
         "tenant_id":          tenant_id,
@@ -702,10 +794,15 @@ async def run_agent(
         "step_results":       [],
         "answer":             "",
         "error":              None,
+        "trace":              qt,
         "next":               "guardrail",
     }
 
     final_state = await _AGENT.ainvoke(initial_state)
+
+    final_trace: QueryTrace = final_state.get("trace") or qt
+    if not final_trace.latency_ms:
+        final_trace.finish()
 
     is_blocked = bool(final_state.get("error") and not final_state.get("plan"))
     return {
@@ -718,6 +815,7 @@ async def run_agent(
             "confidence": final_state.get("routing_confidence"),
             "attempts":   final_state.get("plan_attempts"),
         },
+        "trace":      final_trace.to_dict(),
         "blocked":    is_blocked,
         "error":      final_state.get("error"),
         "session_id": session_id,

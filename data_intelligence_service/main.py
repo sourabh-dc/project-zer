@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from data_intelligence_service.core.config import SETTINGS
@@ -36,6 +36,7 @@ from data_intelligence_service.vector.handlers.product_embedding_handler import 
 # Intelligence agent (LangGraph) + memory
 from data_intelligence_service.intelligence.agents.agent import run_agent
 from data_intelligence_service.intelligence.agents import memory as _mem
+from data_intelligence_service.intelligence.observability import metrics as _metrics
 
 
 def _register_handlers():
@@ -206,6 +207,7 @@ class QueryResponse(BaseModel):
     data: list
     query_plan: dict
     routing_meta: Dict[str, Any] = {}
+    trace: Dict[str, Any] = {}         # per-query explainability (engine, latency, tokens, steps)
     session_id: Optional[str] = None   # echo for client tracking
 
 @app.post("/intelligence/query", response_model=QueryResponse)
@@ -227,6 +229,7 @@ async def query(req: QueryRequest):
             data=result["data"],
             query_plan=result.get("query_plan") or {},
             routing_meta=result.get("routing_meta") or {},
+            trace=result.get("trace") or {},
             session_id=result.get("session_id"),
         )
     except HTTPException:
@@ -247,3 +250,20 @@ async def clear_session(session_id: str, tenant_id: str = Query(...)):
 async def session_stats():
     """Diagnostic: number of active sessions in memory."""
     return {"active_sessions": _mem.active_sessions()}
+
+
+# ── Observability ────────────────────────────────────────────────────────────
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint.
+
+    Scraped by Prometheus every 15s. Visualise in Grafana.
+    Returns 501 if prometheus_client is not installed.
+    """
+    if not _metrics.is_available():
+        raise HTTPException(501, "prometheus_client not installed. Run: pip install prometheus-client")
+
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    registry = _metrics.get_registry()
+    data = generate_latest(registry)
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
