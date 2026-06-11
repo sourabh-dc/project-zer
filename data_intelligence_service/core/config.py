@@ -99,6 +99,16 @@ class DataIntelligenceSettings(BaseSettings):
 
     LOG_LEVEL: str = Field(default="INFO")
 
+    # Intelligence router settings
+    INTELLIGENCE_API_KEY: str = Field(default="", description="API key for intelligence endpoint (empty = no auth)")
+    VECTOR_SIMILARITY_THRESHOLD: float = Field(default=0.30, description="Min cosine similarity score to include vector results")
+    PLAN_CACHE_TTL_SECONDS: int = Field(default=300, description="TTL in seconds for in-memory query plan cache")
+    LLM_MAX_RETRIES: int = Field(default=3, description="Max retry attempts for LLM calls")
+    LLM_RETRY_DELAY_SECONDS: float = Field(default=1.0, description="Base delay between LLM retries")
+    SQL_QUERY_TIMEOUT_SECONDS: int = Field(default=30, description="Postgres statement timeout for LLM-generated queries")
+    SQL_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single SQL query")
+    CYPHER_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single Cypher query")
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 SETTINGS = DataIntelligenceSettings()

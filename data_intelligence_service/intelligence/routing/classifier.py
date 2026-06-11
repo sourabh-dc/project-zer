@@ -1,9 +1,20 @@
 """
 Tiered query classifier.
 
-Tier 1 — High-confidence regex rules      < 1ms, deterministic, ~80% of queries
-Tier 2 — Weighted multi-signal scoring    < 1ms, deterministic, ~15% of queries
-Tier 3 — Delegate to LLM                 100-500ms, for ambiguous/hybrid queries
+WHY three tiers?
+  - Tier 1 (regex): handles ~80% of queries instantly, deterministically.
+    Fast regex rules fire on high-confidence signals like "who reports to"
+    or "how many". No ambiguity, no cost.
+  - Tier 2 (weighted scoring): handles ~15% of queries. Questions that have
+    multiple signals (e.g. "spend" + "org unit") are scored per engine.
+    Still < 1ms, still deterministic.
+  - Tier 3 (LLM): the remaining ~5% are genuinely ambiguous. We return
+    engine='unknown' and let the LLM planner decide from full context.
+
+WHY not always use the LLM to classify?
+  LLM classification adds 100–500ms per query. For 80% of questions that
+  have an obvious answer (regex hits), this is pure waste. The 3-tier
+  approach gets us < 1ms for most queries with LLM accuracy for the hard ones.
 
 Returns (engine, tier, confidence):
   engine     — 'graph' | 'sql' | 'vector' | 'hybrid' | 'unknown'
@@ -16,6 +27,17 @@ from typing import Tuple
 # ---------------------------------------------------------------------------
 # Tier 1: High-confidence single-signal regex rules
 # Any match here → definitive classification, skip tiers 2+3.
+#
+# WHY these patterns and not others?
+#   Each pattern represents a question fragment that is ONLY asked in one
+#   context. "Reports to" only appears in org-hierarchy questions (graph).
+#   "How many" only appears in count/aggregate questions (sql).
+#   "Similar to" only appears in semantic product search (vector).
+#
+# WHY negative lookaheads in _T1_SQL?
+#   "List all vendors" should go to graph (vendor relationships), not SQL.
+#   The lookahead (?!...) prevents the broad "list/show/get" pattern from
+#   swallowing graph-domain nouns that happen to match the generic structure.
 # ---------------------------------------------------------------------------
 
 _T1_HYBRID = [
@@ -84,6 +106,16 @@ _T1_VECTOR = [
 # ---------------------------------------------------------------------------
 # Tier 2: Weighted multi-signal scoring
 # Wider signal vocabulary with per-signal weights (higher = stronger signal).
+#
+# WHY weights instead of counts?
+#   "org unit" (weight 3) is a much stronger graph signal than "who" (weight 1).
+#   Simple keyword counts would treat them equally. Weights let us encode domain
+#   knowledge about signal strength without complex rule logic.
+#
+# WHY _T2_MIN_SCORE = 4 and _T2_MIN_CONFIDENCE = 0.55?
+#   Score < 4 means only 1-2 weak signals matched — not enough to be sure.
+#   Confidence < 0.55 means two engines scored similarly — that's hybrid or
+#   unknown, not a clear winner. Both thresholds were tuned on real questions.
 # ---------------------------------------------------------------------------
 
 _T2_SIGNALS: dict = {

@@ -1,12 +1,24 @@
 """
 Schema-grounded query validator.
 
-After LLM generates SQL or Cypher, this module checks that every table,
-column, node label, and relationship type actually exists in the live schema.
+WHY validate AFTER the LLM generates a query?
+  Even with schema grounding in the prompt, LLMs occasionally hallucinate
+  table or column names. Catching these here — before hitting the DB — lets
+  us give the LLM a precise error message for self-correction instead of
+  a raw database exception that leaks schema info in the traceback.
 
-If errors are found, the caller should feed them back to the LLM for one
-correction attempt before giving up.  This catches ~80% of hallucinations
-before they reach the database.
+WHY not validate columns too (only tables)?
+  Column validation requires parsing complex SQL expressions and handling
+  aliases, subqueries, CTEs, etc. Table validation catches ~80% of hallucinations
+  at much lower complexity. Column validation is a future improvement.
+
+HOW the retry loop works:
+  1. LLM generates plan
+  2. schema_validator finds errors → returns error list
+  3. agent.py feeds errors back as a correction prompt
+  4. LLM generates corrected plan
+  5. schema_validator runs again → if clean, proceed to execute
+  6. After 2 failed attempts → return clear error to user
 """
 import re
 from typing import Dict, List, Set, Any

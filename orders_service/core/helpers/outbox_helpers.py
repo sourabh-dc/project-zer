@@ -19,8 +19,14 @@ _AGGREGATE_ID_KEYS = (
 
 def _determine_consumers(event_type: str, aggregate_type: str) -> list:
     consumers = ["graph_service"]
+
     if aggregate_type in {"purchase_request", "approval_task"}:
+        # intelligence_service alias kept for backward compat; DIS is the
+        # new canonical consumer name — both poll the same table with their
+        # own consumer column value.
         consumers.append("intelligence_service")
+        consumers.append("data_intelligence_service")
+
     if event_type == "purchase_request.vendor_notification":
         consumers.append("notification_worker")
     return consumers

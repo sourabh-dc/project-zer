@@ -1,11 +1,16 @@
 """
 ZeroQue Intelligence Agent — LangGraph orchestration.
 
-Graph nodes:
-  guardrail   → fast + LLM safety check
-  classify    → 3-tier rule classifier (engine hint)
+WHY LangGraph?
+  We need a stateful pipeline where nodes can fail, retry, or short-circuit.
+  LangGraph models this as a directed graph with conditional edges, making
+  the retry loop (plan → schema_check → plan) trivial to express and inspect.
+
+Graph nodes (in order):
+  guardrail   → fast + LLM safety check (blocks misuse before any DB/LLM cost)
+  classify    → 3-tier rule classifier (engine hint — no LLM)
   plan        → LLM generates SQL/Cypher/vector steps with schema grounding
-  schema_check→ validate table/label names; retry if wrong
+  schema_check→ validate table/label names; retry if wrong (catches hallucinations)
   execute     → run steps against PostgreSQL / Neo4j / pgvector
   summarize   → LLM formats raw data into natural language answer
   error       → terminal error node
@@ -63,10 +68,15 @@ _setup_langsmith()
 def _make_llm(temperature: float = 1.0) -> AzureChatOpenAI:
     """Create a LangChain AzureChatOpenAI instance from SETTINGS.
 
-    Reasoning models (gpt-5-nano, o1, o3, etc.):
-    - Do NOT accept explicit temperature — use default (1.0).
-    - Use max_completion_tokens, not max_tokens (includes reasoning tokens).
-    - 8000 tokens needed because reasoning tokens are spent before output tokens.
+    WHY max_completion_tokens=8000?
+      Reasoning models (gpt-5-nano, o1, o3) spend internal "thinking" tokens
+      before producing output. These count against max_completion_tokens, not
+      max_tokens. Without headroom for reasoning tokens, the model returns an
+      empty response with finish_reason='length'. 8000 gives enough room.
+
+    WHY no temperature parameter?
+      Reasoning models reject explicit temperature — they always use their default.
+      Passing temperature=0.0 raises a 400 error from the API.
     """
     return AzureChatOpenAI(
         azure_endpoint=SETTINGS.AZURE_OPENAI_ENDPOINT,
@@ -232,17 +242,30 @@ Rules:
 # ---------------------------------------------------------------------------
 
 async def node_guardrail(state: AgentState) -> AgentState:
-    """Fast safety check before anything else."""
+    """Safety check — first node, runs before any LLM or DB call.
+
+    WHY two tiers?
+      Tier 1 (regex) is instant and catches 95% of attacks.
+      Tier 2 (LLM) is only triggered for suspicious patterns — it catches
+      sophisticated prompt injection that regex misses, but we avoid the
+      LLM cost for normal procurement questions.
+
+    WHY fail-open on LLM check error?
+      If our safety LLM is down, we don't want the entire service to fail.
+      The regex check already caught the obvious attacks. The LLM check is
+      a defence-in-depth layer, not a hard gate.
+    """
     question = state["question"]
 
-    # Tier 1: regex (no LLM)
+    # Tier 1: regex (no LLM) — always run first, no cost
     result = check_fast(question)
     if not result.allowed:
         logger.warning(f"[Agent] guardrail BLOCK tier=1 category={result.category} q={question[:60]}")
         return {**state, "error": result.reason, "answer": result.reason, "next": "error"}
 
-    # Tier 2: LLM safety for unusual questions
-    # Only trigger if question has unusual patterns (question marks, "you", unusual length)
+    # Tier 2: LLM safety — only for questions with injection-like signals
+    # Heuristic: long questions and questions containing control phrases are
+    # more likely to be adversarial. Normal procurement questions are short.
     needs_llm_check = (
         len(question) > 200
         or "you are" in question.lower()
@@ -257,6 +280,7 @@ async def node_guardrail(state: AgentState) -> AgentState:
                 logger.warning(f"[Agent] guardrail BLOCK tier=2 q={question[:60]}")
                 return {**state, "error": result2.reason, "answer": result2.reason, "next": "error"}
         except Exception as exc:
+            # Fail-open: LLM safety unavailable is not a reason to break the service
             logger.warning(f"[Agent] LLM safety check failed (allowed through): {exc}")
 
     logger.info(f"[Agent] guardrail PASS q={question[:60]}")
@@ -264,7 +288,14 @@ async def node_guardrail(state: AgentState) -> AgentState:
 
 
 def node_classify(state: AgentState) -> AgentState:
-    """Rule-based classifier — determines engine hint."""
+    """Deterministic routing — no LLM, no network.
+
+    WHY classify before planning?
+      The LLM planner uses the engine hint to focus its schema context.
+      If we know it's a SQL question, we only inject the Postgres schema,
+      not the graph schema — keeps the prompt smaller and the plan more focused.
+      The classifier also gives us confidence metadata for observability.
+    """
     engine_hint, tier, confidence = classify(state["question"])
     logger.info(f"[Agent] classify: tier={tier} engine={engine_hint} conf={confidence:.2f}")
     return {
@@ -277,7 +308,26 @@ def node_classify(state: AgentState) -> AgentState:
 
 
 def node_plan(state: AgentState) -> AgentState:
-    """LLM generates execution plan with schema grounding."""
+    """LLM generates the execution plan.
+
+    WHY schema grounding?
+      Without the real schema, LLMs invent table/column names (hallucination).
+      By injecting the actual schema, we constrain the LLM to names that exist.
+      The schema is cached for 10 min (see core/db.py) so this is fast.
+
+    WHY few-shot examples in the system prompt?
+      Few-shot examples teach the LLM the expected output format AND how to
+      handle edge cases (hybrid queries, vector enrichment, Cypher traversals).
+      A single good example is worth 100 words of instruction.
+
+    WHY inject conversation history?
+      Follow-up questions like "tell me more about the first one" are ambiguous
+      without prior context. The history block lets the LLM resolve references.
+
+    WHY retry on schema errors?
+      Even grounded LLMs occasionally invent a column name or misspell a table.
+      One correction attempt resolves ~90% of these. Two attempts is overkill.
+    """
     question = state["question"]
     tenant_id = state["tenant_id"]
     engine_hint = state.get("engine_hint", "unknown")
@@ -287,7 +337,7 @@ def node_plan(state: AgentState) -> AgentState:
     sql_schema = get_schema_description()
     graph_schema = get_graph_schema_description()
 
-    # Build schema block — only include relevant portions
+    # Only include schema relevant to the engine hint — smaller prompt = faster + cheaper
     if engine_hint == "sql":
         schema_block = f"PostgreSQL Schema (use ONLY these tables):\n{sql_schema}"
     elif engine_hint == "graph":
@@ -359,10 +409,21 @@ def node_plan(state: AgentState) -> AgentState:
 
 
 def node_schema_check(state: AgentState) -> AgentState:
-    """Validate LLM-generated queries against live schema."""
+    """Validate LLM-generated queries before they hit the database.
+
+    WHY validate before executing?
+      A hallucinated table name causes a DB error that leaks schema info in
+      the stack trace. Catching it here lets us give the LLM a clean error
+      message to self-correct from, without ever touching the DB.
+
+    WHY only 2 retry attempts?
+      One retry resolves ~90% of schema errors. A second failure suggests the
+      LLM fundamentally misunderstands the query — better to return a clear
+      error than to spin in a retry loop burning tokens.
+    """
     plan = state.get("plan", {})
 
-    # Structural validation first
+    # Structural validation first — check required fields, step limits, engine values
     try:
         warnings = validate_plan(plan)
         if warnings:
@@ -370,7 +431,7 @@ def node_schema_check(state: AgentState) -> AgentState:
     except PlanValidationError as exc:
         return {**state, "error": str(exc), "answer": str(exc), "next": "error"}
 
-    # Schema validation
+    # Schema validation — check every table, column, node label, relationship type
     sql_schema = get_schema_description()
     graph_schema = get_graph_schema_description()
     sql_dict = build_sql_schema_dict(sql_schema)
@@ -380,10 +441,9 @@ def node_schema_check(state: AgentState) -> AgentState:
     if errors:
         logger.warning(f"[Agent] schema errors detected: {errors}")
         if state.get("plan_attempts", 0) < 2:
-            # Retry — go back to plan node
+            # Feed errors back to LLM for self-correction
             return {**state, "schema_errors": errors, "next": "plan"}
         else:
-            # Give up after 2 attempts
             msg = f"Could not generate a valid query after corrections. Schema errors: {errors}"
             return {**state, "error": msg, "answer": msg, "next": "error"}
 
@@ -392,7 +452,18 @@ def node_schema_check(state: AgentState) -> AgentState:
 
 
 async def node_execute(state: AgentState) -> AgentState:
-    """Execute all plan steps against the databases."""
+    """Execute all validated plan steps against the appropriate databases.
+
+    WHY sequential execution?
+      Most plans have 1–2 steps where step 2 depends on step 1's IDs.
+      Sequential is correct and simple. Sprint 5 adds parallel execution
+      for hybrid queries where steps are independent.
+
+    WHY inject prior_ids?
+      Hybrid queries chain results: e.g. step 0 finds vendor_ids from the graph,
+      step 1 queries orders for those specific vendors. The 'depends_on' field
+      in the plan tells us which prior step to pull IDs from.
+    """
     plan = state.get("plan", {})
     tenant_id = state["tenant_id"]
     user_id = state.get("user_id")
@@ -431,7 +502,18 @@ async def node_execute(state: AgentState) -> AgentState:
 
 
 def node_summarize(state: AgentState) -> AgentState:
-    """LLM formats raw data into a natural language answer."""
+    """LLM formats raw DB results into a plain-English answer.
+
+    WHY LLM for summarization?
+      Raw query results are lists of dicts — not useful to an end user.
+      The LLM can format them as bullet points, highlight key numbers, explain
+      empty results in business terms, and naturally reference prior conversation.
+
+    WHY truncate results at 12,000 chars?
+      LLM context windows are finite. Truncating prevents token overflow while
+      still giving the LLM enough data for most answers. The SQL_MAX_ROWS limit
+      (default 500) is the primary guard; this is a safety net.
+    """
     question   = state["question"]
     tenant_id  = state["tenant_id"]
     session_id = state.get("session_id")

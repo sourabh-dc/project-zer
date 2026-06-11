@@ -1,18 +1,28 @@
 """
 Conversation memory for the ZeroQue intelligence agent.
 
-Stores per-session turn history in memory.
-Replace the backend with Redis for multi-instance deployments.
+WHY session memory?
+  Without memory, every question is stateless. The user would have to repeat
+  context on every follow-up: "the purchase request from last month, the one
+  for gloves, from the Finance org unit..." With memory, "tell me more about
+  the first one" just works.
 
-A "turn" is one question + answer pair.
-We keep the last MAX_TURNS turns per session.
-Session keys are (tenant_id, session_id) so conversations are tenant-isolated.
+WHY inject into BOTH planner and summarizer?
+  Planner needs context to generate the right query (e.g. "same as before but
+  for Q2" needs to know what "before" was).
+  Summarizer needs context to resolve references in the final answer.
 
-The memory is injected into the LLM planner and summarizer so the model
-can resolve follow-up questions like:
-  - "tell me more about the first result"
-  - "same question but for last month"
-  - "which of those vendors is cheapest?"
+WHY MAX_TURNS = 6?
+  6 turns ≈ 1,500 tokens of context — enough for a focused conversation
+  without bloating the prompt. Older turns are evicted (sliding window).
+
+WHY in-memory dict and not Redis?
+  Simplest thing that works for a single-instance deployment.
+  LIMITATION: does not survive process restart or work across multiple
+  instances. Upgrade to Redis-backed store in Sprint 5 before production.
+
+Session keys are (tenant_id, session_id) — tenant isolation is enforced at
+the memory level, not just the query level.
 """
 import time
 from dataclasses import dataclass, field
