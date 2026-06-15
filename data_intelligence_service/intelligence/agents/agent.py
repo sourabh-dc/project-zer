@@ -47,6 +47,9 @@ from data_intelligence_service.intelligence.observability.otel import (
 )
 from data_intelligence_service.intelligence.observability.trace import QueryTrace, StepTrace
 from data_intelligence_service.intelligence.observability import metrics as _metrics
+from data_intelligence_service.intelligence.gateway.router import (
+    choose_tier, make_llm_for_tier, deployment_for_tier, ModelTier,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +137,9 @@ class AgentState(TypedDict):
 
     # Observability — built incrementally across nodes, returned in API response
     trace: Optional[Any]      # QueryTrace instance
+
+    # Gateway — model tier chosen in node_plan, reused in node_summarize
+    model_tier: Optional[str]  # ModelTier value: "zero" | "fast" | "reason"
 
     # Control
     next: str                 # next node name (for conditional routing)
@@ -493,7 +499,16 @@ def node_plan(state: AgentState) -> AgentState:
         # Non-fatal: derived context is a best-effort enhancement, not a hard requirement
         logger.warning(f"[Agent] Derived fact injection failed (skipping): {exc}")
 
-    llm = _make_llm(temperature=0.0)
+    # ── AI Gateway: pick cheapest model tier for this query ───────────────────
+    tier = choose_tier(
+        engine_hint=engine_hint,
+        routing_tier=state.get("routing_tier", 3),
+        confidence=state.get("routing_confidence", 0.0),
+        plan_attempts=plan_attempts,
+        schema_errors=state.get("schema_errors") or [],
+    )
+    llm = make_llm_for_tier(tier, temperature=0.0)
+    logger.info(f"[Gateway] plan tier={tier.value} engine={engine_hint} deployment={deployment_for_tier(tier)}")
 
     messages = [SystemMessage(content=_PLANNER_SYSTEM)]
 
@@ -531,8 +546,9 @@ def node_plan(state: AgentState) -> AgentState:
     qt: QueryTrace = state.get("trace") or QueryTrace()
 
     try:
-        with span_llm_call("plan", SETTINGS.AZURE_OPENAI_LLM_DEPLOYMENT,
-                           {"engine_hint": engine_hint, "plan_attempt": plan_attempts}) as span:
+        with span_llm_call("plan", deployment_for_tier(tier),
+                           {"engine_hint": engine_hint, "plan_attempt": plan_attempts,
+                            "gateway.tier": tier.value}) as span:
             response = llm.invoke(messages)
             raw = response.content
 
@@ -564,6 +580,7 @@ def node_plan(state: AgentState) -> AgentState:
         "plan": plan,
         "plan_attempts": plan_attempts + 1,
         "schema_errors": [],
+        "model_tier": tier.value,
         "next": "schema_check",
     }
 
@@ -714,7 +731,11 @@ def node_summarize(state: AgentState) -> AgentState:
     context_block = _mem.get_context(tenant_id, session_id)
     context_section = f"\n{context_block}\n" if context_block else ""
 
-    llm = _make_llm()
+    # Reuse the same tier chosen during planning — consistent model for the full query
+    _summarize_tier_val = state.get("model_tier") or ModelTier.REASON.value
+    _summarize_tier = ModelTier(_summarize_tier_val) if _summarize_tier_val in ModelTier._value2member_map_ else ModelTier.REASON
+    llm = make_llm_for_tier(_summarize_tier, temperature=1.0)
+    logger.info(f"[Gateway] summarize tier={_summarize_tier.value} deployment={deployment_for_tier(_summarize_tier)}")
 
     messages = [
         SystemMessage(content=_SUMMARIZER_SYSTEM),
@@ -732,8 +753,8 @@ def node_summarize(state: AgentState) -> AgentState:
     qt: QueryTrace = state.get("trace") or QueryTrace()
 
     try:
-        with span_llm_call("summarize", SETTINGS.AZURE_OPENAI_LLM_DEPLOYMENT,
-                           {"result.steps": len(step_results)}) as span:
+        with span_llm_call("summarize", deployment_for_tier(_summarize_tier),
+                           {"result.steps": len(step_results), "gateway.tier": _summarize_tier.value}) as span:
             response = llm.invoke(messages)
             answer = response.content
             token_usage = record_token_usage(span, response)
@@ -939,6 +960,7 @@ async def run_agent(
         "answer":             "",
         "error":              None,
         "trace":              qt,
+        "model_tier":         None,
         "next":               "guardrail",
     }
 

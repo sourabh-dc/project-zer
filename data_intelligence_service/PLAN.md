@@ -239,7 +239,7 @@ if engine == "sql" and approved_ids != "__all__":
 
 ---
 
-## Sprint 4 — AI Gateway & Tiered Model Routing
+## Sprint 4 — AI Gateway & Tiered Model Routing (DONE)
 
 **Goal:** Route each query to the cheapest model that can answer it accurately.
 
@@ -274,7 +274,7 @@ def choose_tier(engine_hint: str, tier: int, confidence: float, plan_attempts: i
 
 ---
 
-## Sprint 5 — Production Hardening
+## Sprint 5 — Production Hardening (CURRENT)
 
 **Goal:** Production-safe memory, rate limits, eval dataset, async execution, Docker/K8s configs.
 
