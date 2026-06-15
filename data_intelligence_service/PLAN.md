@@ -278,6 +278,25 @@ def choose_tier(engine_hint: str, tier: int, confidence: float, plan_attempts: i
 
 **Goal:** Production-safe memory, rate limits, eval dataset, async execution, Docker/K8s configs.
 
+## Sprint 6 — Gap Closure (DONE)
+
+**Goal:** Fill remaining spec gaps vs Engineering Lock doc.
+
+### Delivered
+| Item | File | Status |
+|------|------|--------|
+| SupplierPerformance derived fact | `intelligence/derived/facts.py` | Done |
+| SupplierRisk derived fact | `intelligence/derived/facts.py` | Done |
+| SpendByDepartment derived fact | `intelligence/derived/facts.py` | Done |
+| ProductSubstitutionMap derived fact | `intelligence/derived/facts.py` | Done |
+| DerivedFact governance metadata | `intelligence/derived/models.py` | Done |
+| ObjectContext (current_object) | `intelligence/agents/agent.py`, `main.py` | Done |
+| Role-based intent boundaries | `intelligence/routing/intent_boundaries.py` | Done |
+| Cost monitoring per tenant/user | `intelligence/cost/tracker.py` | Done |
+| Cost API endpoints | `main.py` | Done |
+| Abuse detection endpoint | `main.py` | Done |
+| Seed data (Postgres + Neo4j) | `scripts/seed_data.py` | Done |
+
 ### Memory — Redis upgrade
 
 **File:** `intelligence/agents/memory.py`

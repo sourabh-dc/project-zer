@@ -50,6 +50,8 @@ from data_intelligence_service.intelligence.observability import metrics as _met
 from data_intelligence_service.intelligence.gateway.router import (
     choose_tier, make_llm_for_tier, deployment_for_tier, ModelTier,
 )
+from data_intelligence_service.intelligence.routing.intent_boundaries import check_intent_boundary
+from data_intelligence_service.intelligence.cost import tracker as _cost
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,38 @@ def _make_llm(temperature: float = 1.0) -> AzureChatOpenAI:
 
 
 # ---------------------------------------------------------------------------
+# Object context helper
+# ---------------------------------------------------------------------------
+
+def _format_object_context(current_object: Optional[Dict]) -> str:
+    """Format current_object as a prompt block if present.
+
+    When a user is on a Product page and asks "what is this?" or
+    "can I order this?", we inject the object data so the LLM knows
+    which specific item they're referring to — without them having to name it.
+
+    Example block:
+      ━━━ CURRENT OBJECT CONTEXT ━━━
+      Type: product | ID: abc-123
+      {"name": "Nitrile Gloves S", "sku": "NIT-S-100", "category": "PPE", ...}
+      ━━━ (User is viewing this object — "this", "it" refer to it) ━━━
+    """
+    if not current_object:
+        return ""
+    obj_type = current_object.get("object_type", "unknown")
+    obj_id   = current_object.get("object_id", "")
+    obj_data = current_object.get("object_data") or {}
+    import json as _json
+    data_str = _json.dumps(obj_data, default=str) if obj_data else "(no data provided)"
+    return (
+        f"\n━━━ CURRENT OBJECT CONTEXT ━━━\n"
+        f"Type: {obj_type} | ID: {obj_id}\n"
+        f"{data_str}\n"
+        f"━━━ (User is viewing this object — references like 'this', 'it' refer to it) ━━━\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Agent state — passed between nodes
 # ---------------------------------------------------------------------------
 
@@ -117,6 +151,10 @@ class AgentState(TypedDict):
     # Reused across all nodes: avoids repeated graph traversals within one query
     user_context: Optional[Dict]       # full governance context from get_user_context()
     approved_ids: Optional[Any]        # "__all__" | List[str] — product filter
+
+    # Object context — if user is inside a Product, Supplier, Request or Order,
+    # this is auto-inherited from the API request and injected into the LLM prompt
+    current_object: Optional[Dict]     # {object_type, object_id, object_data}
 
     # Routing
     engine_hint: str          # sql | graph | vector | hybrid | unknown
@@ -383,6 +421,24 @@ async def node_guardrail(state: AgentState) -> AgentState:
                 # Fail-open: LLM safety unavailable is not a reason to break the service
                 logger.warning(f"[Agent] LLM safety check failed (allowed through): {exc}")
 
+    # ── Intent boundary check — role-based question scope ────────────────────
+    # Only runs when user_ctx is available (user_id provided + Neo4j reachable).
+    # Fail-open: if user_ctx is None (API-key only), all intents are allowed.
+    if user_ctx:
+        boundary = check_intent_boundary(question, user_ctx)
+        if not boundary["allowed"]:
+            _metrics.record_guardrail_block(category="intent_boundary", tier=1)
+            qt.guardrail_passed = False
+            return {
+                **state,
+                "trace": qt,
+                "user_context": user_ctx,
+                "approved_ids": approved_ids,
+                "error": boundary["reason"],
+                "answer": boundary["reason"],
+                "next": "error",
+            }
+
     logger.info(
         f"[Agent] guardrail PASS q={question[:60]} "
         f"user={user_id} approved={'__all__' if approved_ids == '__all__' else len(approved_ids)}"
@@ -517,6 +573,10 @@ def node_plan(state: AgentState) -> AgentState:
     context_block = _mem.get_context(tenant_id, session_id)
     context_section = f"\n{context_block}\n" if context_block else ""
 
+    # Inject current object context (e.g. user is viewing a product page)
+    current_object = state.get("current_object")
+    object_section = _format_object_context(current_object)
+
     if schema_errors and plan_attempts > 0:
         # Correction mode — feed schema errors back to LLM for self-correction
         # Skip derived context on retry to keep the prompt focused on the fix
@@ -539,6 +599,7 @@ def node_plan(state: AgentState) -> AgentState:
             f"{schema_block}\n{hint_line}\n"
             f"Tenant ID: {tenant_id}\n"
             f"{context_section}"
+            f"{object_section}"
             f"{derived_context}"
             f"Question: {question}\n\nGenerate the query plan as JSON."
         )))
@@ -745,6 +806,9 @@ def node_summarize(state: AgentState) -> AgentState:
     context_block = _mem.get_context(tenant_id, session_id)
     context_section = f"\n{context_block}\n" if context_block else ""
 
+    # Object context — same object the planner saw
+    object_section = _format_object_context(state.get("current_object"))
+
     # Reuse the same tier chosen during planning — consistent model for the full query
     _summarize_tier_val = state.get("model_tier") or ModelTier.REASON.value
     _summarize_tier = ModelTier(_summarize_tier_val) if _summarize_tier_val in ModelTier._value2member_map_ else ModelTier.REASON
@@ -755,6 +819,7 @@ def node_summarize(state: AgentState) -> AgentState:
         SystemMessage(content=_SUMMARIZER_SYSTEM),
         HumanMessage(content=(
             f"{context_section}"
+            f"{object_section}"
             f"Question: {question}\n\n"
             f"Query plan used:\n{json.dumps(plan, indent=2)}\n\n"
             f"Results:\n{results_text}\n\n"
@@ -933,16 +998,19 @@ async def run_agent(
     tenant_id: str,
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    current_object: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """Run the ZeroQue intelligence agent end-to-end.
 
     Args:
-        question   — Natural language question from the user
-        tenant_id  — Tenant scope for all queries
-        user_id    — Optional user (applies governance filters)
-        session_id — Conversation session ID for memory context.
-                     Pass the same value across turns to maintain context.
-                     Omit for stateless one-off queries.
+        question       — Natural language question from the user
+        tenant_id      — Tenant scope for all queries
+        user_id        — Optional user (applies governance filters)
+        session_id     — Conversation session ID for memory context.
+        current_object — Object the user is currently viewing:
+                         {object_type: "product"|"supplier"|"request"|"order"|"contract",
+                          object_id: "...", object_data: {...}}
+                         Injected into planner + summarizer so "this" / "it" resolve correctly.
 
     Returns:
         answer       — Natural language answer
@@ -953,7 +1021,6 @@ async def run_agent(
         error        — Error message if something failed
         session_id   — Echo of session_id for client tracking
     """
-    # Create a fresh QueryTrace — passed through agent state and enriched at each node
     qt = QueryTrace()
 
     initial_state: AgentState = {
@@ -961,9 +1028,9 @@ async def run_agent(
         "tenant_id":          tenant_id,
         "user_id":            user_id,
         "session_id":         session_id,
-        # user_context + approved_ids populated in node_guardrail via graph traversal
         "user_context":       None,
         "approved_ids":       "__all__",
+        "current_object":     current_object,
         "engine_hint":        "unknown",
         "routing_tier":       3,
         "routing_confidence": 0.0,
@@ -986,7 +1053,6 @@ async def run_agent(
 
     is_blocked = bool(final_state.get("error") and not final_state.get("plan"))
 
-    # Summarise permission context for API response — don't expose full approved_ids list
     user_ctx = final_state.get("user_context") or {}
     approved = final_state.get("approved_ids", "__all__")
     permission_meta = {
@@ -995,6 +1061,27 @@ async def run_agent(
         "roles":      [r.get("code") for r in user_ctx.get("roles", [])],
         "approved_product_scope": "__all__" if approved == "__all__" else f"{len(approved)} products",
     }
+
+    # Record cost usage (best-effort, non-fatal)
+    try:
+        tier_val   = final_state.get("model_tier") or "reason"
+        deployment = deployment_for_tier(
+            ModelTier(tier_val) if tier_val in ModelTier._value2member_map_ else ModelTier.REASON
+        )
+        _cost.record_usage(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            deployment=deployment,
+            model_tier=tier_val,
+            prompt_tokens=final_trace.tokens_prompt,
+            completion_tokens=final_trace.tokens_completion,
+            engine=final_state.get("engine_hint", "unknown"),
+            latency_ms=final_trace.latency_ms,
+            question=question,
+        )
+    except Exception as _cost_exc:
+        logger.debug(f"[Agent] cost recording skipped: {_cost_exc}")
 
     return {
         "answer":       final_state.get("answer", ""),

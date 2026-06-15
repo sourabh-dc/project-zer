@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
@@ -39,6 +40,7 @@ from data_intelligence_service.intelligence.agents import memory as _mem
 from data_intelligence_service.intelligence.observability import metrics as _metrics
 from data_intelligence_service.intelligence.derived import handlers as derived_handlers
 from data_intelligence_service.intelligence.derived.store import ensure_table_exists
+from data_intelligence_service.intelligence.cost import tracker as _cost
 
 
 def _register_handlers():
@@ -72,6 +74,8 @@ def _register_handlers():
     register_handler("budget",           derived_handlers.handle_budget)
     register_handler("policy",           derived_handlers.handle_policy)
     register_handler("org_unit",         derived_handlers.handle_org_unit)
+    register_handler("vendor",           derived_handlers.handle_vendor)
+    register_handler("product",          derived_handlers.handle_product)
 
 
 @asynccontextmanager
@@ -86,8 +90,10 @@ async def lifespan(app: FastAPI):
     init_pgvector()
 
     # Derived knowledge table — create if not exists (idempotent)
-    # In staging/prod, run migrations/001_derived_knowledge.sql instead
     ensure_table_exists()
+
+    # Cost monitoring table — create if not exists
+    _cost.ensure_usage_table()
 
     # Intelligence init
     if not SETTINGS.AZURE_OPENAI_API_KEY:
@@ -211,11 +217,24 @@ async def api_search(req: SearchRequest):
 
 
 # ── Intelligence API ────────────────────────────────────────────────
+class ObjectContext(BaseModel):
+    """Context for the object the user is currently viewing.
+
+    Pass this when the user is on a Product, Supplier, Purchase Request,
+    Order, or Contract page. The agent will auto-inherit this context so
+    questions like 'what is this?' or 'can I order this?' resolve correctly.
+    """
+    object_type: str                  # product | supplier | request | order | contract
+    object_id: str
+    object_data: Optional[Dict[str, Any]] = None   # pre-fetched data (optional)
+
+
 class QueryRequest(BaseModel):
     question: str
     tenant_id: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None   # pass same value across turns for memory
+    current_object: Optional[ObjectContext] = None  # object context auto-inheritance (spec §13.2)
 
 class QueryResponse(BaseModel):
     answer: str
@@ -237,6 +256,7 @@ async def query(req: QueryRequest):
             tenant_id=req.tenant_id,
             user_id=req.user_id,
             session_id=req.session_id,
+            current_object=req.current_object.model_dump() if req.current_object else None,
         )
         if result.get("blocked"):
             raise HTTPException(400, result.get("error", "Request not permitted"))
@@ -265,8 +285,43 @@ async def clear_session(session_id: str, tenant_id: str = Query(...)):
 
 @app.get("/intelligence/sessions/stats")
 async def session_stats():
-    """Diagnostic: number of active sessions in memory."""
     return {"active_sessions": _mem.active_sessions()}
+
+
+# ── Cost / Usage Monitoring ──────────────────────────────────────────────────
+
+@app.get("/intelligence/cost/tenants")
+async def cost_by_tenant(days: int = Query(default=30, ge=1, le=365)):
+    """Total cost and token usage per tenant for the last N days."""
+    return {"days": days, "tenants": _cost.get_cost_by_tenant(days)}
+
+
+@app.get("/intelligence/cost/users")
+async def cost_by_user(tenant_id: str = Query(...), days: int = Query(default=30, ge=1, le=365)):
+    """Per-user cost breakdown for a tenant."""
+    return {"tenant_id": tenant_id, "days": days, "users": _cost.get_cost_by_user(tenant_id, days)}
+
+
+@app.get("/intelligence/cost/models")
+async def cost_by_model(days: int = Query(default=30, ge=1, le=365)):
+    """Cost breakdown by model/deployment tier."""
+    return {"days": days, "models": _cost.get_cost_by_model(days)}
+
+
+@app.get("/intelligence/cost/abuse")
+async def abuse_detection(hours: int = Query(default=1, ge=1, le=24)):
+    """Tenants exceeding the abuse cost threshold in a rolling window.
+
+    Tenants spending more than ABUSE_COST_THRESHOLD_USD (default $5) per hour.
+    Use for throttling decisions and manual review.
+    """
+    candidates = _cost.get_abuse_candidates(hours)
+    return {
+        "hours": hours,
+        "threshold_usd": float(os.getenv("ABUSE_COST_THRESHOLD_USD", "5.0")),
+        "flagged_tenants": candidates,
+        "count": len(candidates),
+    }
 
 
 # ── Observability ────────────────────────────────────────────────────────────

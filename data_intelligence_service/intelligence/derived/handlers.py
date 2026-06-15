@@ -38,15 +38,9 @@ from data_intelligence_service.intelligence.derived.facts import compute_and_sav
 
 
 def _recompute(tenant_id: str, trigger_prefix: str) -> None:
-    """Recompute all facts triggered by the given event prefix.
-
-    Runs synchronously — fact computation is fast (< 500ms) and the
-    outbox consumer handles errors gracefully (retry on exception).
-    """
     fact_types = FACT_TRIGGERS.get(trigger_prefix, [])
     if not fact_types:
         return
-
     for fact_type in fact_types:
         try:
             success = compute_and_save(tenant_id, fact_type)
@@ -55,51 +49,42 @@ def _recompute(tenant_id: str, trigger_prefix: str) -> None:
             else:
                 logger.warning(f"[DerivedKnowledge] Recomputation returned no result: {fact_type}")
         except Exception as exc:
-            # Log but don't re-raise — a failed recomputation should not
-            # block the outbox event from being marked as completed.
             logger.error(f"[DerivedKnowledge] Failed to recompute {fact_type} for {tenant_id}: {exc}")
 
 
 def handle_purchase_request(event: dict) -> None:
-    """Recompute spend-based facts when any purchase request changes."""
     tenant_id = str(event.get("tenant_id", ""))
-    if not tenant_id:
-        return
-    logger.debug(f"[DerivedKnowledge] purchase_request event → recomputing spend facts for {tenant_id}")
-    _recompute(tenant_id, "purchase_request")
-
+    if tenant_id:
+        _recompute(tenant_id, "purchase_request")
 
 def handle_approved_range(event: dict) -> None:
-    """Recompute governance facts when approved ranges change."""
     tenant_id = str(event.get("tenant_id", ""))
-    if not tenant_id:
-        return
-    logger.debug(f"[DerivedKnowledge] approved_range event → recomputing governance facts for {tenant_id}")
-    _recompute(tenant_id, "approved_range")
-
+    if tenant_id:
+        _recompute(tenant_id, "approved_range")
 
 def handle_budget(event: dict) -> None:
-    """Recompute budget facts when budgets are created or modified."""
     tenant_id = str(event.get("tenant_id", ""))
-    if not tenant_id:
-        return
-    logger.debug(f"[DerivedKnowledge] budget event → recomputing budget facts for {tenant_id}")
-    _recompute(tenant_id, "budget")
-
+    if tenant_id:
+        _recompute(tenant_id, "budget")
 
 def handle_policy(event: dict) -> None:
-    """Recompute policy summary when policies change."""
     tenant_id = str(event.get("tenant_id", ""))
-    if not tenant_id:
-        return
-    logger.debug(f"[DerivedKnowledge] policy event → recomputing policy facts for {tenant_id}")
-    _recompute(tenant_id, "policy")
-
+    if tenant_id:
+        _recompute(tenant_id, "policy")
 
 def handle_org_unit(event: dict) -> None:
-    """Recompute org-unit budget status when org unit structure changes."""
     tenant_id = str(event.get("tenant_id", ""))
-    if not tenant_id:
-        return
-    logger.debug(f"[DerivedKnowledge] org_unit event → recomputing org unit facts for {tenant_id}")
-    _recompute(tenant_id, "org_unit")
+    if tenant_id:
+        _recompute(tenant_id, "org_unit")
+
+def handle_vendor(event: dict) -> None:
+    """Recompute supplier performance and risk when vendor data changes."""
+    tenant_id = str(event.get("tenant_id", ""))
+    if tenant_id:
+        _recompute(tenant_id, "vendor")
+
+def handle_product(event: dict) -> None:
+    """Recompute product substitution map when products change."""
+    tenant_id = str(event.get("tenant_id", ""))
+    if tenant_id:
+        _recompute(tenant_id, "product")
