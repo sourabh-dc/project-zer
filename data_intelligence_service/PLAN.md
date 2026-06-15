@@ -274,7 +274,7 @@ def choose_tier(engine_hint: str, tier: int, confidence: float, plan_attempts: i
 
 ---
 
-## Sprint 5 — Production Hardening (CURRENT)
+## Sprint 5 — Production Hardening (DONE)
 
 **Goal:** Production-safe memory, rate limits, eval dataset, async execution, Docker/K8s configs.
 

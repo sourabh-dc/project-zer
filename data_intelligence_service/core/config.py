@@ -109,6 +109,10 @@ class DataIntelligenceSettings(BaseSettings):
     SQL_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single SQL query")
     CYPHER_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single Cypher query")
 
+    # Redis (optional) — session memory + rate limiting
+    REDIS_URL: str = Field(default="", description="Redis URL (e.g. redis://localhost:6379/0). Empty = in-memory fallback.")
+    RATE_LIMIT_RPM: int = Field(default=60, description="Max requests per minute per tenant (0 = disabled)")
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 SETTINGS = DataIntelligenceSettings()

@@ -638,50 +638,48 @@ def node_schema_check(state: AgentState) -> AgentState:
 async def node_execute(state: AgentState) -> AgentState:
     """Execute all validated plan steps against the appropriate databases.
 
-    WHY sequential execution?
-      Most plans have 1–2 steps where step 2 depends on step 1's IDs.
-      Sequential is correct and simple. Sprint 5 adds parallel execution
-      for hybrid queries where steps are independent.
+    Independent steps (no depends_on) run in parallel via asyncio.gather —
+    saving wall time for hybrid queries. Dependent steps run after their
+    dependency completes (sequential within each dependency chain).
 
     WHY inject prior_ids?
       Hybrid queries chain results: e.g. step 0 finds vendor_ids from the graph,
       step 1 queries orders for those specific vendors. The 'depends_on' field
       in the plan tells us which prior step to pull IDs from.
     """
+    import asyncio as _asyncio
+    import time as _time
+
     plan = state.get("plan", {})
     tenant_id = state["tenant_id"]
     user_id = state.get("user_id")
     steps = plan.get("steps", [])
-    step_results: List[Dict] = []
-
-    # approved_ids was fetched once in node_guardrail — reuse here, no extra graph call
     approved_ids: Any = state.get("approved_ids", "__all__")
-
     qt: QueryTrace = state.get("trace") or QueryTrace()
-    import time as _time
 
-    for i, step in enumerate(steps):
+    # Partition steps into independent (no depends_on) and dependent
+    independent_idxs = [i for i, s in enumerate(steps) if s.get("depends_on") is None]
+    dependent_idxs   = [i for i, s in enumerate(steps) if s.get("depends_on") is not None]
+
+    # Pre-allocate result slots so dependent steps can index them by position
+    step_results: List[Optional[Dict]] = [None] * len(steps)
+
+    # ── Run independent steps in parallel ─────────────────────────────────────
+    async def _exec_step(i: int, params_extra: Optional[Dict] = None) -> None:
+        step = steps[i]
         engine = step.get("engine", "")
-        query = step.get("query", "")
+        query  = step.get("query", "")
         params: Dict[str, Any] = {"tenant_id": tenant_id}
         if user_id:
             params["user_id"] = user_id
+        if params_extra:
+            params.update(params_extra)
 
-        # Inject prior IDs from dependent step
-        dep_idx = step.get("depends_on")
-        if dep_idx is not None and isinstance(dep_idx, int) and dep_idx < len(step_results):
-            prior_data = step_results[dep_idx].get("data", [])
-            prior_ids = _extract_ids(prior_data)
-            if prior_ids:
-                params["prior_ids"] = prior_ids
-            else:
-                logger.warning(f"[Agent] step {i} depends_on step {dep_idx} returned no IDs")
-
-        step_start = _time.monotonic()
+        t0 = _time.monotonic()
         data, err = await _run_step(engine, query, params, tenant_id, user_id, approved_ids)
-        step_latency_ms = (_time.monotonic() - step_start) * 1000
+        latency_ms = (_time.monotonic() - t0) * 1000
 
-        result_row = {
+        step_results[i] = {
             "step": i,
             "engine": engine,
             "description": step.get("description", ""),
@@ -689,19 +687,35 @@ async def node_execute(state: AgentState) -> AgentState:
             "row_count": len(data),
             **({"error": err} if err else {}),
         }
-        step_results.append(result_row)
         logger.info(f"[Agent] step {i} ({engine}): {len(data)} rows" + (f" ERROR: {err}" if err else ""))
-
         qt.steps.append(StepTrace(
-            step_index=i,
-            engine=engine,
+            step_index=i, engine=engine,
             description=step.get("description", ""),
-            rows_returned=len(data),
-            latency_ms=step_latency_ms,
-            error=err,
+            rows_returned=len(data), latency_ms=latency_ms, error=err,
         ))
 
-    return {**state, "trace": qt, "step_results": step_results, "next": "summarize"}
+    if independent_idxs:
+        await _asyncio.gather(*[_exec_step(i) for i in independent_idxs])
+
+    # ── Run dependent steps sequentially (order by index) ─────────────────────
+    for i in sorted(dependent_idxs):
+        step = steps[i]
+        dep_idx = step.get("depends_on")
+        extra: Dict[str, Any] = {}
+        if isinstance(dep_idx, int) and dep_idx < len(step_results) and step_results[dep_idx]:
+            prior_data = step_results[dep_idx].get("data", [])
+            prior_ids  = _extract_ids(prior_data)
+            if prior_ids:
+                extra["prior_ids"] = prior_ids
+            else:
+                logger.warning(f"[Agent] step {i} depends_on step {dep_idx} returned no IDs")
+        await _exec_step(i, extra)
+
+    # Sort by step index (parallel execution may return out of order)
+    qt.steps.sort(key=lambda s: s.step_index)
+    ordered_results = [r for r in step_results if r is not None]
+
+    return {**state, "trace": qt, "step_results": ordered_results, "next": "summarize"}
 
 
 def node_summarize(state: AgentState) -> AgentState:

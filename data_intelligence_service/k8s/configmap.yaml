@@ -1,0 +1,43 @@
+# ── ZeroQue Intelligence Service — Non-sensitive ConfigMap ───────────────────
+#
+# Sensitive values (API keys, passwords) go in a Kubernetes Secret, NOT here.
+# This ConfigMap contains only environment-level config that is safe to commit.
+#
+# Apply: kubectl apply -f k8s/configmap.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zeroque-intelligence-config
+data:
+  ENVIRONMENT: "production"
+
+  # PostgreSQL (host — password from Secret)
+  POSTGRES_HOST: "zeroque-postgres"
+  POSTGRES_DB: "zeroque"
+  POSTGRES_USER: "postgres"
+
+  # Neo4j (URI — password from Secret)
+  NEO4J_URI: "bolt://zeroque-neo4j:7687"
+  NEO4J_USER: "neo4j"
+  NEO4J_DATABASE: "neo4j"
+
+  # Redis — session memory + rate limiting
+  REDIS_URL: "redis://zeroque-redis:6379/0"
+
+  # Azure OpenAI (API key from Secret)
+  AZURE_OPENAI_API_VERSION: "2024-06-01"
+  AZURE_OPENAI_LLM_DEPLOYMENT: "gpt-5-nano"
+  AZURE_OPENAI_FAST_DEPLOYMENT: "gpt-4o-mini"
+  AZURE_OPENAI_EMBEDDING_DEPLOYMENT: "text-embedding-3-small"
+
+  # Intelligence service settings
+  RATE_LIMIT_RPM: "60"
+  VECTOR_SIMILARITY_THRESHOLD: "0.30"
+  SQL_MAX_ROWS: "500"
+  CYPHER_MAX_ROWS: "500"
+  LOG_LEVEL: "INFO"
+
+  # Azure Key Vault (for secret resolution at startup)
+  KEYVAULT_NAME: "zeroque-kv"
