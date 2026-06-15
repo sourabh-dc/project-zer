@@ -562,6 +562,7 @@ def node_plan(state: AgentState) -> AgentState:
         confidence=state.get("routing_confidence", 0.0),
         plan_attempts=plan_attempts,
         schema_errors=state.get("schema_errors") or [],
+        question=question,
     )
     llm = make_llm_for_tier(tier, temperature=0.0)
     logger.info(f"[Gateway] plan tier={tier.value} engine={engine_hint} deployment={deployment_for_tier(tier)}")

@@ -1,44 +1,44 @@
 """
 AI Gateway — tiered model routing for the ZeroQue intelligence agent.
 
-WHY tiered routing?
-  Every query today uses gpt-5-nano (a reasoning model). That's like driving
-  a Formula 1 car to buy milk — expensive and slow. Most queries are simple
-  ("how many products do we have?") and can be answered correctly by a fast,
-  cheap model. Complex multi-hop queries genuinely need the reasoning model.
+WHY tiered routing? (spec §11)
+  Using gpt-5-nano (reasoning model) for every query is like driving a
+  Formula 1 car to buy milk — expensive and slow. Most queries are simple
+  factual lookups that need no reasoning tokens at all.
 
-  Tiered routing gives us:
-    ZERO  — no LLM at all   (Tier 0 template matches)
-    FAST  — gpt-4o-mini     (~200ms, ~10x cheaper than reasoning model)
-    REASON— gpt-5-nano      (~2000ms, full reasoning for complex queries)
+  Four tiers (aligned to spec §11):
 
-HOW it works:
-  choose_tier() is called in node_plan and node_summarize after classification.
-  The decision uses the classifier output (tier, engine_hint, confidence)
-  already sitting in AgentState — zero extra latency, no extra LLM call.
+  ZERO   — No LLM at all. Pure template / deterministic retrieval.
+           Examples: "Show me fireproof shoes", "Has this product been purchased before?"
 
-  FAST is chosen when ALL of:
-    - Classifier confidence >= threshold (default 0.85 — well-understood query)
-    - Engine is single (sql, graph, or vector — NOT hybrid, NOT unknown)
-    - Routing tier <= 2 (regex or scoring match, not LLM-classified)
-    - No prior schema errors on this query (retries get the full model)
+  FAST   — gpt-4o. Simple, high-confidence lookups and short explanations.
+           Examples: "How many products do we have?", "Summarise this supplier note"
+           Triggers when: single engine, confidence ≥ 0.85, routing tier ≤ 2, first attempt
 
-  REASON is the safe default — if we're unsure, use the powerful model.
+  MID    — gpt-4o. Comparisons, moderate reasoning, analytical queries.
+           Examples: "Compare these two suppliers", "Recommend alternatives", "Summarise performance"
+           Triggers when: analytical patterns in question, multi-source but not complex,
+                          or FAST threshold not met but no need for full reasoning
 
-ADDING A NEW TIER:
-  1. Add a value to ModelTier enum
-  2. Add the deployment name to ModelConfig
-  3. Update choose_tier() logic
-  4. Add the deployment to Azure OpenAI and to .env.example
+  REASON — gpt-5-nano. Complex, multi-hop, strategic queries and all retries.
+           Examples: "Supplier risk analysis", "Multi-factor spend analysis", "Contract interpretation"
+           Triggers when: hybrid engine, low confidence, retries, schema errors, strategic intent
 
 DEPLOYMENT NAMES (configure in .env):
-  AZURE_OPENAI_LLM_DEPLOYMENT       = gpt-5-nano      (REASON — default)
-  AZURE_OPENAI_FAST_DEPLOYMENT      = gpt-4o-mini     (FAST)
+  AZURE_OPENAI_LLM_DEPLOYMENT       = gpt-5-nano    (REASON — default / fallback)
+  AZURE_OPENAI_FAST_DEPLOYMENT      = gpt-4o        (FAST)
+  AZURE_OPENAI_TIER2_DEPLOYMENT     = gpt-4o        (MID — same or different deployment)
+
+TUNEABLE via .env:
+  GATEWAY_FAST_CONFIDENCE_THRESHOLD  default 0.85
+  GATEWAY_FAST_MAX_ROUTING_TIER      default 2
+  GATEWAY_MID_CONFIDENCE_THRESHOLD   default 0.60
 """
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from data_intelligence_service.core.logger import logger
 
@@ -52,45 +52,69 @@ class ModelTier(str, Enum):
 
     String enum so values can be set as OTel span attributes without conversion.
     """
-    ZERO   = "zero"    # No LLM — template answer, no tokens spent
-    FAST   = "fast"    # gpt-4o-mini — simple, high-confidence queries
-    REASON = "reason"  # gpt-5-nano  — complex, multi-hop, low confidence
+    ZERO   = "zero"    # No LLM — template / deterministic answer
+    FAST   = "fast"    # gpt-4o — simple, high-confidence single-engine queries
+    MID    = "mid"     # gpt-4o — comparisons, moderate reasoning, analytical
+    REASON = "reason"  # gpt-5-nano — complex, multi-hop, retries, strategic
 
 
 # ---------------------------------------------------------------------------
-# Config — deployment names resolved from environment at import time
+# Config — resolved from environment at import time
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Resolved Azure deployment names for each tier."""
-    reason_deployment: str  # full reasoning model (default for all queries)
-    fast_deployment: str    # fast/cheap model for simple queries
+    reason_deployment: str   # Tier 3 — full reasoning model
+    fast_deployment:   str   # Tier 1 — fast/cheap
+    mid_deployment:    str   # Tier 2 — moderate reasoning
 
     @classmethod
     def from_env(cls) -> "ModelConfig":
-        reason = os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT", "gpt-5-nano")
-        fast   = os.getenv("AZURE_OPENAI_FAST_DEPLOYMENT", reason)  # fallback to reason if not set
-        return cls(reason_deployment=reason, fast_deployment=fast)
+        reason = os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT",   "gpt-5-nano")
+        fast   = os.getenv("AZURE_OPENAI_FAST_DEPLOYMENT",   reason)    # fallback to reason
+        mid    = os.getenv("AZURE_OPENAI_TIER2_DEPLOYMENT",  fast)      # fallback to fast
+        return cls(reason_deployment=reason, fast_deployment=fast, mid_deployment=mid)
 
 
 MODEL_CONFIG: ModelConfig = ModelConfig.from_env()
 
 
 # ---------------------------------------------------------------------------
-# Routing thresholds (tuneable via env)
+# Thresholds
 # ---------------------------------------------------------------------------
 
-# Minimum classifier confidence to consider FAST tier.
-# Below this, use REASON regardless of engine/tier.
 _FAST_CONFIDENCE_THRESHOLD = float(os.getenv("GATEWAY_FAST_CONFIDENCE_THRESHOLD", "0.85"))
+_MID_CONFIDENCE_THRESHOLD  = float(os.getenv("GATEWAY_MID_CONFIDENCE_THRESHOLD",  "0.60"))
+_FAST_MAX_ROUTING_TIER     = int(os.getenv("GATEWAY_FAST_MAX_ROUTING_TIER", "2"))
+_FAST_ELIGIBLE_ENGINES     = frozenset({"sql", "graph", "vector"})
 
-# Only route to FAST if the classifier used tier 1 or 2 (no LLM involvement).
-# Tier 3 (LLM-classified) queries indicate ambiguity — use REASON.
-_FAST_MAX_ROUTING_TIER = int(os.getenv("GATEWAY_FAST_MAX_ROUTING_TIER", "2"))
 
-# Engines eligible for FAST tier — hybrid/unknown always use REASON.
-_FAST_ELIGIBLE_ENGINES = frozenset({"sql", "graph", "vector"})
+# ---------------------------------------------------------------------------
+# MID tier intent patterns
+# ---------------------------------------------------------------------------
+# Questions that need moderate reasoning but not the full reasoning model.
+
+_MID_PATTERNS = [
+    r"\bcompare\b",
+    r"\bvs\.?\b",
+    r"\bversus\b",
+    r"\brecommend\b",
+    r"\balternative\b",
+    r"\bsubstitut\b",
+    r"\bsummarise\b",
+    r"\bsummarize\b",
+    r"\bperformance\b",
+    r"\brank\b",
+    r"\bbest\b.{0,15}(supplier|vendor|product|option)\b",
+    r"\bwhich.{0,20}(supplier|vendor|product|option).{0,20}(should|best|recommend)\b",
+    r"\btop\b.{0,10}(supplier|vendor|categor)\b",
+    r"\bspend.{0,20}trend\b",
+    r"\bhow.{0,10}(perform|doing|risk)\b",
+]
+
+def _is_mid_intent(question: str) -> bool:
+    q = question.lower()
+    return any(re.search(p, q) for p in _MID_PATTERNS)
 
 
 # ---------------------------------------------------------------------------
@@ -102,67 +126,54 @@ def choose_tier(
     routing_tier: int,
     confidence: float,
     plan_attempts: int,
-    schema_errors: Optional[list] = None,
+    schema_errors: Optional[List] = None,
+    question: str = "",
 ) -> ModelTier:
-    """Decide which model tier to use for this query.
+    """Pick the cheapest model tier sufficient for this query.
 
-    Called in node_plan (planner LLM) and node_summarize (summarizer LLM).
-
-    Args:
-        engine_hint:    Classifier engine output — sql | graph | vector | hybrid | unknown
-        routing_tier:   Classifier tier — 1=regex, 2=scoring, 3=llm
-        confidence:     Classifier confidence [0.0, 1.0]
-        plan_attempts:  Number of plan attempts so far (0 = first try)
-        schema_errors:  Any schema errors from the previous plan attempt
-
-    Returns:
-        ModelTier indicating which model to use.
-
-    Decision rules (all must pass for FAST, otherwise REASON):
-      1. Engine is a single, well-defined engine (not hybrid/unknown)
-      2. Classifier confidence >= threshold (query well understood)
-      3. Routing tier <= max tier (no LLM involvement in classification)
-      4. First plan attempt only (retries need full reasoning power)
-      5. No prior schema errors (errors indicate model needs more guidance)
+    Priority (first match wins):
+      ZERO   — routing_tier == 0
+      REASON — any retry, schema error, hybrid/unknown engine, low confidence
+      FAST   — single engine, high confidence, low routing tier, first attempt
+      MID    — analytical/comparison patterns detected, or moderate confidence
+      REASON — safe default
     """
-    # Tier 0 queries have no plan → no LLM needed at all.
-    # Caller is responsible for short-circuiting before calling node_plan;
-    # but if choose_tier is called anyway, return ZERO.
+    # Tier 0 — no LLM needed
     if routing_tier == 0:
         return ModelTier.ZERO
 
-    # Any retry or prior schema error → use full reasoning model for correction
+    # Always REASON for retries and schema-error corrections
     if plan_attempts > 0 or (schema_errors and len(schema_errors) > 0):
-        logger.debug(f"[Gateway] REASON (retry): attempts={plan_attempts} errors={len(schema_errors or [])}")
+        logger.debug(f"[Gateway] REASON: retry attempts={plan_attempts} schema_errors={len(schema_errors or [])}")
         return ModelTier.REASON
 
-    # Check all FAST eligibility conditions
+    # REASON for hybrid or unknown (needs full reasoning to combine sources)
+    if engine_hint not in _FAST_ELIGIBLE_ENGINES:
+        logger.debug(f"[Gateway] REASON: engine={engine_hint} not single-engine")
+        return ModelTier.REASON
+
+    # REASON for low confidence (classifier not sure what engine to use)
+    if confidence < _MID_CONFIDENCE_THRESHOLD:
+        logger.debug(f"[Gateway] REASON: confidence={confidence:.2f} < {_MID_CONFIDENCE_THRESHOLD}")
+        return ModelTier.REASON
+
+    # FAST: high confidence + simple routing + first attempt + single engine
     engine_ok     = engine_hint in _FAST_ELIGIBLE_ENGINES
     confidence_ok = confidence >= _FAST_CONFIDENCE_THRESHOLD
     tier_ok       = routing_tier <= _FAST_MAX_ROUTING_TIER
 
-    if engine_ok and confidence_ok and tier_ok:
-        # Only use FAST if a separate fast deployment is actually configured.
-        # If AZURE_OPENAI_FAST_DEPLOYMENT is not set, fast == reason — still works,
-        # just logs that we would have used FAST.
-        if MODEL_CONFIG.fast_deployment != MODEL_CONFIG.reason_deployment:
-            logger.debug(
-                f"[Gateway] FAST: engine={engine_hint} confidence={confidence:.2f} "
-                f"tier={routing_tier} → {MODEL_CONFIG.fast_deployment}"
-            )
-            return ModelTier.FAST
-        else:
-            logger.debug(
-                f"[Gateway] FAST eligible but AZURE_OPENAI_FAST_DEPLOYMENT not configured "
-                f"— using REASON deployment ({MODEL_CONFIG.reason_deployment})"
-            )
-            return ModelTier.REASON
+    if engine_ok and confidence_ok and tier_ok and not _is_mid_intent(question):
+        _resolved = ModelTier.FAST if MODEL_CONFIG.fast_deployment != MODEL_CONFIG.reason_deployment else ModelTier.REASON
+        logger.debug(f"[Gateway] FAST: engine={engine_hint} conf={confidence:.2f} → {MODEL_CONFIG.fast_deployment}")
+        return _resolved
 
-    logger.debug(
-        f"[Gateway] REASON: engine={engine_hint} engine_ok={engine_ok} "
-        f"confidence={confidence:.2f} confidence_ok={confidence_ok} "
-        f"tier={routing_tier} tier_ok={tier_ok}"
-    )
+    # MID: moderate confidence or analytical patterns detected
+    if _is_mid_intent(question) or confidence >= _MID_CONFIDENCE_THRESHOLD:
+        _resolved = ModelTier.MID if MODEL_CONFIG.mid_deployment != MODEL_CONFIG.reason_deployment else ModelTier.REASON
+        logger.debug(f"[Gateway] MID: question pattern matched → {MODEL_CONFIG.mid_deployment}")
+        return _resolved
+
+    logger.debug(f"[Gateway] REASON: safe default")
     return ModelTier.REASON
 
 
@@ -170,28 +181,13 @@ def choose_tier(
 # LLM factory per tier
 # ---------------------------------------------------------------------------
 
-def make_llm_for_tier(
-    tier: ModelTier,
-    temperature: float = 0.0,
-):
+def make_llm_for_tier(tier: ModelTier, temperature: float = 0.0):
     """Return an AzureChatOpenAI instance for the given model tier.
 
-    WHY lazy import?
-      Keeps this module importable without requiring langchain to be installed
-      in environments that only use the routing logic (e.g. unit tests).
-
-    WHY temperature=0.0 default?
-      Planner calls need deterministic JSON output. Summarizer may pass 1.0
-      for slightly more natural prose — the caller decides.
-
-    WHY max_completion_tokens=8000 for REASON?
-      Reasoning models (gpt-5-nano, o1, o3) spend internal thinking tokens
-      before producing output. Without headroom, the model returns empty
-      output with finish_reason='length'. 8000 covers complex plans.
-
-    WHY max_completion_tokens=2000 for FAST?
-      gpt-4o-mini is a standard model — no reasoning token overhead.
-      2000 is more than enough for a query plan or a short summary.
+    Token headroom:
+      REASON (gpt-5-nano): 8000 — reasoning model needs internal thinking tokens
+      MID    (gpt-4o):     4000 — moderate output, no reasoning overhead
+      FAST   (gpt-4o):     2000 — short answers, query plans
     """
     from langchain_openai import AzureChatOpenAI
     from data_intelligence_service.core.config import SETTINGS
@@ -199,8 +195,11 @@ def make_llm_for_tier(
     if tier == ModelTier.FAST:
         deployment = MODEL_CONFIG.fast_deployment
         max_tokens = 2000
+    elif tier == ModelTier.MID:
+        deployment = MODEL_CONFIG.mid_deployment
+        max_tokens = 4000
     else:
-        # REASON or ZERO (ZERO shouldn't reach here, but fall back safely)
+        # REASON or ZERO (ZERO shouldn't reach here — fall back safely)
         deployment = MODEL_CONFIG.reason_deployment
         max_tokens = 8000
 
@@ -221,4 +220,6 @@ def deployment_for_tier(tier: ModelTier) -> str:
     """Return the Azure deployment name for a given tier (for span attributes)."""
     if tier == ModelTier.FAST:
         return MODEL_CONFIG.fast_deployment
+    if tier == ModelTier.MID:
+        return MODEL_CONFIG.mid_deployment
     return MODEL_CONFIG.reason_deployment
