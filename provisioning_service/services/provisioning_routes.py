@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timezone, timedelta, date
-from typing import Optional
+from typing import Optional, List
+import secrets
 import bcrypt
 from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlalchemy import func
@@ -8,14 +9,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from provisioning_service.Models import Tenant, Role, User, Vendor, Site, Store, CostCentre, UserCostCentre, \
+from provisioning_service.Models import Tenant, Role, User, UserIdentity, Invitation, Vendor, Site, Store, CostCentre, UserCostCentre, \
     SpendingEvent, SiteTenant, \
     OrgUnit, UserOrgAssignment, UserRole, RolePermission, Permission, TenantRole, TenantRolePermission, TenantUserRole, \
     CostCenterBudget, VendorUser
-from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, UserRequest, BulkUserRequest, \
+from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest, \
     CostCentreRequest, VendorRequest, OrgUnitRequest, OrgUnitAssignmentRequest, AssignRoleRequest, \
     RoleRequest, TenantUpdateRequest, TenantRoleRequest, TenantRolePermissionRequest, TenantRoleAssignRequest, \
-    VendorUserCreate, VendorUserUpdate, \
+    VendorUserCreate, VendorUserUpdate, InvitationRequest, InvitationResponse, InvitationListResponse, \
     SiteUpdateRequest, StoreUpdateRequest, UserUpdateRequest, VendorUpdateRequest, CostCentreUpdateRequest
 
 from provisioning_service.core.db_config import get_db
@@ -931,105 +932,221 @@ async def delete_store(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/users", status_code=201)
-async def create_user(
-        req: UserRequest,
-        db: Session = Depends(get_db),
-        ctx = Depends(check_user_authorization("users.manage")),
-        policy=Depends(require_policy("user.create", resource_loader=user_quota_resource)),
-):
-    """Create a new user"""
-    start = datetime.now()
+# ==================================================================================
+# INVITATIONS
+# ==================================================================================
+
+def _send_invitation_email(to_email: str, token: str, tenant_name: str, expires_at: str):
+    """Send an invitation email with the acceptance link."""
     try:
-        req_total.labels(operation="create_user", status="start").inc()
+        from azure.communication.email import EmailClient
+        from provisioning_service.core.config import SETTINGS
 
-        # Verify tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == uuid.UUID(req.tenant_id)).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+        frontend_base = getattr(SETTINGS, "FRONTEND_URL", None) or "http://localhost:3000"
+        accept_url = f"{frontend_base.rstrip('/')}/index.html?token={token}"
 
-        # Check if email exists
-        existing = db.query(User).filter(func.lower(User.email) == req.email.lower()).first()
-        if existing:
-            raise HTTPException(status_code=409, detail="Email already exists")
+        mail_from = "DoNotReply@32c276cf-0d14-43a7-8e89-2e45988729a8.azurecomm.net"
+        subject = f"You're invited to join {tenant_name} on ZeroQue"
 
-        # Hash password
-        password_hash = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-        # Create user (persist user record immediately)
-        user = User(
-            user_id=uuid.uuid4(),
-            tenant_id=uuid.UUID(req.tenant_id),
-            email=req.email,
-            password_hash=password_hash,
-            first_name=req.first_name,
-            last_name=req.last_name,
-            display_name=f"{req.first_name} {req.last_name}",
-            phone=getattr(req, "phone", None),
-            is_active=True,
-            position=getattr(req, "position", None),
-            profile_image=getattr(req, "profile_image", None),
-            is_sso_enabled=bool(getattr(req, "is_sso_enabled", False)),
-            home_site_id=uuid.UUID(req.home_site_id) if getattr(req, "home_site_id", None) else None,
-            home_store_id=uuid.UUID(req.home_store_id) if getattr(req, "home_store_id", None) else None,
-            home_org_unit_id=uuid.UUID(req.home_org_unit_id) if getattr(req, "home_org_unit_id", None) else None,
-            all_locations=bool(getattr(req, "all_locations", False))
+        plain = (
+            f"Hello,\n\n"
+            f"You have been invited to join {tenant_name} on ZeroQue.\n\n"
+            f"Click the link below to accept the invitation and create your account:\n"
+            f"{accept_url}\n\n"
+            f"This invitation expires on {expires_at}.\n\n"
+            f"If you were not expecting this invitation, you can safely ignore this email.\n"
         )
 
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        # Create outbox event for post-create processing (e.g., aiFi sync) and send outbox_id to queue
-        event_data = {
-            "user_id": str(user.user_id),
-            "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name
+        connection_string = SETTINGS.EMAIL_CONNECTION_STRING
+        client = EmailClient.from_connection_string(connection_string)
+        message = {
+            "senderAddress": mail_from,
+            "recipients": {"to": [{"address": to_email}]},
+            "content": {
+                "subject": subject,
+                "plainText": plain,
+                "html": f"""<html>
+                  <body style="font-family: Arial, sans-serif; color:#222; line-height:1.5;">
+                    <p>Hello,</p>
+                    <p>You have been invited to join <strong>{tenant_name}</strong> on ZeroQue.</p>
+                    <p><a href="{accept_url}" style="display:inline-block;padding:12px 24px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;">Accept Invitation</a></p>
+                    <p>This invitation expires on {expires_at}.</p>
+                    <p>If you were not expecting this invitation, you can safely ignore this email.</p>
+                  </body>
+                </html>"""
+            },
         }
-        outbox = create_outbox_event(db, user.tenant_id, "user.created", event_data, status="pending")
-        db.commit()
+        poller = client.begin_send(message)
+        poller.result()
+        logger.info(f"Invitation email sent to {to_email}")
+    except Exception as ex:
+        logger.error(f"Failed to send invitation email to {to_email}: {ex}")
 
-        try:
-            from provisioning_service.core.sb_client import messaging_service
-            await messaging_service.send_outbox_message(str(outbox.id))
-        except Exception as e:
-            # The outbox worker will pick this up later if the notify fails.
-            logger.warning(f"Failed to notify Service Bus: {e}")
 
-        # Record feature usage
-        record_feature_usage(db, req.tenant_id, "users.manage", count=1)
+@router.post("/invitations", response_model=InvitationResponse, status_code=201)
+async def create_invitation(
+    req: InvitationRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """Create an invitation and send it via email. Only tenant admins can invite."""
+    tenant_id_str = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
+    tenant_uuid = uuid.UUID(tenant_id_str)
+    admin_user_id = ctx.get("sub") or (ctx.get("user_id") if isinstance(ctx, dict) else getattr(ctx, "user_id", None))
 
-        req_total.labels(operation="create_user", status="success").inc()
-        req_duration.labels(operation="create_user").observe(
-            (datetime.now() - start).total_seconds()
-        )
+    # Verify tenant
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_uuid).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
 
-        logger.info(f"Created user: {user.user_id} ({user.email}) - outbox {outbox.id}")
+    # Check for existing pending/accepted invitation for this email
+    existing_inv = db.query(Invitation).filter(
+        Invitation.tenant_id == tenant_uuid,
+        Invitation.email == func.lower(req.email),
+        Invitation.status.in_(["pending", "accepted"]),
+    ).first()
+    if existing_inv:
+        raise HTTPException(status_code=409, detail="An active invitation already exists for this email")
 
-        return {
-            "user_id": str(user.user_id),
-            "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "display_name": user.display_name,
-            "created_at": user.created_at.isoformat()
-        }
-    except ValueError:
-        req_total.labels(operation="create_user", status="error").inc()
-        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
-    except HTTPException:
-        req_total.labels(operation="create_user", status="error").inc()
-        raise
-    except IntegrityError:
-        db.rollback()
-        req_total.labels(operation="create_user", status="error").inc()
-        raise HTTPException(status_code=409, detail="Email already exists")
-    except Exception as e:
-        db.rollback()
-        req_total.labels(operation="create_user", status="error").inc()
-        logger.error(f"User creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    # Check if user already has a User row in this tenant
+    existing_identity = db.query(UserIdentity).filter(func.lower(UserIdentity.email) == req.email.lower()).first()
+    if existing_identity:
+        existing_user = db.query(User).filter(
+            User.user_id == existing_identity.user_id,
+            User.tenant_id == tenant_uuid,
+        ).first()
+        if existing_user:
+            raise HTTPException(status_code=409, detail="User is already a member of this tenant")
+
+    # Generate token
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = bcrypt.hashpw(raw_token.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=7)
+
+    invitation = Invitation(
+        invitation_id=uuid.uuid4(),
+        tenant_id=tenant_uuid,
+        email=req.email.lower(),
+        token_hash=token_hash,
+        status="pending",
+        role_code=req.role_code,
+        created_by=uuid.UUID(admin_user_id) if isinstance(admin_user_id, str) else None,
+        expires_at=expires_at,
+    )
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+
+    # Send email (fire-and-forget — failure doesn't block the response)
+    try:
+        _send_invitation_email(req.email, raw_token, tenant.tenant_name, expires_at.isoformat())
+    except Exception:
+        logger.warning(f"Email send failed for invitation {invitation.invitation_id}, but invitation was created")
+
+    logger.info(f"Invitation created: {invitation.invitation_id} for {req.email}")
+
+    return InvitationResponse(
+        invitation_id=str(invitation.invitation_id),
+        tenant_id=str(tenant_uuid),
+        email=invitation.email,
+        status=invitation.status,
+        role_code=invitation.role_code,
+        expires_at=invitation.expires_at.isoformat(),
+        created_at=invitation.created_at.isoformat(),
+    )
+
+
+@router.get("/invitations", response_model=InvitationListResponse)
+async def list_invitations(
+    status: Optional[str] = Query(None, description="Filter by status: pending, accepted, expired, revoked"),
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """List all invitations for the tenant."""
+    tenant_id_str = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
+    tenant_uuid = uuid.UUID(tenant_id_str)
+
+    q = db.query(Invitation).filter(Invitation.tenant_id == tenant_uuid)
+    if status:
+        q = q.filter(Invitation.status == status)
+    q = q.order_by(Invitation.created_at.desc())
+
+    invitations = q.all()
+    return InvitationListResponse(invitations=[
+        InvitationResponse(
+            invitation_id=str(inv.invitation_id),
+            tenant_id=str(inv.tenant_id),
+            email=inv.email,
+            status=inv.status,
+            role_code=inv.role_code,
+            expires_at=inv.expires_at.isoformat(),
+            created_at=inv.created_at.isoformat(),
+        ) for inv in invitations
+    ])
+
+
+@router.post("/invitations/{invitation_id}/resend", status_code=200)
+async def resend_invitation(
+    invitation_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """Regenerate the token for a pending invitation and resend the email."""
+    tenant_id_str = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
+    tenant_uuid = uuid.UUID(tenant_id_str)
+
+    invitation = db.query(Invitation).filter(
+        Invitation.invitation_id == uuid.UUID(invitation_id),
+        Invitation.tenant_id == tenant_uuid,
+    ).first()
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+
+    if invitation.status == "accepted":
+        raise HTTPException(status_code=400, detail="Invitation already accepted")
+
+    # Regenerate token
+    raw_token = secrets.token_urlsafe(48)
+    invitation.token_hash = bcrypt.hashpw(raw_token.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    invitation.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    invitation.status = "pending"  # reset from expired/revoked
+    db.commit()
+    db.refresh(invitation)
+
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_uuid).first()
+    try:
+        _send_invitation_email(invitation.email, raw_token, tenant.tenant_name if tenant else "", invitation.expires_at.isoformat())
+    except Exception:
+        logger.warning(f"Email resend failed for invitation {invitation_id}")
+
+    return {"message": "Invitation resent", "expires_at": invitation.expires_at.isoformat()}
+
+
+@router.delete("/invitations/{invitation_id}", status_code=204)
+async def revoke_invitation(
+    invitation_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("users.manage")),
+):
+    """Revoke a pending invitation."""
+    tenant_id_str = ctx.get("tenant_id") if isinstance(ctx, dict) else ctx.tenant_id
+    tenant_uuid = uuid.UUID(tenant_id_str)
+
+    invitation = db.query(Invitation).filter(
+        Invitation.invitation_id == uuid.UUID(invitation_id),
+        Invitation.tenant_id == tenant_uuid,
+    ).first()
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+
+    if invitation.status == "accepted":
+        raise HTTPException(status_code=400, detail="Cannot revoke an accepted invitation")
+
+    invitation.status = "revoked"
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/users")
@@ -1077,21 +1194,22 @@ async def list_users(
 @router.get("/users/{user_id}")
 async def get_user(user_id: str, db: Session = Depends(get_db)):
     """Get a single user by ID"""
+    from provisioning_service.Models import UserIdentity
     try:
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        identity = db.query(UserIdentity).filter(UserIdentity.user_id == uuid.UUID(user_id)).first()
         return {
             "user_id": str(user.user_id),
             "tenant_id": str(user.tenant_id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
+            "email": identity.email if identity else None,
+            "first_name": identity.first_name if identity else None,
+            "last_name": identity.last_name if identity else None,
             "display_name": user.display_name,
             "phone": user.phone,
             "position": user.position,
             "profile_image": user.profile_image,
-            "is_sso_enabled": user.is_sso_enabled,
             "home_site_id": str(user.home_site_id) if user.home_site_id else None,
             "home_store_id": str(user.home_store_id) if user.home_store_id else None,
             "home_org_unit_id": str(user.home_org_unit_id) if user.home_org_unit_id else None,
@@ -1135,8 +1253,15 @@ async def update_user(
                 setattr(user, key, value)
 
         # Update display_name if first/last name changed
+        from provisioning_service.Models import UserIdentity
+        identity = db.query(UserIdentity).filter(UserIdentity.user_id == user.user_id).first()
         if "first_name" in update_data or "last_name" in update_data:
-            user.display_name = f"{user.first_name} {user.last_name}"
+            if identity:
+                if "first_name" in update_data:
+                    identity.first_name = update_data["first_name"]
+                if "last_name" in update_data:
+                    identity.last_name = update_data["last_name"]
+                user.display_name = f"{identity.first_name} {identity.last_name}".strip()
 
         user.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -1152,11 +1277,12 @@ async def update_user(
         except Exception as _oe:
             logger.warning(f"Outbox event failed for user.updated: {_oe}")
 
-        logger.info(f"✅ Updated user: {user.user_id}")
+        logger.info(f"Updated user: {user.user_id}")
+        email = identity.email if identity else ""
         return {
             "user_id": str(user.user_id),
             "tenant_id": str(user.tenant_id),
-            "email": user.email,
+            "email": email,
             "display_name": user.display_name,
             "is_active": user.is_active,
             "updated_at": user.updated_at.isoformat(),
@@ -2570,11 +2696,15 @@ async def get_user_roles(
         db: Session = Depends(get_db)
 ):
     """Get all roles assigned to a user"""
+    from provisioning_service.Models import UserIdentity
     try:
         # Verify user exists
         user = db.query(User).filter(User.user_id == uuid.UUID(user_id)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+
+        # Get identity for email
+        identity = db.query(UserIdentity).filter(UserIdentity.user_id == uuid.UUID(user_id)).first()
 
         # Get user roles
         user_roles = (
@@ -2586,7 +2716,7 @@ async def get_user_roles(
 
         return {
             "user_id": user_id,
-            "email": user.email,
+            "email": identity.email if identity else None,
             "display_name": user.display_name,
             "roles": [
                 {
@@ -3145,13 +3275,15 @@ async def get_org_unit_users(
         ).all()
 
         users = []
+        from provisioning_service.Models import UserIdentity
         for assignment, user, role, ou in assignments:
+            identity = db.query(UserIdentity).filter(UserIdentity.user_id == user.user_id).first()
             users.append({
                 "assignment_id": str(assignment.assignment_id),
                 "user_id": str(user.user_id),
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
+                "email": identity.email if identity else None,
+                "first_name": identity.first_name if identity else None,
+                "last_name": identity.last_name if identity else None,
                 "display_name": user.display_name,
                 "position": user.position,
                 "is_active": user.is_active,
@@ -3222,11 +3354,13 @@ async def get_user_org_units(
                 "assigned_at": assignment.assigned_at.isoformat() if assignment.assigned_at else None
             })
 
+        from provisioning_service.Models import UserIdentity
+        identity = db.query(UserIdentity).filter(UserIdentity.user_id == user.user_id).first()
         return {
             "user_id": str(user.user_id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
+            "email": identity.email if identity else None,
+            "first_name": identity.first_name if identity else None,
+            "last_name": identity.last_name if identity else None,
             "total_assignments": len(org_units),
             "org_units": org_units
         }

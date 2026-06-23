@@ -106,87 +106,18 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
 
 bearer = HTTPBearer(auto_error=True)
 
-async def _try_azure_token(raw: str) -> Optional[Dict[str, Any]]:
-    """
-    Attempt to validate the token as an Azure AD B2C / Entra ID token.
-
-    If Azure AD is not configured or the token is not an Azure token,
-    returns None so the caller can fall back to local JWT validation.
-    """
-    try:
-        from provisioning_service.core.azure_auth import (
-            validate_azure_token,
-            is_azure_auth_configured,
-        )
-    except ImportError:
-        return None
-
-    if not is_azure_auth_configured():
-        return None
-
-    # Peek at the token header to check if it's RS256 (Azure uses RSA)
-    try:
-        header = jwt.get_unverified_header(raw)
-        if header.get("alg") not in ("RS256", "RS384", "RS512"):
-            return None
-    except Exception:
-        return None
-
-    try:
-        azure_claims = await validate_azure_token(raw)
-
-        # Map Azure identity to internal user for a unified claims dict
-        email = azure_claims.email
-        if not email:
-            return None
-
-        with SessionLocal() as db:
-            user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
-            if not user:
-                # No internal user mapped — cannot proceed with Azure auth alone.
-                # Return basic claims so caller knows auth succeeded but user lookup
-                # must happen at a higher level.
-                return None
-
-            # Build unified claims dict matching local JWT structure
-            return {
-                "sub": str(user.user_id),
-                "email": user.email,
-                "tenant_id": str(user.tenant_id),
-                "roles": azure_claims.roles or [],
-                "permissions": azure_claims.permissions or [],
-                "auth_method": "azure_ad",
-                "azure_oid": azure_claims.oid,
-                "iat": azure_claims.iat,
-                "exp": azure_claims.exp,
-            }
-    except HTTPException:
-        # Azure validation explicitly failed (expired, bad audience, etc.)
-        # Don't fall back to local JWT — re-raise so the user gets the real error.
-        raise
-    except Exception:
-        # Non-Azure token or transient error — fall back to local JWT
-        return None
-
 
 async def decode_jwt_with_settings(creds: HTTPAuthorizationCredentials = Security(bearer)) -> Dict[str, Any]:
     """
     Uses HTTPBearer via Security so Swagger/Redoc shows the Authorize dialog.
 
-    Validation order:
-      1. If Azure AD is configured, attempt Azure token validation first.
-      2. Fall back to local JWT validation (HS256 or configured algorithm).
+    Validates the internal JWT token (HS256 or configured algorithm).
+    Azure token exchange happens separately at POST /authentication/token.
     """
     if not creds or not creds.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
-    raw = creds.credentials  # raw token string (no "Bearer ")
+    raw = creds.credentials
 
-    # Try Azure AD first
-    azure_claims = await _try_azure_token(raw)
-    if azure_claims is not None:
-        return azure_claims
-
-    # Fall back to local JWT
     claims = await decode_jwt_token(raw)
 
     jwt_exp_minutes = int(getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60))

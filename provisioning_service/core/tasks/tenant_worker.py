@@ -2,9 +2,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from provisioning_service.Models import User, Role, Permission, RolePermission, UserRole, OutboxEvent
+from provisioning_service.Models import User, UserIdentity, Role, Permission, RolePermission, UserRole, OutboxEvent
 from sqlalchemy.orm import Session
-import bcrypt
 from provisioning_service.utils.logger import logger
 
 
@@ -13,7 +12,7 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
 
     This will:
     - Load OutboxEvent by id
-    - Create admin user, ensure role and permission mappings, and assign user role
+    - Create admin user (User + UserIdentity), ensure role and permission mappings
     - Trigger welcome emails to admin and tenant contact via the communication module
 
     The function raises exceptions on failure so the caller can implement retry logic.
@@ -30,31 +29,43 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
 
     logger.info(f"Tenant worker: provisioning tenant {tenant_id} for outbox {payload_id}")
 
-    # Mandate-based flow: password_hash is already present
-    password_hash = payload.get("password_hash")
-    if not password_hash:
-        # Legacy flow: raw password or generated
-        password_raw = payload.get("password")
-        if not password_raw:
-            password_raw = uuid.uuid4().hex[:12]
-            payload["generated_password"] = password_raw
-            outbox.payload = payload
-            db.flush()
-        password_hash = bcrypt.hashpw(password_raw.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
-
-    # create user
+    # Get admin details from payload
     admin_firstname = payload.get("admin_firstname") or payload.get("first_name") or "Admin"
     admin_lastname = payload.get("admin_lastname") or payload.get("last_name") or ""
     admin_email = payload.get("admin_email") or payload.get("email")
 
+    display_name = f"{admin_firstname} {admin_lastname}".strip()
+
+    # Check if UserIdentity already exists (user signed in via Azure before onboarding)
+    existing_identity = db.query(UserIdentity).filter(
+        UserIdentity.email == admin_email
+    ).first()
+
+    if existing_identity:
+        # Reuse existing identity — just update tenant_id and create User row
+        new_user_id = existing_identity.user_id
+        existing_identity.tenant_id = tenant_id
+        existing_identity.first_name = admin_firstname or existing_identity.first_name
+        existing_identity.last_name = admin_lastname or existing_identity.last_name
+        logger.info(f"Reusing existing UserIdentity {new_user_id} for {admin_email}")
+    else:
+        new_user_id = uuid.uuid4()
+        # Create UserIdentity record
+        identity = UserIdentity(
+            user_id=new_user_id,
+            tenant_id=tenant_id,
+            email=admin_email,
+            first_name=admin_firstname,
+            last_name=admin_lastname,
+            auth_provider="azure_ad",
+        )
+        db.add(identity)
+
+    # Create User record
     user = User(
-        user_id=uuid.uuid4(),
+        user_id=new_user_id,
         tenant_id=tenant_id,
-        first_name=admin_firstname,
-        last_name=admin_lastname,
-        display_name=f"{admin_firstname} {admin_lastname}".strip(),
-        email=admin_email,
-        password_hash=password_hash,
+        display_name=display_name,
     )
     db.add(user)
 

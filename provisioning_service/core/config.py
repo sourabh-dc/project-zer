@@ -66,13 +66,10 @@ class Settings(BaseSettings):
     API_KEY_EXPIRY_DAYS: int = 90
     CACHE_TTL_SECONDS: int = 300  # 5 minutes
 
-    # Authentication settings
-    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
-    ACCOUNT_LOCKOUT_MINUTES: int = 30
-
-    #Stripe settings
+    # Stripe settings
     STRIPE_SECRET_KEY: str = stripe_secret_key
     STRIPE_WEBHOOK_SECRET: str = stripe_webhook_secret
+    STRIPE_PUBLISHABLE_KEY: str = Field(default=os.getenv("STRIPE_PUBLISHABLE_KEY", ""), description="Stripe publishable key (safe for frontend)")
 
     # AiFi integration settings
     AIFI_BASE_URL: str = Field(default=os.getenv("AIFI_BASE_URL", "https://oasis-api.27-12.oasis.aifi.com"))
@@ -91,7 +88,9 @@ class Settings(BaseSettings):
     # Azure Entra ID (alternative to B2C)
     AZURE_AD_TENANT_ID: Optional[str] = Field(default=None, description="Azure Entra ID directory tenant ID")
     AZURE_AD_CLIENT_ID: Optional[str] = Field(default=None, description="Azure Entra ID application (client) ID")
-
+    AZURE_AD_SPA_CLIENT_ID: Optional[str] = Field(default=None, description="Azure SPA client ID (also accepted as audience)")
+    AZURE_AD_CIAM: bool = Field(default=True, description="Whether to use Azure Entra ID CIAM features")
+    AZURE_AD_CIAM_HOSTNAME: Optional[str] = Field(default=None, description="Custom CIAM hostname (defaults to {tenant_id}.ciamlogin.com)")
     # Policy enforcement (OPA Rego evaluated in-process via shared/policy_engine)
     POLICY_ENGINE_BYPASS: bool = Field(default=False, description="When True, skip OPA calls and return allow (for local dev/testing without OPA)")
 

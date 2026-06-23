@@ -58,17 +58,37 @@ def _entra_authority() -> Optional[str]:
     return None
 
 
+def _ciam_authority() -> Optional[str]:
+    """Build the Azure CIAM authority URL from settings."""
+    tenant_id = getattr(SETTINGS, "AZURE_AD_TENANT_ID", None)
+    if not tenant_id:
+        return None
+    is_ciam = getattr(SETTINGS, "AZURE_AD_CIAM", False)
+    if is_ciam or getattr(SETTINGS, "AZURE_AD_AUTHORITY", "").startswith("ciam"):
+        hostname = getattr(SETTINGS, "AZURE_AD_CIAM_HOSTNAME", None) or f"{tenant_id}.ciamlogin.com"
+        return f"https://{hostname}/{tenant_id}/v2.0"
+    return None
+
+
 def _get_authority() -> Optional[str]:
-    """Return the first configured authority (B2C preferred over Entra)."""
-    return _b2c_authority() or _entra_authority()
+    """Return the first configured authority (CIAM > B2C > Entra)."""
+    return _ciam_authority() or _b2c_authority() or _entra_authority()
 
 
-def _get_client_id() -> Optional[str]:
-    """Return the Azure AD application (client) ID."""
-    return (
-        getattr(SETTINGS, "AZURE_AD_B2C_CLIENT_ID", None)
-        or getattr(SETTINGS, "AZURE_AD_CLIENT_ID", None)
-    )
+def _get_client_ids() -> list:
+    """Return all valid Azure AD application (client) IDs as audience values."""
+    ids = []
+    for attr in ("AZURE_AD_CLIENT_ID", "AZURE_AD_SPA_CLIENT_ID", "AZURE_AD_B2C_CLIENT_ID"):
+        val = getattr(SETTINGS, attr, None)
+        if val:
+            ids.append(val)
+    return ids
+
+
+def _get_primary_client_id() -> Optional[str]:
+    """Return the primary client ID (first configured)."""
+    ids = _get_client_ids()
+    return ids[0] if ids else None
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +225,8 @@ async def validate_azure_token(token: str) -> AzureTokenClaims:
     Raises HTTPException(401) on any validation failure.
     """
     authority = _get_authority()
-    client_id = _get_client_id()
-
-    if not authority or not client_id:
+    client_ids = _get_client_ids()
+    if not authority or not client_ids:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Azure AD not configured (missing tenant/client settings)",
@@ -222,12 +241,13 @@ async def validate_azure_token(token: str) -> AzureTokenClaims:
         jwks_client = _get_jwks_client(jwks_uri)
         signing_key = jwks_client.get_signing_key_from_jwt(token)
 
-        # Decode and verify
+        # Decode and verify — accept any configured client ID as audience
+        logger.info(f"Validating Azure token — client_ids={client_ids}, issuer={issuer}")
         claims = pyjwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=client_id,
+            audience=client_ids,  # accept multiple valid audiences
             issuer=issuer,
             options={
                 "verify_exp": True,
@@ -277,4 +297,4 @@ async def validate_azure_token(token: str) -> AzureTokenClaims:
 
 def is_azure_auth_configured() -> bool:
     """Return True if Azure AD settings are present and non-empty."""
-    return bool(_get_authority() and _get_client_id())
+    return bool(_get_authority() and _get_client_ids())

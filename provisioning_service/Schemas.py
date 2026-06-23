@@ -147,32 +147,18 @@ class StoreRequest(BaseModel):
 
 
 class UserRequest(BaseModel):
-    """User creation request"""
+    """User creation request — identity fields only (no password)."""
     tenant_id: str = Field(..., description="Tenant ID (UUID)")
     email: EmailStr = Field(..., description="Valid email address")
-    password: str = Field(..., description="Password hash")
     first_name: str = Field(..., min_length=1, max_length=255, description="First name")
     last_name: str = Field(..., min_length=1, max_length=255, description="Last name")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
     position: Optional[str] = Field(None, description="Position / job title (optional)")
     profile_image: Optional[str] = Field(None, description="Profile image URL (optional)")
-    is_sso_enabled: Optional[bool] = Field(False, description="Is SSO enabled (optional)")
     home_site_id: Optional[str] = Field(None, description="Home site ID (UUID, optional)")
     home_store_id: Optional[str] = Field(None, description="Home store ID (UUID, optional)")
     home_org_unit_id: Optional[str] = Field(None, description="Home org unit ID (UUID, optional)")
     all_locations: Optional[bool] = Field(False, description="Access to all locations (optional)")
-
-    @field_validator('password')
-    @classmethod
-    def validate_password_strength(cls, v):
-        """Validate password strength"""
-        if not re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not re.search(r'\d', v):
-            raise ValueError('Password must contain at least one digit')
-        return v
 
     @field_validator('phone')
     @classmethod
@@ -310,7 +296,6 @@ class UserUpdateRequest(BaseModel):
     phone: Optional[str] = None
     position: Optional[str] = None
     profile_image: Optional[str] = None
-    is_sso_enabled: Optional[bool] = None
     home_site_id: Optional[str] = None
     home_store_id: Optional[str] = None
     home_org_unit_id: Optional[str] = None
@@ -349,10 +334,34 @@ class CostCentreUpdateRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
-class LoginRequest(BaseModel):
-    """Login request"""
-    email: EmailStr = Field(description="User email")
-    password: str = Field(description="User password")
+class TokenExchangeRequest(BaseModel):
+    """Request to exchange an external Azure AD / CIAM token for an internal JWT.
+
+    Include ``invitation_token`` when accepting a tenant admin invitation.
+    Omit it for self-onboarding (tenant admin's first sign-in).
+    """
+    azure_token: str = Field(..., description="Azure AD / CIAM access or ID token")
+    invitation_token: Optional[str] = Field(None, description="Invitation token from email (only for invited users)")
+
+
+class InvitationRequest(BaseModel):
+    """Create an invitation for a user to join the tenant."""
+    email: EmailStr = Field(..., description="Email address to invite")
+    role_code: Optional[str] = Field(None, description="Role code to assign on acceptance")
+
+
+class InvitationResponse(BaseModel):
+    invitation_id: str
+    tenant_id: str
+    email: str
+    status: str
+    role_code: Optional[str] = None
+    expires_at: str
+    created_at: str
+
+
+class InvitationListResponse(BaseModel):
+    invitations: List[InvitationResponse]
 
 
 class FeatureLimitStatus(BaseModel):
@@ -435,6 +444,8 @@ class MandateCreateRequest(BaseModel):
 
     Trial is mandatory (7 days) and cannot be bypassed — the ``is_trial``
     field is accepted for backwards compatibility but always forced to True.
+
+    Authentication is now Azure AD / CIAM token-driven — no password required.
     """
     email: EmailStr = Field(..., description="Tenant primary email")
     tenant_name: str = Field(min_length=1, max_length=200)
@@ -442,7 +453,6 @@ class MandateCreateRequest(BaseModel):
     admin_email: EmailStr
     admin_firstname: str = Field(min_length=1, max_length=150)
     admin_lastname: str = Field(min_length=1, max_length=150)
-    password: str = Field(min_length=8, max_length=128)
     plan_code: str = Field(..., description="Subscription plan code")
     billing_cycle: str = Field(default="monthly")
     is_trial: bool = Field(
@@ -466,18 +476,6 @@ class MandateCreateRequest(BaseModel):
     def enforce_mandatory_trial(cls, v):
         """Trial is non-bypassable — always return True regardless of input."""
         return True
-
-    @field_validator('password')
-    @classmethod
-    def validate_password_strength(cls, v):
-        import re as _re
-        if not _re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not _re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not _re.search(r'\d', v):
-            raise ValueError('Password must contain at least one digit')
-        return v
 
 
 class MandateResponse(BaseModel):
@@ -748,41 +746,6 @@ class StoreProductRequest(BaseModel):
     stock_quantity: Optional[int] = 0
     low_stock_threshold: Optional[int] = 10
 
-
-class ResetPasswordRequest(BaseModel):
-    current_password: str = Field(..., min_length=8)
-    new_password: str = Field(..., min_length=8)
-
-    @field_validator('new_password')
-    @classmethod
-    def validate_password_strength(cls, v):
-        if not re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not re.search(r'\d', v):
-            raise ValueError('Password must contain at least one digit')
-        return v
-
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-
-class PasswordResetConfirmRequest(BaseModel):
-    token: str
-    new_password: str = Field(..., min_length=8)
-
-    @field_validator('new_password')
-    @classmethod
-    def validate_password_strength(cls, v):
-        if not re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not re.search(r'\d', v):
-            raise ValueError('Password must contain at least one digit')
-        return v
 
 
 class CheckoutRequest(BaseModel):

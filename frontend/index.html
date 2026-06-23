@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZeroQue — Provisioning</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- MSAL.js v2 for Azure AD / CIAM authentication -->
+    <script src="https://alcdn.msauth.net/browser/2.28.3/js/msal-browser.min.js"></script>
+    <!-- Stripe.js for card collection -->
+    <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ONBOARDING VIEW (tenant admin self-signup) -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="view-onboarding" class="view">
+    <header>
+        <div class="container">
+            <span class="logo">ZeroQue</span>
+            <nav>
+                <a href="#" onclick="App.showView('view-dashboard')">Dashboard</a>
+                <a href="#" onclick="App.showView('view-accept-invite')">Accept Invitation</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container" style="max-width: 640px;">
+
+            <!-- Step indicators -->
+            <div class="steps">
+                <div class="step active">Azure Login</div>
+                <div class="step">Register</div>
+                <div class="step">Card Setup</div>
+                <div class="step">Activate</div>
+            </div>
+
+            <!-- Step 1: Azure AD Login -->
+            <div id="step1" class="card text-center">
+                <h2>Welcome to ZeroQue</h2>
+                <p class="text-muted mb-16">Sign in with your Microsoft / Azure AD account to get started.</p>
+                <button class="btn btn-primary" id="btn-azure-login" onclick="App.onboardingLogin()">
+                    <span class="spinner hidden"></span>
+                    Sign in with Microsoft
+                </button>
+                <div id="login-error" class="alert alert-error hidden mt-16"></div>
+            </div>
+
+            <!-- Step 2: Register Tenant -->
+            <div id="step2" class="card hidden">
+                <h2>Create Your Tenant</h2>
+                <p class="text-muted mb-16">Set up your organization on ZeroQue. A 7-day free trial is included.</p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Tenant Name</label>
+                        <input type="text" id="onboard-tenant-name" placeholder="Acme Corporation">
+                    </div>
+                    <div class="form-group">
+                        <label>Type</label>
+                        <select id="onboard-tenant-type">
+                            <option value="retailer">Retailer</option>
+                            <option value="brand">Brand</option>
+                            <option value="franchisee">Franchisee</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>First Name</label>
+                        <input type="text" id="onboard-firstname" placeholder="John">
+                    </div>
+                    <div class="form-group">
+                        <label>Last Name</label>
+                        <input type="text" id="onboard-lastname" placeholder="Smith">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="onboard-email" placeholder="admin@acmecorp.com">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Plan</label>
+                        <select id="onboard-plan">
+                            <option value="core_01">Core Plan</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Billing Cycle</label>
+                        <select id="onboard-billing">
+                            <option value="monthly">Monthly</option>
+                            <option value="quarterly">Quarterly</option>
+                            <option value="yearly">Yearly</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="App.onboardingRegister()">Create Mandate &amp; Continue</button>
+                <div id="register-error" class="alert alert-error hidden mt-16"></div>
+            </div>
+
+            <!-- Step 3: Card Setup -->
+            <div id="step3" class="card hidden">
+                <h2>Set Up Payment Method</h2>
+                <p class="text-muted mb-16">Your card will be charged after the 7-day trial ends. Cancel anytime.</p>
+                <p class="text-muted mb-16">Mandate: <strong id="onboard-mandate-id">—</strong></p>
+                <div id="card-element" style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;"></div>
+                <input type="hidden" id="stripe-client-secret">
+                <input type="hidden" id="onboard-mandate-id-hidden">
+                <button class="btn btn-primary" id="btn-confirm-card" onclick="App.confirmStripeCard()">
+                    <span class="spinner hidden"></span>
+                    Confirm Card
+                </button>
+                <div id="card-error" class="alert alert-error hidden mt-16"></div>
+                <p class="text-muted mt-16" style="font-size:0.75rem;">
+                    ⓘ For testing without Stripe, click "Confirm Card" — the card step will be skipped.
+                </p>
+            </div>
+
+            <!-- Step 4: Activate -->
+            <div id="step4" class="card text-center hidden">
+                <h2>Activate Your Account</h2>
+                <p class="text-muted mb-16">Finalize your tenant setup and start your 7-day free trial.</p>
+                <button class="btn btn-primary" onclick="App.onboardingActivate()">Activate Tenant</button>
+                <div id="activate-error" class="alert alert-error hidden mt-16"></div>
+                <div id="activate-success" class="hidden mt-16">
+                    <div class="alert alert-success">Tenant <strong id="activate-tenant-id">—</strong> created — status: <strong id="activate-status">—</strong></div>
+                    <button class="btn btn-primary mt-16" onclick="App.onboardingSignIn()">Sign In to Dashboard</button>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- DASHBOARD VIEW -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="view-dashboard" class="view hidden">
+    <header>
+        <div class="container">
+            <span class="logo">ZeroQue</span>
+            <nav>
+                <span id="dash-user-name" class="text-muted"></span>
+                <a href="#" onclick="App.showOnboarding()">Onboarding</a>
+                <a href="#" onclick="App.dashboardLogout()">Logout</a>
+            </nav>
+        </div>
+        <div class="container" style="margin-top:8px;">
+            <nav class="dash-tabs" style="gap:4px;">
+                <a href="#" class="dash-tab active" data-tab="tab-overview">Overview</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-sites">Sites</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-stores">Stores</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-users">Users</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-orgunits">Org Units</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-costcentres">Cost Centres</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-vendors">Vendors</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-budgets">Budgets</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-policies">Policies</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-catalog">Catalog</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+
+            <!-- ── TAB: Overview ─────────────────────────────── -->
+            <div id="tab-overview" class="tab-content">
+                <div class="card">
+                    <h2>Tenant Overview</h2>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Tenant</label><p><strong id="dash-tenant-name">—</strong></p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Type</label><p id="dash-tenant-type">—</p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Tenant ID</label><p style="font-size:0.8rem;word-break:break-all;" id="dash-tenant-id">—</p></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Subscription</h2>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;">
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Plan</label><p><strong id="dash-plan">—</strong></p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Status</label><p id="dash-sub-status">—</p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Trial Ends</label><p id="dash-trial-ends">—</p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">User</label><p id="dash-email">—</p></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Budget</h2>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Total Budget</label><p><strong>£<span id="dash-budget-total">0.00</span></strong></p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Spent</label><p>£<span id="dash-budget-spent">0.00</span></p></div>
+                        <div><label class="text-muted" style="font-size:0.7rem;text-transform:uppercase;">Available</label><p>£<span id="dash-budget-available">0.00</span></p></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Invitations</h2>
+                    <div class="form-row mb-16">
+                        <input type="email" id="invite-email" placeholder="colleague@acmecorp.com" style="flex:1;">
+                        <select id="invite-role" style="width:180px;">
+                            <option value="">No role</option>
+                            <option value="tenant_admin">Tenant Admin</option>
+                            <option value="procurement_manager">Procurement Manager</option>
+                            <option value="store_manager">Store Manager</option>
+                            <option value="viewer">Viewer</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">Send</button>
+                    </div>
+                    <div id="invite-error" class="alert alert-error hidden"></div>
+                    <table><thead><tr><th>Email</th><th>Status</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody id="invitations-table"></tbody></table>
+                </div>
+            </div>
+
+            <!-- ── TAB: Sites ────────────────────────────────── -->
+            <div id="tab-sites" class="tab-content hidden">
+                <div class="flex-between mb-16">
+                    <h2>Sites</h2>
+                    <button class="btn btn-primary btn-sm" onclick="App.showSiteForm()">+ New Site</button>
+                </div>
+                <div id="site-form" class="card hidden">
+                    <h3>Create Site</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="site-name" placeholder="London HQ"></div>
+                        <div class="form-group"><label>Type</label><select id="site-type"><option value="campus">Campus</option><option value="mall">Mall</option><option value="DC">Distribution Center</option><option value="online-hub">Online Hub</option></select></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Phone</label><input type="text" id="site-phone" placeholder="+442071234567"></div>
+                        <div class="form-group"><label>Email</label><input type="email" id="site-email" placeholder="hq@acmecorp.com"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>City</label><input type="text" id="site-city" placeholder="London"></div>
+                        <div class="form-group"><label>Postcode</label><input type="text" id="site-postcode" placeholder="EC1A 1BB"></div>
+                    </div>
+                    <div class="flex-between">
+                        <label class="form-group" style="flex-direction:row;align-items:center;gap:8px;"><input type="checkbox" id="site-hq"> Headquarter</label>
+                        <button class="btn btn-primary btn-sm" onclick="App.createSite()">Save Site</button>
+                    </div>
+                    <div id="site-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Type</th><th>City</th><th>HQ</th><th></th></tr></thead><tbody id="sites-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Stores ───────────────────────────────── -->
+            <div id="tab-stores" class="tab-content hidden">
+                <div class="flex-between mb-16">
+                    <h2>Stores</h2>
+                    <button class="btn btn-primary btn-sm" onclick="App.showStoreForm()">+ New Store</button>
+                </div>
+                <div id="store-form" class="card hidden">
+                    <h3>Create Store</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="store-name" placeholder="Flagship Store"></div>
+                        <div class="form-group"><label>Type</label><select id="store-type"><option value="physical">Physical</option><option value="online">Online</option><option value="kiosk">Kiosk</option><option value="darkstore">Dark Store</option></select></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Site</label><select id="store-site"></select></div>
+                        <div class="form-group"><label>Fulfillment</label><select id="store-fulfillment"><option value="both">Both</option><option value="pickup">Pickup</option><option value="ship">Ship</option></select></div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createStore()">Save Store</button>
+                    <div id="store-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Type</th><th>Site</th><th>Fulfillment</th><th></th></tr></thead><tbody id="stores-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Users ────────────────────────────────── -->
+            <div id="tab-users" class="tab-content hidden">
+                <h2>Users</h2>
+                <table><thead><tr><th>Name</th><th>Email</th><th>Position</th><th>Status</th><th></th></tr></thead><tbody id="users-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Org Units ────────────────────────────── -->
+            <div id="tab-orgunits" class="tab-content hidden">
+                <div class="flex-between mb-16">
+                    <h2>Organisation Units</h2>
+                    <button class="btn btn-primary btn-sm" onclick="App.showOrgUnitForm()">+ New Unit</button>
+                </div>
+                <div id="orgunit-form" class="card hidden">
+                    <h3>Create Organisation Unit</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="ou-name" placeholder="Procurement Division"></div>
+                        <div class="form-group"><label>Type</label><select id="ou-type"><option value="department">Department</option><option value="team">Team</option><option value="division">Division</option></select></div>
+                    </div>
+                    <div class="form-group"><label>Code</label><input type="text" id="ou-code" placeholder="PROC-001"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createOrgUnit()">Save Unit</button>
+                    <div id="ou-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Type</th><th>Code</th><th>Status</th><th></th></tr></thead><tbody id="orgunits-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Cost Centres ─────────────────────────── -->
+            <div id="tab-costcentres" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>Cost Centres</h2><button class="btn btn-primary btn-sm" onclick="App.showCostCentreForm()">+ New</button></div>
+                <div id="cc-form" class="card hidden">
+                    <h3>Create Cost Centre</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="cc-name" placeholder="IT Budget"></div>
+                        <div class="form-group"><label>Code</label><input type="text" id="cc-code" placeholder="CC-IT-001"></div>
+                    </div>
+                    <div class="form-group"><label>Budget (£)</label><input type="number" id="cc-budget" placeholder="50000" step="0.01"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createCostCentre()">Save</button>
+                    <div id="cc-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Code</th><th>Budget</th><th>Active</th><th></th></tr></thead><tbody id="cc-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Vendors ──────────────────────────────── -->
+            <div id="tab-vendors" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>Vendors</h2><button class="btn btn-primary btn-sm" onclick="App.showVendorForm()">+ New</button></div>
+                <div id="vendor-form" class="card hidden">
+                    <h3>Create Vendor</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="v-name" placeholder="OfficeMax Ltd"></div>
+                        <div class="form-group"><label>Email</label><input type="email" id="v-email" placeholder="sales@officemax.com"></div>
+                    </div>
+                    <div class="form-group"><label>Description</label><input type="text" id="v-desc" placeholder="Office supplies vendor"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createVendor()">Save</button>
+                    <div id="v-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th></th></tr></thead><tbody id="vendors-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Budgets ──────────────────────────────── -->
+            <div id="tab-budgets" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>Company Budget Caps</h2><button class="btn btn-primary btn-sm" onclick="App.showBudgetCapForm()">+ New</button></div>
+                <div id="budgetcap-form" class="card hidden">
+                    <h3>Create Budget Cap</h3>
+                    <div class="form-group"><label>Total Budget (£)</label><input type="number" id="bc-amount" placeholder="500000" step="0.01"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createBudgetCap()">Save</button>
+                    <div id="bc-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>ID</th><th>Total</th><th>Currency</th><th>Hard Cap</th></tr></thead><tbody id="budgetcaps-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Policies ─────────────────────────────── -->
+            <div id="tab-policies" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>Approval Policies</h2><button class="btn btn-primary btn-sm" onclick="App.showPolicyForm()">+ New</button></div>
+                <div id="policy-form" class="card hidden">
+                    <h3>Create Policy</h3>
+                    <div class="form-group"><label>Name</label><input type="text" id="ap-name" placeholder="Standard Approval"></div>
+                    <div class="form-group"><label>Description</label><input type="text" id="ap-desc" placeholder="Multi-stage approval flow"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createApprovalPolicy()">Save</button>
+                    <div id="ap-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Description</th><th></th></tr></thead><tbody id="policies-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Catalog ──────────────────────────────── -->
+            <div id="tab-catalog" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>Categories</h2><button class="btn btn-primary btn-sm" onclick="App.showCategoryForm()">+ New</button></div>
+                <div id="cat-form" class="card hidden">
+                    <h3>Create Category</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="cat-name" placeholder="Office Supplies"></div>
+                        <div class="form-group"><label>Code</label><input type="text" id="cat-code" placeholder="OFF-SUP"></div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createCategory()">Save</button>
+                    <div id="cat-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Code</th><th></th></tr></thead><tbody id="categories-table"></tbody></table>
+                <hr style="margin:24px 0;border-color:#e2e8f0;">
+                <div class="flex-between mb-16"><h2>Products</h2><button class="btn btn-primary btn-sm" onclick="App.showProductForm()">+ New</button></div>
+                <div id="prod-form" class="card hidden">
+                    <h3>Create Product</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Name</label><input type="text" id="prod-name" placeholder="Blue Ballpoint Pen"></div>
+                        <div class="form-group"><label>SKU</label><input type="text" id="prod-sku" placeholder="PEN-BLU-001"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Price (£)</label><input type="number" id="prod-price" placeholder="12.99" step="0.01"></div>
+                        <div class="form-group"><label>Category</label><select id="prod-category"></select></div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createProduct()">Save</button>
+                    <div id="prod-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>SKU</th><th>Price</th><th></th></tr></thead><tbody id="products-table"></tbody></table>
+            </div>
+
+        </div>
+    </main>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ACCEPT INVITATION VIEW (for invited users) -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="view-accept-invite" class="view hidden">
+    <header>
+        <div class="container">
+            <span class="logo">ZeroQue</span>
+            <nav>
+                <a href="#" onclick="App.showOnboarding()">Onboarding</a>
+                <a href="#" onclick="App.showView('view-dashboard')">Dashboard</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container" style="max-width:480px;">
+            <div class="card text-center">
+                <h2>Accept Invitation</h2>
+                <p class="text-muted mb-16">
+                    You've been invited to join a tenant on ZeroQue.
+                    Sign in with your Microsoft account to accept.
+                </p>
+                <button class="btn btn-primary" onclick="App.acceptInvitation()">Sign in with Microsoft</button>
+                <div id="invite-signin-error" class="alert alert-error hidden mt-16"></div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -56,7 +56,7 @@ python provisioning_service/core/helpers/outbox_worker.py
 4. [Tenant Management](#4-tenant-management)
 5. [Sites](#5-sites)
 6. [Stores](#6-stores)
-7. [Users](#7-users)
+7. [Invitations](#7-invitations)
 8. [Roles & Permissions](#8-roles--permissions)
 9. [Tenant Roles](#9-tenant-roles)
 10. [Org Units](#10-org-units)
@@ -341,39 +341,15 @@ _Returns 204._
 
 > No authentication required for these endpoints.
 >
-> **Onboarding flow**: OTP (optional email verification) → `POST /onboarding/register` → collect card on frontend via Stripe.js → `POST /onboarding/activate`
+> **New Onboarding flow** (token-driven): Azure AD authenticates the user → `POST /onboarding/register` → collect card on frontend via Stripe.js → `POST /onboarding/activate` → `POST /authentication/token` (for subsequent logins)
 
-### 2.1 Generate OTP
-
-```
-POST /onboarding/otp/generate
-```
-```json
-{
-  "email": "admin@acmecorp.com"
-}
-```
-_Sends a 6-digit OTP to the provided email._
-
-### 2.2 Validate OTP
-
-```
-POST /onboarding/otp/validate
-```
-```json
-{
-  "email": "admin@acmecorp.com",
-  "otp": "482917"
-}
-```
-
-### 2.3 Register (Step 1 — create billing mandate)
+### 2.1 Register (Step 1 — create billing mandate)
 
 ```
 POST /onboarding/register
 ```
 
-> Creates a Stripe Customer and a SetupIntent for off-session recurring charges ("Spotify model"). **No tenant or user rows are written yet.** The 7-day trial is mandatory and non-bypassable.
+> Creates a Stripe Customer and a SetupIntent for off-session recurring charges ("Spotify model"). **No tenant or user rows are written yet.** The 7-day trial is mandatory and non-bypassable. **No password required** — authentication is via Azure AD token.
 
 ```json
 {
@@ -383,7 +359,6 @@ POST /onboarding/register
   "admin_email": "admin@acmecorp.com",
   "admin_firstname": "John",
   "admin_lastname": "Smith",
-  "password": "SecurePass1",
   "plan_code": "core_01",
   "billing_cycle": "monthly",
   "phone": "+447700900001",
@@ -413,13 +388,13 @@ POST /onboarding/register
 > 📌 **Save** `mandate_id` — needed for Step 2.  
 > Use `client_secret` with Stripe.js `confirmCardSetup()` on the frontend to collect the card.
 
-### 2.4 Activate (Step 2 — confirm card, create tenant)
+### 2.2 Activate (Step 2 — confirm card, create tenant)
 
 ```
 POST /onboarding/activate
 ```
 
-> Step 2: called after the frontend has confirmed the Stripe SetupIntent via `confirmCardSetup()`. Creates the Tenant, User, and Subscription in the database and starts the 7-day trial.
+> Step 2: called after the frontend has confirmed the Stripe SetupIntent via `confirmCardSetup()`. Creates the Tenant, User, UserIdentity, and Subscription in the database and starts the 7-day trial.
 
 ```json
 {
@@ -447,15 +422,16 @@ POST /onboarding/activate
 
 > 📌 **Save** `tenant_id` — you will need it for all subsequent requests.
 
-### 2.5 Tenant Sign-In (Login)
+### 2.3 Token Exchange (Login)
 
 ```
-POST /onboarding/tenant-signin
+POST /authentication/token
 ```
+> Exchange an Azure AD / CIAM token for an internal JWT. The frontend first authenticates the user via MSAL.js, then sends the Azure token here.
+
 ```json
 {
-  "email": "admin@acmecorp.com",
-  "password": "SecurePass1"
+  "azure_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6Ims5eG1TdFE4VDlUNHNFOXBuQ25fLXU0eVVzcyJ9..."
 }
 ```
 
@@ -512,11 +488,93 @@ POST /onboarding/tenant-signin
 > 📌 **Save** `refresh_token` — use it to get new tokens without re-logging in.  
 > 📌 **Save** `user_id` — this is the admin user ID.
 
+### 2.4 Invite a User
+
+```
+POST /provisioning/invitations
+Authorization: Bearer <admin_jwt>
+```
+```json
+{
+  "email": "jane.doe@acmecorp.com",
+  "role_code": "procurement_manager"
+}
+```
+
+**Response:**
+```json
+{
+  "invitation_id": "inv_abc123...",
+  "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
+  "email": "jane.doe@acmecorp.com",
+  "status": "pending",
+  "role_code": "procurement_manager",
+  "expires_at": "2026-04-27T00:00:00Z",
+  "created_at": "2026-04-20T10:00:00Z"
+}
+```
+_Sends an email to the user with an acceptance link containing a token._
+
+### 2.5 List Invitations
+
+```
+GET /provisioning/invitations?status=pending
+Authorization: Bearer <admin_jwt>
+```
+
+### 2.6 Resend Invitation
+
+```
+POST /provisioning/invitations/{invitation_id}/resend
+Authorization: Bearer <admin_jwt>
+```
+_Regenerates the token and sends a new email. Resets expiry to 7 days from now._
+
+### 2.7 Revoke Invitation
+
+```
+DELETE /provisioning/invitations/{invitation_id}
+Authorization: Bearer <admin_jwt>
+```
+_Returns 204._
+
+### 2.8 Accept Invitation (Token Exchange)
+
+```
+POST /authentication/token
+```
+> The invited user authenticates via Azure AD, then sends the Azure token **plus** the invitation token from the email.
+
+```json
+{
+  "azure_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIs...",
+  "invitation_token": "abc123..."
+}
+```
+_Returns full `LoginResponse` — see Section 2.3 for the response format.
+The user is automatically linked to the inviting tenant and assigned the specified role._
+
 ---
 
 ## 3. Authentication
 
-### 3.1 Refresh JWT
+### 3.1 Token Exchange (Azure AD → Internal JWT)
+
+```
+POST /authentication/token
+```
+
+> **Primary auth endpoint.** Exchange an Azure AD / CIAM token (obtained by the frontend via MSAL.js) for an internal JWT.
+> If the user doesn't exist yet, creates UserIdentity + User automatically.
+
+```json
+{
+  "azure_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIs..."
+}
+```
+_Returns full `LoginResponse` — see Section 2.3 for the response format._
+
+### 3.2 Refresh JWT
 
 ```
 POST /authentication/refresh-jwt
@@ -528,67 +586,21 @@ POST /authentication/refresh-jwt
 }
 ```
 
-### 3.2 Who Am I
+### 3.3 Who Am I
 
 ```
 GET /authentication/whoami
 ```
-_Returns decoded JWT claims._
+_Returns full user context including subscription, tenant, balance, and RBAC info._
 
-### 3.3 Logout
+### 3.4 Logout
 
 ```
 POST /authentication/logout
 ```
 _No body required. Uses JWT from header._
 
-### 3.4 Reset Password (Authenticated)
-
-```
-POST /authentication/reset-password
-```
-```json
-{
-  "current_password": "SecurePass1",
-  "new_password": "NewSecurePass2"
-}
-```
-
-### 3.5 Forgot Password (Request Reset Link)
-
-```
-POST /authentication/forgot-password
-```
-```json
-{
-  "email": "admin@acmecorp.com"
-}
-```
-_Sends a password reset link to the email._
-
-### 3.6 Confirm Password Reset
-
-```
-POST /authentication/reset-password/confirm
-```
-```json
-{
-  "token": "<reset_token_from_email>",
-  "new_password": "ResetPass3"
-}
-```
-
-### 3.7 Azure AD / Entra ID Token Exchange
-
-```
-POST /authentication/azure/token-exchange?azure_token=<azure_access_or_id_token>
-```
-
-> Exchange an Azure AD B2C / Entra ID token for an internal JWT.  
-> **Flow:** Frontend authenticates via MSAL.js → sends Azure token here → backend validates against Azure JWKS → issues internal JWT with tenant_id, roles, and permissions.  
-> If the Azure user has no internal account yet, returns 404 — redirect to the register onboarding flow.
-
-### 3.8 Health Check
+### 3.5 Health Check
 
 ```
 GET /authentication/healthcheck
@@ -799,79 +811,60 @@ DELETE /provisioning/stores/{store_id}
 
 ---
 
-## 7. Users
+## 7. Invitations
 
-### 7.1 Create User
+> All users (except the tenant admin who self-onboards) join via invitation.
+> The admin invites a user → they receive an email with a token → they sign in via Azure AD + the invitation token → account is created automatically.
+
+### 7.1 Create Invitation
 
 ```
-POST /provisioning/users
+POST /provisioning/invitations
 ```
 ```json
 {
-  "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
   "email": "jane.doe@acmecorp.com",
-  "password": "UserPass1",
-  "first_name": "Jane",
-  "last_name": "Doe",
-  "phone": "+447700900100",
-  "position": "Procurement Manager",
-  "is_sso_enabled": false,
-  "home_site_id": "<site_id>",
-  "home_store_id": "<store_id>",
-  "home_org_unit_id": "<org_unit_id>",
-  "all_locations": false
+  "role_code": "procurement_manager"
 }
 ```
 
-> 📌 **Save** `user_id` from the response.
+> 📌 **Save** `invitation_id` from the response.
 
-### 7.2 List Users
+### 7.2 List Invitations
 
 ```
-GET /provisioning/users?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2
+GET /provisioning/invitations?status=pending
 ```
 
-### 7.3 Get User by ID
+### 7.3 Resend Invitation
+
+```
+POST /provisioning/invitations/{invitation_id}/resend
+```
+
+### 7.4 Revoke Invitation
+
+```
+DELETE /provisioning/invitations/{invitation_id}
+```
+_Returns 204._
+
+### 7.5 Get User by ID
 
 ```
 GET /provisioning/users/{user_id}
 ```
 
-### 7.4 Update User
+### 7.6 Update User
 
 ```
 PUT /provisioning/users/{user_id}
 ```
-```json
-{
-  "position": "Senior Procurement Manager",
-  "all_locations": true,
-  "is_active": true
-}
-```
 
-### 7.5 Delete User (Soft)
+### 7.7 Delete User (Soft)
 
 ```
 DELETE /provisioning/users/{user_id}
-```
-
-### 7.6 Get User Budget Summary
-
-```
-GET /provisioning/users/{user_id}/budget
-```
-
-### 7.7 Get User Spending History
-
-```
-GET /provisioning/users/{user_id}/spending-history
-```
-
-### 7.8 Get User Subordinates
-
-```
-GET /provisioning/users/{user_id}/subordinates
 ```
 
 ---
@@ -2214,36 +2207,34 @@ Follow this order to set up a fully functional tenant from scratch:
 5.  POST /internal/features                ← Create features
 6.  PUT  /internal/plans/{code}/features/{code}  ← Map features to plans
 
-7.  POST /onboarding/otp/generate          ← (Optional) Verify admin email via OTP
-8.  POST /onboarding/otp/validate          ← (Optional) Validate OTP
-9.  POST /onboarding/register              ← Create Stripe customer + SetupIntent
+7.  POST /onboarding/register              ← Create Stripe customer + SetupIntent
     (Frontend: call Stripe.js confirmCardSetup with client_secret)
-10. POST /onboarding/activate              ← Confirm card → creates tenant + user + subscription
-11. POST /onboarding/tenant-signin         ← Login → get JWT token
-12. POST /provisioning/sites               ← Create site
-13. POST /provisioning/stores              ← Create store under site
-14. POST /provisioning/users               ← Create additional users
-15. POST /provisioning/roles               ← Create tenant-level roles
-16. POST /provisioning/users/{id}/roles    ← Assign roles to users
-17. POST /provisioning/org_units           ← Create org units (departments)
-18. POST /provisioning/org_units/assignments ← Assign users to org units
-19. POST /provisioning/vendors             ← Create vendors
-20. POST /provisioning/cost-centres        ← Create cost centres with budgets
-21. POST /provisioning/users/{id}/cost-centres ← Assign users to cost centres
-22. POST /catalog/categories               ← Create product categories
-23. POST /catalog/products                 ← Create products
-24. POST /catalog/store-products           ← Link products to stores
-25. POST /approved-ranges                  ← Create approved ranges
-26. POST /approved-ranges/{id}/org-units   ← Map ranges to org units
-27. POST /approved-ranges/{id}/products    ← Add products to ranges
-28. POST /financial-calendars              ← Create financial calendar
-29. POST /financial-calendars/{id}/years   ← Create financial year
-30. PUT  /financial-calendars/{id}/years/{id}/activate ← Activate year
-31. POST /financial-calendars/{id}/years/{id}/generate-periods ← Generate periods
-32. POST /budgets/company-caps             ← Set company budget cap
-33. POST /budgets/cc-versions              ← Allocate budget to cost centres
-34. POST /user-budgets/assignments         ← Assign users to cost centres
-35. POST /user-budgets/limits              ← Set per-user spending limits
-36. POST /approval-policies                ← Create approval policies
-37. POST /purchase-requests                ← Create purchase request (tests full flow)
+8.  POST /onboarding/activate              ← Confirm card → creates tenant + user + subscription
+9.  POST /authentication/token             ← Exchange Azure token → get internal JWT
+10. POST /provisioning/sites               ← Create site
+11. POST /provisioning/stores              ← Create store under site
+12. POST /provisioning/invitations          ← Invite additional users
+13. POST /provisioning/roles               ← Create tenant-level roles
+14. POST /provisioning/users/{id}/roles    ← Assign roles to users
+15. POST /provisioning/org_units           ← Create org units (departments)
+16. POST /provisioning/org_units/assignments ← Assign users to org units
+17. POST /provisioning/vendors             ← Create vendors
+18. POST /provisioning/cost-centres        ← Create cost centres with budgets
+19. POST /provisioning/users/{id}/cost-centres ← Assign users to cost centres
+20. POST /catalog/categories               ← Create product categories
+21. POST /catalog/products                 ← Create products
+22. POST /catalog/store-products           ← Link products to stores
+23. POST /approved-ranges                  ← Create approved ranges
+24. POST /approved-ranges/{id}/org-units   ← Map ranges to org units
+25. POST /approved-ranges/{id}/products    ← Add products to ranges
+26. POST /financial-calendars              ← Create financial calendar
+27. POST /financial-calendars/{id}/years   ← Create financial year
+28. PUT  /financial-calendars/{id}/years/{id}/activate ← Activate year
+29. POST /financial-calendars/{id}/years/{id}/generate-periods ← Generate periods
+30. POST /budgets/company-caps             ← Set company budget cap
+31. POST /budgets/cc-versions              ← Allocate budget to cost centres
+32. POST /user-budgets/assignments         ← Assign users to cost centres
+33. POST /user-budgets/limits              ← Set per-user spending limits
+34. POST /approval-policies                ← Create approval policies
+35. POST /purchase-requests                ← Create purchase request (tests full flow)
 ```

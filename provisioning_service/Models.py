@@ -103,38 +103,84 @@ class User(Base):
     user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
 
-    email = Column(String, nullable=False)
-    password_hash = Column(String, nullable=False)  # required
-    first_name = Column(String, nullable=False)
-    last_name = Column(String, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
 
     display_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     position = Column(String, nullable=True)
     profile_image = Column(String, nullable=True)
-    is_sso_enabled = Column(Boolean, nullable=True, default=False)
     home_site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id"), nullable=True)
     home_store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=True)
     home_org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id"), nullable=True)
     all_locations = Column(Boolean, nullable=True, default=False)
 
-    failed_login_attempts = Column(Integer, nullable=True, default=0)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     refresh_token = Column(String, nullable=True)
     refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_logout_at = Column(DateTime(timezone=True), nullable=True)
-    
+
     # Budget and ordering limits
-    max_order_limit_minor = Column(Integer, nullable=True, default=10000000)  # Default 100,000 (in minor units, e.g., cents)
+    max_order_limit_minor = Column(Integer, nullable=True, default=10000000)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
+
+class UserIdentity(Base):
+    """Identity layer for users — email, OID, name, auth provider.
+
+    Split from the main ``users`` table so that identity fields (which come
+    from Azure AD / CIAM) are separate from tenant-scoped profile fields.
+
+    A ``UserIdentity`` is created on first Azure sign-in, before the user
+    has a tenant or a ``User`` row.  The ``user_id`` is generated here and
+    later reused when the ``User`` row is created during onboarding.
+    ``tenant_id`` is nullable — it is set once the user joins a tenant.
+    """
+    __tablename__ = "user_identities"
+
+    user_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="SET NULL"), nullable=True, index=True)
+
+    email = Column(String, nullable=False)
+    oid = Column(String, nullable=True, index=True)            # Azure AD object ID (stable across policies)
+    auth_provider = Column(String, nullable=False, default="azure_ad")  # azure_ad | local
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
+    last_azure_login_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
     __table_args__ = (
-        Index("ix_users_tenant_email_unique", "tenant_id", "email", unique=True),
+        Index("ix_user_identities_email", "email", unique=True),
     )
+
+
+class Invitation(Base):
+    """Tenant admin invitation for new users.
+
+    An invitation is created by a tenant admin, sent via email with a unique
+    token, and accepted by the invitee when they sign in via Azure AD.
+    The token is single-use — on acceptance the status flips to 'accepted'.
+    Expired or revoked invitations may be re-sent (generates a new token).
+    """
+    __tablename__ = "invitations"
+
+    invitation_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
+    token_hash = Column(String, nullable=False)                      # bcrypt hash of the random token
+    status = Column(String(20), nullable=False, default="pending")    # pending | accepted | expired | revoked
+    role_code = Column(String(100), nullable=True)                    # optional role assigned on acceptance
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    accepted_by = Column(SQLUUID(as_uuid=True), nullable=True)        # user_id after acceptance
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class Role(Base):
@@ -571,7 +617,6 @@ class Mandate(Base):
     admin_email = Column(String, nullable=False)
     admin_firstname = Column(String(150), nullable=False)
     admin_lastname = Column(String(150), nullable=False)
-    password_hash = Column(String, nullable=False)
 
     # Billing
     plan_code = Column(String(50), nullable=False)
@@ -810,7 +855,7 @@ class SpendingEvent(Base):
 
 
 # Add relationships
-User.cost_centres = relationship("UserCostCentre", back_populates="user")
+User.cost_centres = relationship("UserCostCentre", back_populates="user", foreign_keys="UserCostCentre.user_id")
 CostCentre.members = relationship("UserCostCentre", back_populates="cost_centre")
 
 

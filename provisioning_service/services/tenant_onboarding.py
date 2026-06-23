@@ -2,211 +2,35 @@ import uuid
 import stripe
 from datetime import datetime, timezone, timedelta
 from typing import List
-import jwt
-from azure.communication.email import EmailClient
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
-    Tenant, User, UserRole, Role, Permission, RolePermission,
+    Tenant, User, UserIdentity, UserRole, Role, Permission, RolePermission,
     TenantUserRole, TenantRole, TenantRolePermission,
     Mandate, TenantSubscription, SubscriptionPlan, PlanFeature, PlanPrice,
 )
 from provisioning_service.Schemas import (
-    LoginRequest, LoginResponse,
     MandateCreateRequest, MandateResponse,
     MandateActivateRequest, MandateActivateResponse,
     SubscriptionContext,
 )
 from provisioning_service.core.helpers.signin_context import (
-    build_subscription_context, build_tenant_context,
-    build_balance_context, build_rbac_context,
+    build_subscription_context,
 )
-from provisioning_service.core.helpers.auth_helper import issue_refresh_token
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event, dispatch_outbox_to_queue
 from provisioning_service.utils.metrics import req_total
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.utils.logger import logger
-import bcrypt
 
 stripe.api_key = SETTINGS.STRIPE_SECRET_KEY
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding tenant"])
 
-# python
-from fastapi import BackgroundTasks
-from pydantic import BaseModel, EmailStr
-import secrets
-import hmac
-import hashlib
-from typing import Dict
-
-
-# OTP configuration (tunable via SETTINGS)
-OTP_EXPIRY_MINUTES = getattr(SETTINGS, "OTP_EXPIRY_MINUTES", 5)
-OTP_MAX_ATTEMPTS = getattr(SETTINGS, "OTP_MAX_ATTEMPTS", 3)
-OTP_SECRET = getattr(SETTINGS, "OTP_SECRET", getattr(SETTINGS, "JWT_SECRET", "otp_fallback_secret"))
-
-# In-memory store: { email: { "hash": ..., "expires_at": datetime, "attempts_left": int } }
-OTP_STORE: Dict[str, Dict] = {}
-
-class OtpGenerateRequest(BaseModel):
-    email: EmailStr
-
-class OtpGenerateResponse(BaseModel):
-    detail: str
-
-class OtpValidateRequest(BaseModel):
-    email: EmailStr
-    otp: str
-
-class OtpValidateResponse(BaseModel):
-    detail: str
-
-def _hash_otp(otp: str) -> str:
-    return hmac.new(OTP_SECRET.encode("utf-8"), otp.encode("utf-8"), hashlib.sha256).hexdigest()
-
-def _send_email_smtp(to_email: str, otp, expiry_minutes, support_contact):
-    # Simple SMTP sender using SETTINGS if configured; logs on error or if not configured.
-    try:
-        mail_from = "DoNotReply@32c276cf-0d14-43a7-8e89-2e45988729a8.azurecomm.net"
-        subject = "Zeroque - One time password"
-        body = (
-        f"Dear Customer,\n\n"
-        f"Thank you for your interest. Please find your One Time Password (OTP) below:\n\n"
-        f"OTP: {otp}\n\n"
-        f"This OTP will expire in {expiry_minutes} minutes and is valid for a single use only. "
-        f"For your security, do not share this code with anyone.\n\n"
-        f"If you did not request this OTP or believe your account may be compromised, please contact "
-        f"our support team at {support_contact} immediately.\n\n"
-        f"Kind regards,\n"
-        f"The Support Team\n"
-    )
-        try:
-            connection_string = SETTINGS.EMAIL_CONNECTION_STRING
-            client = EmailClient.from_connection_string(connection_string)
-
-            message = {
-                "senderAddress": mail_from,
-                "recipients": {
-                    "to": [{"address": to_email}]
-                },
-                "content": {
-                    "subject": subject,
-                    "plainText": body,
-                    "html": f"""<html>
-                  <body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height:1.5;">
-                    <p>Dear Customer,</p>
-                    <p>Thank you for your interest. Please find your One-Time Password (OTP) below:</p>
-                    <div style="margin:16px 0; padding:12px 16px; display:inline-block; background:#f6f8fa; border-radius:6px; font-size:1.25rem; font-weight:600; letter-spacing:2px;">
-                      {otp}
-                    </div>
-                    <p>This OTP will expire in {expiry_minutes} minutes and is valid for a single use only. For your security, do not share this code with anyone.</p>
-                    <p>If you did not request this OTP or believe your account may be compromised, please contact our support team at <a href="mailto:{support_contact}">{support_contact}</a> immediately.</p>
-                    <p>Kind regards,<br/>The Support Team</p>
-                  </body>
-                </html>"""
-                },
-
-            }
-
-            poller = client.begin_send(message)
-            result = poller.result()
-            print("Message sent: ", result)
-            return result
-
-        except Exception as ex:
-            print(ex)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Otp generation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
-
-@router.post("/otp/generate", response_model=OtpGenerateResponse, status_code=202)
-async def generate_otp(
-    req: OtpGenerateRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Generate an OTP for the provided email, send it by email, and store a hashed copy with expiry.
-    """
-    try:
-        # Optional: ensure user exists (else still generate? here we require user)
-        user = db.query(User).filter(func.lower(User.email) == req.email.lower()).first()
-        if user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="A Tenant Already Exists with this Email ID")
-
-        # generate 6-digit OTP
-        otp = f"{secrets.randbelow(10**6):06d}"
-        hashed = _hash_otp(otp)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
-
-        # store hashed otp
-        OTP_STORE[req.email.lower()] = {
-            "hash": hashed,
-            "expires_at": expires_at,
-            "attempts_left": OTP_MAX_ATTEMPTS
-        }
-
-        # send email in background
-        background_tasks.add_task(_send_email_smtp, req.email, otp, OTP_EXPIRY_MINUTES, "zeroque.support@consumables.com")
-
-        return OtpGenerateResponse(detail="OTP generated and being sent if email configured")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"Failed to generate OTP for {req.email}: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate OTP")
-
-@router.post("/otp/validate", response_model=OtpValidateResponse, status_code=200)
-async def validate_otp(
-    req: OtpValidateRequest,
-):
-    """
-    Validate provided OTP for email. On success, removes stored OTP.
-    """
-    try:
-        key = req.email.lower()
-        entry = OTP_STORE.get(key)
-        if not entry:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No OTP requested for this email")
-
-        # check expiry
-        if datetime.now(timezone.utc) > entry["expires_at"]:
-            OTP_STORE.pop(key, None)
-            raise HTTPException(status_code=status.HTTP_410_GONE, detail="OTP expired")
-
-        # check attempts
-        if entry["attempts_left"] <= 0:
-            OTP_STORE.pop(key, None)
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Too many invalid attempts")
-
-        # verify OTP
-        provided_hash = _hash_otp(req.otp)
-        if hmac.compare_digest(provided_hash, entry["hash"]):
-            # success: remove stored otp and return success
-            OTP_STORE.pop(key, None)
-            return OtpValidateResponse(detail="OTP validated successfully")
-        else:
-            # decrement attempts
-            entry["attempts_left"] -= 1
-            if entry["attempts_left"] <= 0:
-                OTP_STORE.pop(key, None)
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Too many invalid attempts")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OTP")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"OTP validation error for {req.email}: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OTP validation failed")
-
-
 # =====================================================================
-# MANDATE-FIRST ONBOARDING (New Flow)
+# MANDATE-FIRST ONBOARDING (New Flow — Token-Driven Auth)
 # =====================================================================
 
 @router.post("/register", response_model=MandateResponse, status_code=201)
@@ -229,19 +53,24 @@ async def create_mandate(
     Trial is mandatory and always 7 days.
     """
     try:
-        # Reject if email already used
+        # If a pending mandate already exists, return it (idempotent — user can retry)
         existing = db.query(Mandate).filter(
             Mandate.email == req.email, Mandate.status.in_(["pending", "active"])
         ).first()
         if existing:
-            raise HTTPException(status_code=409, detail="A mandate already exists for this email")
+            if existing.status == "active":
+                raise HTTPException(status_code=409, detail="Tenant already activated for this email")
+            # Pending mandate — return it so the frontend can continue to card setup
+            return MandateResponse(
+                mandate_id=str(existing.mandate_id),
+                status=existing.status,
+                stripe_customer_id=existing.stripe_customer_id,
+                client_secret=existing.stripe_setup_intent_secret,
+            )
 
         existing_tenant = db.query(Tenant).filter(Tenant.email == req.email).first()
         if existing_tenant:
             raise HTTPException(status_code=409, detail="Tenant email already registered")
-
-        # Hash password now — stored on mandate, transferred to user on activation
-        pw_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
 
         # Create Stripe customer
         stripe_customer = stripe.Customer.create(
@@ -281,7 +110,6 @@ async def create_mandate(
             admin_email=req.admin_email,
             admin_firstname=req.admin_firstname,
             admin_lastname=req.admin_lastname,
-            password_hash=pw_hash,
             plan_code=req.plan_code,
             billing_cycle=req.billing_cycle,
             is_trial=True,      # mandatory trial — cannot be bypassed
@@ -497,7 +325,6 @@ async def activate_mandate(
             "admin_email": mandate.admin_email,
             "admin_firstname": mandate.admin_firstname,
             "admin_lastname": mandate.admin_lastname,
-            "password_hash": mandate.password_hash,
             "plan_code": mandate.plan_code,
             "billing_cycle": mandate.billing_cycle,
             "is_trial": True,
@@ -548,152 +375,3 @@ async def activate_mandate(
         db.rollback()
         logger.error(f"Mandate activation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to activate mandate")
-
-
-@router.post("/tenant-signin", response_model=LoginResponse, status_code=200)
-async def tenant_login(
-        req: LoginRequest,
-        db: Session = Depends(get_db)
-):
-    """
-    Login with email and password to get API key
-    This endpoint allows users to authenticate receive a jwt key.
-    """
-    try:
-        # Find the user by email
-        user = db.query(User).filter(
-            func.lower(User.email) == req.email.lower()
-        ).first()
-
-        if not user:
-            # Don't reveal if email exists (security best practice)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
-
-        password_valid = bcrypt.checkpw(
-            req.password.encode('utf-8'),
-            user.password_hash.encode('utf-8')
-        )
-
-        if not password_valid:
-            # Increment failed login attempts
-            user.failed_login_attempts += 1
-
-            # Lock account if max attempts reached
-            if user.failed_login_attempts >= SETTINGS.MAX_FAILED_LOGIN_ATTEMPTS:
-                logger.warning(f"Account locked for user {user.email} due to failed login attempts")
-                return "Account locked due to too many failed login attempts. Please try Forget Password."
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
-
-        # Check if the user is active
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is inactive"
-            )
-
-        # Reset failed login attempts on successful login
-        user.failed_login_attempts = 0
-        user.last_login_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(user)
-        # load roles from user_roles table (global) and tenant roles
-        roles_query = db.query(Role.code) \
-            .join(UserRole, Role.role_id == UserRole.role_id) \
-            .filter(UserRole.user_id == user.user_id) \
-            .all()
-        tenant_roles_query = db.query(TenantRole.code) \
-            .join(TenantUserRole, TenantRole.role_id == TenantUserRole.tenant_role_id) \
-            .filter(TenantUserRole.user_id == user.user_id) \
-            .all()
-
-        # each row is a single-column tuple; extract codes and filter out falsy values
-        roles: List[str] = [r[0] for r in roles_query if r and r[0]]
-        tenant_roles: List[str] = [r[0] for r in tenant_roles_query if r and r[0]]
-        all_roles: List[str] = roles + tenant_roles
-
-        # prepare JWT
-        jwt_exp_minutes = getattr(SETTINGS, "JWT_EXPIRY_MINUTES", 60)
-        jwt_algorithm = getattr(SETTINGS, "JWT_ALGORITHM", "HS256")
-        jwt_secret = getattr(SETTINGS, "JWT_SECRET", "jwt_secret")
-        if not jwt_secret:
-            logger.error("JWT_SECRET not configured in SETTINGS")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error")
-
-        jwt_expires_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_exp_minutes)
-        now = datetime.now(timezone.utc)
-        # Resolve permissions from roles; tenant_admin gets wildcard
-        role_perms = db.query(Permission.code).join(
-            RolePermission, RolePermission.permission_code == Permission.code
-        ).filter(RolePermission.role_code.in_(roles)).all()
-        tenant_role_perms = db.query(Permission.code).join(
-            TenantRolePermission, TenantRolePermission.permission_code == Permission.code
-        ).join(
-            TenantRole, TenantRolePermission.tenant_role_id == TenantRole.role_id
-        ).join(
-            TenantUserRole, TenantUserRole.tenant_role_id == TenantRole.role_id
-        ).filter(TenantUserRole.user_id == user.user_id).all()
-
-        perm_list = list({p[0] for p in role_perms + tenant_role_perms})
-        if "tenant_admin" in roles:
-            perm_list = ["*"]
-        elif not perm_list:
-            perm_list = []
-        payload = {
-            "sub": str(user.user_id),
-            "email": user.email,
-            "tenant_id": str(user.tenant_id),
-            "roles": all_roles,
-            "permissions": perm_list,
-            "iat": int(now.timestamp()),
-            "exp": int(jwt_expires_at.timestamp()),
-            "iss": getattr(SETTINGS, "JWT_ISSUER", "http://mock-idp"),
-            "aud": getattr(SETTINGS, "JWT_AUDIENCE", "zeroque-api"),
-        }
-        token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
-
-        logger.info(f"User {user.email} logged in successfully")
-
-        refresh_token = issue_refresh_token(user, db)
-
-        # ── Build full status-check context for sign-in response ─────────
-        sub_ctx = build_subscription_context(db, user.tenant_id)
-        tenant_ctx = build_tenant_context(db, user.tenant_id)
-        balance_ctx = build_balance_context(db, user.user_id, user.tenant_id)
-        rbac_ctx = build_rbac_context(
-            roles=all_roles,
-            permissions=perm_list,
-            feature_codes=sub_ctx.features if sub_ctx else [],
-        )
-
-        return LoginResponse(
-            user_id=str(user.user_id),
-            tenant_id=str(user.tenant_id),
-            email=user.email,
-            display_name=user.display_name,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
-            token=token,
-            expiring_at=jwt_expires_at,
-            refresh_token=refresh_token,
-            subscription=sub_ctx,
-            tenant=tenant_ctx,
-            balance=balance_ctx,
-            rbac=rbac_ctx,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Login failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )

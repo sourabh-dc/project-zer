@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>ZeroQue Sign In</title></head>
+<body>
+<script src="https://alcdn.msauth.net/browser/2.28.3/js/msal-browser.min.js"></script>
+<script>
+// Tiny redirect handler — processes the MSAL auth response and closes the popup
+const msalInstance = new msal.PublicClientApplication({
+    auth: {
+        clientId: 'f6df627a-6c4b-460f-8045-1366d4b0c0ad',
+        authority: 'https://fdf1052e-5622-489e-84f0-52a66be9fdb5.ciamlogin.com/fdf1052e-5622-489e-84f0-52a66be9fdb5',
+        redirectUri: window.location.origin + '/popup.html',
+        knownAuthorities: ['fdf1052e-5622-489e-84f0-52a66be9fdb5.ciamlogin.com'],
+        protocolMode: 'OIDC',
+    },
+    cache: { cacheLocation: 'localStorage' },
+});
+
+msalInstance.handleRedirectPromise().then(function(resp) {
+    // MSAL saves the token to cache; the parent window can now read it silently
+    window.close();
+}).catch(function() {
+    window.close();
+});
+</script>
+<p>Signing in... this window will close automatically.</p>
+</body>
+</html>
