@@ -1,3 +1,29 @@
+"""
+Outbox consumer for the Data Intelligence Service.
+
+WHY an outbox pattern instead of direct event subscriptions?
+  The outbox guarantees at-least-once delivery even if this service is down.
+  Events written by provisioning_service/orders_service to the outbox_events
+  table are never lost — they wait in the DB until we consume them.
+
+WHY poll instead of push (e.g. Service Bus)?
+  Polling with FOR UPDATE SKIP LOCKED is simpler, requires no extra
+  infrastructure, and is exactly what the other services do. For the volumes
+  ZeroQue handles, polling every 2 seconds is plenty fast.
+
+WHY consumer='data_intelligence_service'?
+  Each consumer gets its own delivery rows in outbox_event_delivery.
+  graph_service, vector_service, and data_intelligence_service all read
+  the SAME outbox_events but have independent delivery tracking.
+  Delivery rows for 'data_intelligence_service' are created by:
+    - provisioning_service/core/helpers/outbox_helpers.py (Sprint 0 fix)
+    - orders_service/core/helpers/outbox_helpers.py (Sprint 0 fix)
+
+HOW handlers are registered:
+  main.py calls register_handler(prefix, fn) at startup.
+  prefix is the first segment of event_type (e.g. 'product' from 'product.created').
+  Multiple handlers per prefix are supported (e.g. graph + vector for 'product').
+"""
 import asyncio
 import json
 import uuid
@@ -13,7 +39,11 @@ from data_intelligence_service.core.logger import logger
 _handlers: Dict[str, List[Callable]] = {}
 
 def register_handler(event_type_prefix: str, handler: Callable):
-    """Register a handler for an event type prefix."""
+    """Register a handler for an event type prefix (e.g. 'product', 'user').
+
+    Multiple handlers per prefix are allowed and all will be called in order.
+    Handlers can be sync or async — the dispatcher handles both.
+    """
     if event_type_prefix not in _handlers:
         _handlers[event_type_prefix] = []
     _handlers[event_type_prefix].append(handler)

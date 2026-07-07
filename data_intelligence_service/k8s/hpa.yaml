@@ -1,0 +1,41 @@
+# ── ZeroQue Intelligence Service — Horizontal Pod Autoscaler ─────────────────
+#
+# Scales the web deployment (zeroque-intelligence) between 2–8 replicas
+# based on CPU utilisation. The worker stays at 1 replica (no HPA —
+# multiple workers would duplicate outbox processing).
+#
+# Prerequisites: metrics-server must be installed in the cluster.
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zeroque-intelligence
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zeroque-intelligence
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60      # wait 60s before scaling up
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60               # add max 2 pods per minute
+    scaleDown:
+      stabilizationWindowSeconds: 300     # wait 5 min before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120              # remove max 1 pod per 2 minutes

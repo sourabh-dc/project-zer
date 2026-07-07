@@ -12,7 +12,7 @@ Traversal:
 
 For tenant admins: returns '__all__' (bypass).
 """
-from typing import List, Union
+from typing import List, Union, Optional
 
 from data_intelligence_service.core.neo4j_client import get_session
 from data_intelligence_service.core.logger import logger
@@ -21,7 +21,7 @@ from data_intelligence_service.core.logger import logger
 def get_approved_product_ids(
     tenant_id: str,
     user_id: str,
-    org_unit_id: str | None = None,
+    org_unit_id: Optional[str] = None,
     is_admin: bool = False,
 ) -> Union[str, List[str]]:
     """Return product IDs the user may access.

@@ -1,0 +1,111 @@
+# ── ZeroQue Intelligence Service — Kubernetes Deployment ─────────────────────
+#
+# Two deployments:
+#   zeroque-intelligence  — FastAPI web server (auto-scalable via HPA)
+#   zeroque-worker        — Outbox consumer (single replica, no HPA)
+#
+# Secrets are expected in a Kubernetes Secret named 'zeroque-intelligence-secret'.
+# See configmap.yaml for non-sensitive configuration.
+#
+# Prerequisites:
+#   kubectl apply -f k8s/configmap.yaml
+#   kubectl create secret generic zeroque-intelligence-secret \
+#     --from-literal=AZURE_OPENAI_API_KEY=... \
+#     --from-literal=POSTGRES_PASSWORD=... \
+#     --from-literal=NEO4J_PASSWORD=... \
+#     --from-literal=INTELLIGENCE_API_KEY=...
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zeroque-intelligence
+  labels:
+    app: zeroque-intelligence
+    component: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zeroque-intelligence
+      component: web
+  template:
+    metadata:
+      labels:
+        app: zeroque-intelligence
+        component: web
+      annotations:
+        # Prometheus scrape annotations — picked up by kube-prometheus-stack
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8004"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: intelligence
+          image: zeroque/intelligence:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8004
+          envFrom:
+            - configMapRef:
+                name: zeroque-intelligence-config
+            - secretRef:
+                name: zeroque-intelligence-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zeroque-worker
+  labels:
+    app: zeroque-intelligence
+    component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zeroque-intelligence
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: zeroque-intelligence
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: zeroque/intelligence-worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: zeroque-intelligence-config
+            - secretRef:
+                name: zeroque-intelligence-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

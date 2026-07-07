@@ -1,0 +1,22 @@
+# ── ZeroQue Intelligence Service — Kubernetes Service ────────────────────────
+#
+# ClusterIP service — internal-only.
+# Expose externally via an Ingress or Azure Application Gateway in front.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: zeroque-intelligence
+  labels:
+    app: zeroque-intelligence
+spec:
+  type: ClusterIP
+  selector:
+    app: zeroque-intelligence
+    component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8004
+      protocol: TCP

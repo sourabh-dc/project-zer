@@ -1,0 +1,50 @@
+{"question": "How many products do we have?", "expected_engine": "sql", "expected_answer_contains": ["product", "count"], "notes": "Simple aggregate — Tier 1 regex match, FAST tier eligible"}
+{"question": "What is the total spend this month?", "expected_engine": "sql", "expected_answer_contains": ["spend", "total"], "notes": "Simple aggregate"}
+{"question": "How many purchase requests were submitted last week?", "expected_engine": "sql", "expected_answer_contains": ["purchase", "request"], "notes": "Time-filtered count"}
+{"question": "List all active vendors", "expected_engine": "sql", "expected_answer_contains": ["vendor"], "notes": "Simple list query"}
+{"question": "What are the top 5 product categories by spend?", "expected_engine": "sql", "expected_answer_contains": ["categor", "spend"], "notes": "Aggregation with ORDER BY"}
+{"question": "How many orders are pending approval?", "expected_engine": "sql", "expected_answer_contains": ["pending", "approval"], "notes": "Status filter"}
+{"question": "What is the average order value this quarter?", "expected_engine": "sql", "expected_answer_contains": ["average", "order"], "notes": "Numeric aggregate"}
+{"question": "Show me all purchase requests over £500 submitted in June", "expected_engine": "sql", "expected_answer_contains": ["purchase", "request"], "notes": "Multi-filter SQL"}
+{"question": "Which org units have the highest spend?", "expected_engine": "sql", "expected_answer_contains": ["org", "spend"], "notes": "Aggregation by org unit"}
+{"question": "How many users are in the Finance org unit?", "expected_engine": "sql", "expected_answer_contains": ["user", "Finance"], "notes": "Count with filter"}
+{"question": "Who does Alice report to?", "expected_engine": "graph", "expected_answer_contains": ["report"], "notes": "Org hierarchy traversal"}
+{"question": "What roles does Bob have?", "expected_engine": "graph", "expected_answer_contains": ["role"], "notes": "User role lookup"}
+{"question": "Who is allowed to approve purchase requests in the Procurement team?", "expected_engine": "graph", "expected_answer_contains": ["approv"], "notes": "Permission traversal"}
+{"question": "Which products are in the approved range for the Warehouse site?", "expected_engine": "graph", "expected_answer_contains": ["approved", "product"], "notes": "Approved range traversal"}
+{"question": "What is the org hierarchy under the Operations department?", "expected_engine": "graph", "expected_answer_contains": ["department", "Operations"], "notes": "Multi-hop hierarchy traversal"}
+{"question": "Which vendors supply products in the Cleaning category?", "expected_engine": "graph", "expected_answer_contains": ["vendor", "Cleaning"], "notes": "Vendor supply chain traversal"}
+{"question": "What mandates apply to the Finance cost centre?", "expected_engine": "graph", "expected_answer_contains": ["mandate", "Finance"], "notes": "Policy mandate lookup"}
+{"question": "Who has the budget-approver role?", "expected_engine": "graph", "expected_answer_contains": ["budget", "approv", "role"], "notes": "Role membership lookup"}
+{"question": "What governance policies apply to user Charlie?", "expected_engine": "graph", "expected_answer_contains": ["polic"], "notes": "Policy graph traversal"}
+{"question": "Which cost centres report into the London site?", "expected_engine": "graph", "expected_answer_contains": ["cost centre", "London"], "notes": "Site hierarchy graph"}
+{"question": "Find eco-friendly cleaning products", "expected_engine": "vector", "expected_answer_contains": ["clean"], "notes": "Semantic product search — vector only"}
+{"question": "I need heavy-duty gloves for cold storage work", "expected_engine": "vector", "expected_answer_contains": ["glove"], "notes": "Semantic product search with context"}
+{"question": "Show me sustainable packaging alternatives", "expected_engine": "vector", "expected_answer_contains": ["packaging", "sustainab"], "notes": "Conceptual semantic search"}
+{"question": "What safety footwear do we have for outdoor use?", "expected_engine": "vector", "expected_answer_contains": ["footwear", "safety"], "notes": "Attribute-based semantic search"}
+{"question": "Find products similar to a disposable blue nitrile glove", "expected_engine": "vector", "expected_answer_contains": ["nitrile", "glove"], "notes": "Similarity search with product description"}
+{"question": "Which gloves can I afford this month?", "expected_engine": "hybrid", "expected_answer_contains": ["glove"], "notes": "Vector for products + SQL for budget — depends_on chain"}
+{"question": "Show me the top spending vendors for PPE products we have approved", "expected_engine": "hybrid", "expected_answer_contains": ["vendor", "PPE"], "notes": "Graph for approved range + SQL for spend"}
+{"question": "How much has the Finance org unit spent on products in the approved range this quarter?", "expected_engine": "hybrid", "expected_answer_contains": ["Finance", "spend"], "notes": "Graph for approved products + SQL for spend totals"}
+{"question": "Who approved the most purchase requests in the last 30 days and what did they approve?", "expected_engine": "hybrid", "expected_answer_contains": ["approv"], "notes": "SQL for counts + graph for approver roles"}
+{"question": "Which vendors supply cleaning products and how much have we spent with each?", "expected_engine": "hybrid", "expected_answer_contains": ["vendor", "clean", "spend"], "notes": "Graph for vendor→category + SQL for spend"}
+{"question": "Are there any eco-friendly products in our approved range for the Warehouse?", "expected_engine": "hybrid", "expected_answer_contains": ["eco", "approv"], "notes": "Vector for eco products + graph for approved range"}
+{"question": "What is the spend trend for PPE over the last 6 months?", "expected_engine": "sql", "expected_answer_contains": ["PPE", "spend", "month"], "notes": "Time series aggregation"}
+{"question": "Which purchase requests are overdue for approval?", "expected_engine": "sql", "expected_answer_contains": ["overdue", "approv"], "notes": "Date comparison filter"}
+{"question": "Show me all orders placed by users in the Logistics team this year", "expected_engine": "sql", "expected_answer_contains": ["Logistics", "order"], "notes": "Filtered order list"}
+{"question": "What is the budget utilisation for each org unit?", "expected_engine": "sql", "expected_answer_contains": ["budget", "org unit"], "notes": "Budget utilisation aggregate"}
+{"question": "How many unique vendors did we order from last quarter?", "expected_engine": "sql", "expected_answer_contains": ["vendor", "count"], "notes": "Distinct count"}
+{"question": "What categories have zero spend this month?", "expected_engine": "sql", "expected_answer_contains": ["categor", "zero", "spend"], "notes": "Zero-spend detection"}
+{"question": "Show me purchase requests that were rejected and the reason", "expected_engine": "sql", "expected_answer_contains": ["reject"], "notes": "Status + reason filter"}
+{"question": "What is the approval rate for purchase requests this quarter?", "expected_engine": "sql", "expected_answer_contains": ["approv", "rate"], "notes": "Ratio calculation"}
+{"question": "Who reports into the Supply Chain director?", "expected_engine": "graph", "expected_answer_contains": ["Supply Chain", "report"], "notes": "Deep hierarchy traversal"}
+{"question": "What permissions does the Junior Buyer role have?", "expected_engine": "graph", "expected_answer_contains": ["permission", "Buyer"], "notes": "Role permission lookup"}
+{"question": "Which users have the intelligence.query permission?", "expected_engine": "graph", "expected_answer_contains": ["intelligence", "permission"], "notes": "Permission-based user lookup"}
+{"question": "What approved ranges exist for the Manchester stores?", "expected_engine": "graph", "expected_answer_contains": ["Manchester", "approv"], "notes": "Store-scoped approved range lookup"}
+{"question": "Are there any products approved for Site A but not Site B?", "expected_engine": "graph", "expected_answer_contains": ["product", "approved"], "notes": "Set difference via graph traversal"}
+{"question": "I need something waterproof for outdoor cleaning", "expected_engine": "vector", "expected_answer_contains": ["waterproof", "clean"], "notes": "Multi-attribute semantic search"}
+{"question": "Find a cost-effective alternative to latex gloves", "expected_engine": "vector", "expected_answer_contains": ["latex", "glove"], "notes": "Alternative product search"}
+{"question": "What PPE products do we stock for food handling?", "expected_engine": "vector", "expected_answer_contains": ["food", "PPE"], "notes": "Use-case-based semantic search"}
+{"question": "Find antibacterial cleaning products", "expected_engine": "vector", "expected_answer_contains": ["antibacterial", "clean"], "notes": "Attribute semantic search"}
+{"question": "What is the spend on eco-friendly products from vendors in our approved supply chain?", "expected_engine": "hybrid", "expected_answer_contains": ["eco", "spend", "vendor"], "notes": "Vector + graph + SQL three-engine hybrid"}
+{"question": "Which approved products are running low on stock and need reordering?", "expected_engine": "hybrid", "expected_answer_contains": ["stock", "reorder"], "notes": "Graph approved range + SQL stock levels"}

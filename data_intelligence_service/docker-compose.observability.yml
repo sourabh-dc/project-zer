@@ -1,0 +1,79 @@
+version: "3.9"
+
+# ─── ZeroQue Observability Stack ──────────────────────────────────────────────
+#
+# Langfuse (self-hosted) + Prometheus + Grafana
+#
+# Start:
+#   docker compose -f docker-compose.observability.yml up -d
+#
+# Then add to .env:
+#   LANGFUSE_SECRET_KEY=sk-lf-...     (from Langfuse UI Settings > API keys)
+#   LANGFUSE_PUBLIC_KEY=pk-lf-...
+#   LANGFUSE_HOST=http://localhost:3000
+#
+# Access:
+#   Langfuse UI:    http://localhost:3000   (create account on first run)
+#   Prometheus:     http://localhost:9090
+#   Grafana:        http://localhost:3001   (admin / admin)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Langfuse — LLM observability (OTel-native) ────────────────────────────
+  langfuse-db:
+    image: postgres:15
+    container_name: langfuse-postgres
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse_secret
+    volumes:
+      - langfuse_db:/var/lib/postgresql/data
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: langfuse
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse_secret@langfuse-db:5432/langfuse
+      NEXTAUTH_SECRET: your-nextauth-secret-change-me
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: your-salt-change-me
+    depends_on:
+      - langfuse-db
+    restart: unless-stopped
+
+  # ── Prometheus — metrics scraping ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: zeroque-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+  # ── Grafana — dashboards ───────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: zeroque-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  langfuse_db:
+  prometheus_data:
+  grafana_data:
