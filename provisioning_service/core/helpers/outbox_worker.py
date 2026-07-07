@@ -63,7 +63,7 @@ async def process_outbox():
     - Mark delivery as processing, call handler, mark completed/failed
     """
     cred = DefaultAzureCredential()
-    client = ServiceBusClient(SB_NAMESPACE, cred)
+    client = ServiceBusClient(SB_NAMESPACE, cred, retry_total=5)
 
     async with client:
         receiver = client.get_queue_receiver(QUEUE_NAME)
@@ -187,7 +187,17 @@ async def process_outbox():
 
 
 if __name__ == "__main__":
+    async def run():
+        while True:
+            try:
+                await process_outbox()
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logger.error(f"Worker crashed, restarting in 5s: {e}", exc_info=True)
+                await asyncio.sleep(5)
+
     try:
-        asyncio.run(process_outbox())
+        asyncio.run(run())
     except KeyboardInterrupt:
         logger.info("Worker stopped by user.")

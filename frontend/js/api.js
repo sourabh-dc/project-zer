@@ -3,7 +3,7 @@
    =================================================================== */
 
 const API = {
-    baseUrl: 'http://localhost:8000',
+    baseUrl: 'https://provisioning-api.calmdune-dfaf23c2.uksouth.azurecontainerapps.io',
 
     setToken(token) {
         this._token = token;

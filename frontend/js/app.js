@@ -159,7 +159,7 @@ const App = {
             return;
         }
 
-        const stripeKey = this._stripePk || 'pk_test_placeholder';
+        const stripeKey = this._stripePk || 'pk_test_51SAXmjLrHi1hCr87wcXnYwSdb0glOcz2ulak6iv3UXtMUSD3s0d7T1ixJdmuBnzDbAbT1xEmBd28R00L9gWLELCG00bWWvqcgm';
         this._stripeInstance = Stripe(stripeKey);
         const elements = this._stripeInstance.elements();
         this._stripeCard = elements.create('card', { style: { base: { fontSize: '16px' } } });
@@ -213,24 +213,9 @@ const App = {
         }
     },
 
-    // After activation, sign in to get JWT
-    async onboardingSignIn() {
-        const token = await Auth.getTokenSilent();
-        if (!token) { Auth.login(); return; }
-        const result = await Auth.exchange(token);
-        if (result.token && result.tenant_id) {
-            API.setToken(result.token);
-            API.setRefreshToken(result.refresh_token);
-            API.setUser({
-                user_id: result.user_id,
-                tenant_id: result.tenant_id,
-                email: result.email,
-                display_name: result.display_name || `${result.first_name} ${result.last_name}`.trim(),
-            });
-            this.showDashboard();
-        } else {
-            this.showError('activate-error', 'Sign-in failed — no token returned');
-        }
+    // After activation, sign in to get JWT — always fresh login
+    onboardingSignIn() {
+        Auth.login();
     },
 
     // ═══════════════════════════════════════════════════════════════

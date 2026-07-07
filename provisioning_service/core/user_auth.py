@@ -101,7 +101,7 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
             audience=SETTINGS.JWT_AUDIENCE,
             issuer=SETTINGS.JWT_ISSUER,
         )
-    except JWTError as exc:
+    except (JWTError, jwt.ExpiredSignatureError, jwt.InvalidTokenError, Exception) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
 bearer = HTTPBearer(auto_error=True)
