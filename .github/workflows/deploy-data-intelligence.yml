@@ -2,8 +2,6 @@ name: Deploy Data Intelligence Service
 
 on:
   push:
-    branches:
-      - production
     paths:
       - "data_intelligence_service/**"
       - "shared/**"
@@ -13,6 +11,7 @@ on:
 jobs:
   # ── Build & Push ─────────────────────────────────────────────────
   build:
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,6 +37,7 @@ jobs:
 
   # ── Deploy ───────────────────────────────────────────────────────
   deploy:
+    if: github.ref == 'refs/heads/production'
     needs: build
     runs-on: ubuntu-latest
     steps:

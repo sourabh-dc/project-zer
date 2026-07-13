@@ -2,8 +2,6 @@ name: Deploy Provisioning Service (API + Worker)
 
 on:
   push:
-    branches:
-      - production
     paths:
       - "provisioning_service/**"
       - "shared/**"
@@ -13,6 +11,7 @@ on:
 jobs:
   # ── Build & Push Images ──────────────────────────────────────────
   build:
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -47,6 +46,7 @@ jobs:
 
   # ── Deploy API ───────────────────────────────────────────────────
   deploy-api:
+    if: github.ref == 'refs/heads/production'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -65,6 +65,7 @@ jobs:
 
   # ── Deploy Worker ────────────────────────────────────────────────
   deploy-worker:
+    if: github.ref == 'refs/heads/production'
     needs: build
     runs-on: ubuntu-latest
     steps:

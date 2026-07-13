@@ -2,14 +2,13 @@ name: Deploy OPA Policy Server
 
 on:
   push:
-    branches:
-      - production
     paths:
       - "shared/opa_policies/**"
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

@@ -2,8 +2,6 @@ name: Deploy Procurement Service
 
 on:
   push:
-    branches:
-      - production
     paths:
       - "procurement_service/**"
       - "shared/**"
@@ -12,6 +10,7 @@ on:
 
 jobs:
   build-and-deploy:
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
