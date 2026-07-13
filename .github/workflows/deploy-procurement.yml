@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-and-deploy:
-    if: github.ref == 'refs/heads/production'
+    if: github.ref == 'refs/heads/production' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

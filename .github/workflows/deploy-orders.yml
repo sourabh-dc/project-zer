@@ -11,7 +11,7 @@ on:
 jobs:
   # ── Build & Push Images ──────────────────────────────────────────
   build:
-    if: github.ref == 'refs/heads/production'
+    if: github.ref == 'refs/heads/production' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -46,7 +46,7 @@ jobs:
 
   # ── Deploy API ───────────────────────────────────────────────────
   deploy-api:
-    if: github.ref == 'refs/heads/production'
+    if: github.ref == 'refs/heads/production' || github.ref == 'refs/heads/develop'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +65,7 @@ jobs:
 
   # ── Deploy Worker ────────────────────────────────────────────────
   deploy-worker:
-    if: github.ref == 'refs/heads/production'
+    if: github.ref == 'refs/heads/production' || github.ref == 'refs/heads/develop'
     needs: build
     runs-on: ubuntu-latest
     steps:
