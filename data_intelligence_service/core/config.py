@@ -1,106 +1,134 @@
 """
-Data Intelligence Service — Configuration.
-
-Connects to:
-  - Azure OpenAI (LLM for text-to-query + embeddings)
-  - PostgreSQL (structured data queries, outbox events, pgvector)
-  - Neo4j (graph traversals, governance topology)
-
-When ENVIRONMENT != "local", secrets are fetched from Azure Key Vault.
-Otherwise, values are loaded from .env.
+ZeroQue Data Intelligence Service — Configuration
+==================================================
+Sensitive values → Key Vault in production, .env locally.
+Non-sensitive values → environment variables always.
 """
 import os
+import logging
+from typing import Optional
 
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger("config")
 
-# ---------------------------------------------------------------------------
-# Resolve secrets — Key Vault for deployed environments, .env for local
-# ---------------------------------------------------------------------------
-environment = os.getenv("ENVIRONMENT", "local").lower()
+# ═══════════════════════════════════════════════════════════════════
+# Secret helper — Key Vault (cloud) or env var (local)
+# ═══════════════════════════════════════════════════════════════════
 
-if environment != "local":
-    from azure.identity import DefaultAzureCredential
-    from azure.keyvault.secrets import SecretClient
+_keyvault_client = None
+_keyvault_available = False
 
-    keyvault_name = os.getenv("KEYVAULT_NAME")
-    vault_url = f"https://{keyvault_name}.vault.azure.net"
-    credential = DefaultAzureCredential()
-    kv_client = SecretClient(vault_url=vault_url, credential=credential)
 
-    def _secret(name: str, fallback: str = "") -> str:
-        """Retrieve a secret from Key Vault, falling back to *fallback*."""
+def _init_keyvault():
+    """Initialise Key Vault client if KEYVAULT_NAME is configured and we're not local."""
+    global _keyvault_client, _keyvault_available
+    kv_name = os.getenv("KEYVAULT_NAME", "").strip()
+    env = os.getenv("ENVIRONMENT", "local").strip().lower()
+    if not kv_name or env == "local":
+        _keyvault_available = False
+        return
+
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+        vault_url = f"https://{kv_name}.vault.azure.net"
+        credential = DefaultAzureCredential()
+        _keyvault_client = SecretClient(vault_url=vault_url, credential=credential)
+        _keyvault_available = True
+        logger.info(f"Key Vault client initialised: {kv_name}")
+    except Exception as e:
+        logger.warning(f"Key Vault unavailable, falling back to env vars: {e}")
+        _keyvault_available = False
+
+
+def _secret(keyvault_name: str, env_var: str, default: str = "") -> str:
+    """Fetch a secret: Key Vault (if available) → env var → default."""
+    # Try Key Vault first
+    if _keyvault_available and _keyvault_client:
         try:
-            value = kv_client.get_secret(name).value
-            return value if value is not None else fallback
+            secret = _keyvault_client.get_secret(keyvault_name)
+            if secret and secret.value:
+                return secret.value
         except Exception:
-            return fallback
+            pass  # fall through to env var
 
-    azure_openai_api_key = _secret("azureOpenaiApiKey")
-    azure_openai_endpoint = _secret("azureOpenaiEndpoint")
-    azure_openai_api_version = _secret("azureOpenaiApiVersion", "2024-06-01")
-    azure_openai_llm_deployment = _secret("azureOpenaiLlmDeployment", "gpt-5-nano")
-    azure_openai_embedding_deployment = _secret("azureOpenaiEmbeddingDeployment", "text-embedding-3-small")
+    # Fall back to environment variable
+    val = os.getenv(env_var, "")
+    if val:
+        return val
 
-    db_name = _secret("dbName")
-    db_password = _secret("dbPassword")
-    db_host = _secret("dbHost")
-    db_username = _secret("dbUsername")
+    return default
 
-    neo4j_uri = _secret("neo4jUri")
-    neo4j_user = _secret("neo4jUser")
-    neo4j_password = _secret("neo4jPassword")
-    neo4j_database = _secret("neo4jDatabase", "neo4j")
 
-else:
-    azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
-    azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-    azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01")
-    azure_openai_llm_deployment = os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT", "gpt-5-nano")
-    azure_openai_embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
+# Init Key Vault on module load
+_init_keyvault()
 
-    db_name = os.getenv("POSTGRES_DB")
-    db_password = os.getenv("POSTGRES_PASSWORD")
-    db_host = os.getenv("POSTGRES_HOST")
-    db_username = os.getenv("POSTGRES_USER")
+# ═══════════════════════════════════════════════════════════════════
+# Secrets (Key Vault names, env-var fallback keys, defaults)
+# ═══════════════════════════════════════════════════════════════════
 
-    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
-    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
+_DB_NAME     = _secret("dbName",              "POSTGRES_DB",                 "")
+_DB_USER     = _secret("dbUsername",          "POSTGRES_USER",               "")
+_DB_PASSWORD = _secret("dbPassword",          "POSTGRES_PASSWORD",           "")
+_DB_HOST     = _secret("dbHost",              "POSTGRES_HOST",               "")
 
-# ---------------------------------------------------------------------------
-# Pydantic settings model
-# ---------------------------------------------------------------------------
-class DataIntelligenceSettings(BaseSettings):
-    POSTGRES_URL: str = Field(
-        default=f"postgresql://{db_username}:{db_password}@{db_host}:5432/{db_name}",
-        description="PostgreSQL connection URL"
+_OPENAI_KEY        = _secret("azureOpenaiApiKey",             "AZURE_OPENAI_API_KEY",              "")
+_OPENAI_ENDPOINT   = _secret("azureOpenaiEndpoint",           "AZURE_OPENAI_ENDPOINT",             "")
+_OPENAI_API_VER    = _secret("azureOpenaiApiVersion",         "AZURE_OPENAI_API_VERSION",          "2024-06-01")
+_OPENAI_LLM_DEP    = _secret("azureOpenaiLlmDeployment",      "AZURE_OPENAI_LLM_DEPLOYMENT",       "gpt-5-nano")
+_OPENAI_EMBED_DEP  = _secret("azureOpenaiEmbeddingDeployment","AZURE_OPENAI_EMBEDDING_DEPLOYMENT",  "text-embedding-3-small")
+
+_NEO4J_URI      = _secret("neo4jUri",      "NEO4J_URI",      "bolt://localhost:7687")
+_NEO4J_USER     = _secret("neo4jUser",     "NEO4J_USER",     "neo4j")
+_NEO4J_PASSWORD = _secret("neo4jPassword", "NEO4J_PASSWORD", "password")
+_NEO4J_DATABASE = _secret("neo4jDatabase", "NEO4J_DATABASE", "neo4j")
+
+_INTELLIGENCE_API_KEY = _secret("intelligenceApiKey", "INTELLIGENCE_API_KEY", "")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Settings
+# ═══════════════════════════════════════════════════════════════════
+
+class Settings(BaseSettings):
+    # ── Database ──────────────────────────────────────────────────
+    DATABASE_URL: str = Field(
+        default=f"postgresql://{_DB_USER}:{_DB_PASSWORD}@{_DB_HOST}:5432/{_DB_NAME}",
+        description="PostgreSQL connection URL",
     )
+    # Legacy alias — some modules still reference POSTGRES_URL
+    POSTGRES_URL: str = Field(
+        default=f"postgresql://{_DB_USER}:{_DB_PASSWORD}@{_DB_HOST}:5432/{_DB_NAME}",
+        description="PostgreSQL connection URL (legacy alias for DATABASE_URL)",
+    )
+    CONNECTION_POOL_SIZE: int = 20
+    MAX_OVERFLOW: int = 10
+    POOL_TIMEOUT: int = 30
 
-    AZURE_OPENAI_API_KEY: str = Field(default=azure_openai_api_key, description="Azure OpenAI API key")
-    AZURE_OPENAI_ENDPOINT: str = Field(default=azure_openai_endpoint, description="Azure OpenAI endpoint URL")
-    AZURE_OPENAI_API_VERSION: str = Field(default=azure_openai_api_version, description="Azure OpenAI API version")
-    AZURE_OPENAI_LLM_DEPLOYMENT: str = Field(default=azure_openai_llm_deployment, description="Azure chat deployment name")
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = Field(default=azure_openai_embedding_deployment, description="Azure embedding deployment name")
+    # ── Azure OpenAI ──────────────────────────────────────────────
+    AZURE_OPENAI_API_KEY: str = Field(default=_OPENAI_KEY, description="Azure OpenAI API key")
+    AZURE_OPENAI_ENDPOINT: str = Field(default=_OPENAI_ENDPOINT, description="Azure OpenAI endpoint URL")
+    AZURE_OPENAI_API_VERSION: str = Field(default=_OPENAI_API_VER, description="Azure OpenAI API version")
+    AZURE_OPENAI_LLM_DEPLOYMENT: str = Field(default=_OPENAI_LLM_DEP, description="Azure chat deployment name")
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = Field(default=_OPENAI_EMBED_DEP, description="Azure embedding deployment name")
     EMBEDDING_DIMENSIONS: int = Field(default=1536, description="Embedding vector dimensions")
 
-    NEO4J_URI: str = Field(default=neo4j_uri, description="Neo4j bolt URI")
-    NEO4J_USER: str = Field(default=neo4j_user, description="Neo4j username")
-    NEO4J_PASSWORD: str = Field(default=neo4j_password, description="Neo4j password")
-    NEO4J_DATABASE: str = Field(default=neo4j_database, description="Neo4j database name")
+    # ── Neo4j ─────────────────────────────────────────────────────
+    NEO4J_URI: str = Field(default=_NEO4J_URI, description="Neo4j bolt URI")
+    NEO4J_USER: str = Field(default=_NEO4J_USER, description="Neo4j username")
+    NEO4J_PASSWORD: str = Field(default=_NEO4J_PASSWORD, description="Neo4j password")
+    NEO4J_DATABASE: str = Field(default=_NEO4J_DATABASE, description="Neo4j database name")
 
-    POLL_INTERVAL_SECONDS: int = Field(default=2, description="Outbox poll interval")
-    POLL_BATCH_SIZE: int = Field(default=50, description="Max events per poll cycle")
-    MAX_RETRIES: int = Field(default=5, description="Max retries before dead-letter")
+    # ── Service ───────────────────────────────────────────────────
+    PORT: int = 80
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
-    LOG_LEVEL: str = Field(default="INFO")
-
-    # Intelligence router settings
-    INTELLIGENCE_API_KEY: str = Field(default="", description="API key for intelligence endpoint (empty = no auth)")
+    # ── Intelligence ──────────────────────────────────────────────
+    INTELLIGENCE_API_KEY: str = Field(default=_INTELLIGENCE_API_KEY, description="API key for intelligence endpoint")
     VECTOR_SIMILARITY_THRESHOLD: float = Field(default=0.30, description="Min cosine similarity score to include vector results")
     PLAN_CACHE_TTL_SECONDS: int = Field(default=300, description="TTL in seconds for in-memory query plan cache")
     LLM_MAX_RETRIES: int = Field(default=3, description="Max retry attempts for LLM calls")
@@ -109,10 +137,18 @@ class DataIntelligenceSettings(BaseSettings):
     SQL_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single SQL query")
     CYPHER_MAX_ROWS: int = Field(default=500, description="Max rows returned from any single Cypher query")
 
-    # Redis (optional) — session memory + rate limiting
+    # ── Outbox Consumer ───────────────────────────────────────────
+    POLL_INTERVAL_SECONDS: int = Field(default=2, description="Outbox poll interval")
+    POLL_BATCH_SIZE: int = Field(default=50, description="Max events per poll cycle")
+    MAX_RETRIES: int = Field(default=5, description="Max retries before dead-letter")
+
+    # ── Redis (optional) — session memory + rate limiting ─────────
     REDIS_URL: str = Field(default="", description="Redis URL (e.g. redis://localhost:6379/0). Empty = in-memory fallback.")
     RATE_LIMIT_RPM: int = Field(default=60, description="Max requests per minute per tenant (0 = disabled)")
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
-SETTINGS = DataIntelligenceSettings()
+
+SETTINGS = Settings()
+SERVICE_NAME = "data_intelligence_service"
+SERVICE_VERSION = "0.3.0"

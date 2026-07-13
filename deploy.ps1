@@ -95,15 +95,6 @@ $Services = @{
         Memory = "4.0Gi"
         Ingress = "external"
     }
-    "data-intelligence-worker" = @{
-        Dockerfile = "data_intelligence_service/Dockerfile.worker"
-        Port = 0
-        MinReplicas = 1
-        MaxReplicas = 3
-        CPU = 1.0
-        Memory = "2.0Gi"
-        Ingress = "none"
-    }
 }
 
 # Build and push images
