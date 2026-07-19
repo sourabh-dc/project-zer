@@ -3,7 +3,10 @@
    =================================================================== */
 
 const API = {
-    baseUrl: 'https://provisioning-api.calmdune-dfaf23c2.uksouth.azurecontainerapps.io',
+    // Local dev → provisioning service on :8010; production → Azure
+    baseUrl: (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? 'http://localhost:8000'
+        : 'https://provisioning-api.calmdune-dfaf23c2.uksouth.azurecontainerapps.io',
 
     setToken(token) {
         this._token = token;
@@ -190,4 +193,8 @@ const API = {
 
     // ── Health ────────────────────────────────────────────────────
     health() { return this._fetch('GET', '/health'); },
+
+    // ── Companies House ───────────────────────────────────────────
+    searchCompanies(query)  { return this._fetch('GET', `/companies-house/search?q=${encodeURIComponent(query)}`); },
+    getCompanyProfile(num)  { return this._fetch('GET', `/companies-house/company/${encodeURIComponent(num)}`); },
 };

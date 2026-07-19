@@ -171,3 +171,66 @@ tr:hover { background: #f8fafc; }
 .mb-16 { margin-bottom: 16px; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .gap-8 { gap: 8px; }
+
+/* ── Companies House autocomplete dropdown ──────────────────────── */
+
+.autocomplete-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.autocomplete-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    transition: background 0.1s;
+}
+.autocomplete-item:last-child { border-bottom: none; }
+.autocomplete-item:hover,
+.autocomplete-item.active {
+    background: #eff6ff;
+}
+
+.autocomplete-item .ac-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.autocomplete-item .ac-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    display: flex;
+    gap: 12px;
+}
+.autocomplete-item .ac-status {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 10px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.ac-status.active { background: #dcfce7; color: #16a34a; }
+.ac-status.dissolved,
+.ac-status.liquidation { background: #fee2e2; color: #dc2626; }
+
+.autocomplete-loading,
+.autocomplete-empty {
+    padding: 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}

@@ -134,6 +134,12 @@ class Settings(BaseSettings):
     AIFI_STORE_ID: str = os.getenv("AIFI_STORE_ID", "")
     AIFI_LOCATION_ID: str = os.getenv("AIFI_LOCATION_ID", "")
 
+    # ── Companies House ───────────────────────────────────────────
+    COMPANIES_HOUSE_API_KEY: str = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+    COMPANIES_HOUSE_BASE_URL: str = os.getenv(
+        "COMPANIES_HOUSE_BASE_URL", "https://api.company-information.service.gov.uk"
+    )
+
     # ── Service Bus ───────────────────────────────────────────────
     SB_NAMESPACE: str = os.getenv("SB_NAMESPACE", "zeroque.servicebus.windows.net")
     QUEUE_NAME: str = os.getenv("QUEUE_NAME", "outbox-task-queue")

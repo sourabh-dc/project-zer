@@ -7,6 +7,9 @@ const App = {
 
     // ── Init ───────────────────────────────────────────────────────
     async init() {
+        // Wire up Companies House autocomplete (must run regardless of auth state)
+        this._initCompanySearch();
+
         if (!Auth.init()) { document.body.innerHTML = '<p style="padding:40px;text-align:center;">Error: MSAL.js failed to load. Check your network.</p>'; return; }
 
         // Step 0: Check for invitation token FIRST (before any auto-login)
@@ -107,6 +110,144 @@ const App = {
         });
     },
 
+    // ═══════════════════════════════════════════════════════════════
+    // COMPANIES HOUSE AUTOCOMPLETE
+    // ═══════════════════════════════════════════════════════════════
+
+    _companySearchTimer: null,
+    _companySelectedIndex: -1,
+
+    _initCompanySearch() {
+        const input = document.getElementById('company-search');
+        const dropdown = document.getElementById('company-dropdown');
+        if (!input || !dropdown) return;
+
+        input.addEventListener('input', () => {
+            clearTimeout(this._companySearchTimer);
+            const q = input.value.trim();
+            if (q.length < 2) {
+                dropdown.classList.add('hidden');
+                return;
+            }
+            this._companySearchTimer = setTimeout(() => this._doCompanySearch(q), 300);
+        });
+
+        input.addEventListener('keydown', (e) => {
+            const items = dropdown.querySelectorAll('.autocomplete-item');
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                this._companySelectedIndex = Math.min(this._companySelectedIndex + 1, items.length - 1);
+                this._highlightCompanyItem(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                this._companySelectedIndex = Math.max(this._companySelectedIndex - 1, -1);
+                this._highlightCompanyItem(items);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (this._companySelectedIndex >= 0 && items.length > 0) {
+                    items[this._companySelectedIndex]?.click();
+                }
+            } else if (e.key === 'Escape') {
+                dropdown.classList.add('hidden');
+                this._companySelectedIndex = -1;
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+                dropdown.classList.add('hidden');
+                this._companySelectedIndex = -1;
+            }
+        });
+    },
+
+    async _doCompanySearch(query) {
+        const dropdown = document.getElementById('company-dropdown');
+        if (!dropdown) return;
+        this._companySelectedIndex = -1;
+
+        dropdown.classList.remove('hidden');
+        dropdown.innerHTML = '<div class="autocomplete-loading">Searching…</div>';
+
+        try {
+            const data = await API.searchCompanies(query);
+            this._renderCompanyDropdown(data.items || []);
+        } catch (err) {
+            dropdown.innerHTML = '<div class="autocomplete-empty">Search unavailable — type company name manually</div>';
+            console.error('Company search failed:', err);
+        }
+    },
+
+    _renderCompanyDropdown(items) {
+        const dropdown = document.getElementById('company-dropdown');
+        if (!dropdown) return;
+
+        if (!items.length) {
+            dropdown.innerHTML = '<div class="autocomplete-empty">No companies found</div>';
+            return;
+        }
+
+        dropdown.innerHTML = items.map((c, i) => {
+            const statusClass = {
+                'active': 'active',
+                'dissolved': 'dissolved',
+                'liquidation': 'liquidation',
+            }[c.company_status] || '';
+            return `
+                <div class="autocomplete-item" data-index="${i}"
+                     data-number="${this._esc(c.company_number)}"
+                     data-name="${this._esc(c.title)}"
+                     data-address="${this._esc(c.address_snippet)}">
+                    <span class="ac-name">${this._esc(c.title)}</span>
+                    <span class="ac-meta">
+                        <span>${this._esc(c.company_number)}</span>
+                        <span class="ac-status ${statusClass}">${this._esc(c.company_status)}</span>
+                        ${c.date_of_creation ? '<span>Since ' + this._esc(c.date_of_creation.slice(0,4)) + '</span>' : ''}
+                    </span>
+                    ${c.address_snippet ? '<span class="ac-meta" style="margin-top:1px;">' + this._esc(c.address_snippet) + '</span>' : ''}
+                </div>`;
+        }).join('');
+
+        dropdown.querySelectorAll('.autocomplete-item').forEach(el => {
+            el.addEventListener('click', () => {
+                this._selectCompany({
+                    company_number: el.dataset.number,
+                    title: el.dataset.name,
+                    address_snippet: el.dataset.address,
+                });
+            });
+            el.addEventListener('mouseenter', () => {
+                this._companySelectedIndex = parseInt(el.dataset.index);
+                this._highlightCompanyItem(dropdown.querySelectorAll('.autocomplete-item'));
+            });
+        });
+    },
+
+    _highlightCompanyItem(items) {
+        items.forEach((el, i) => el.classList.toggle('active', i === this._companySelectedIndex));
+    },
+
+    _selectCompany(company) {
+        document.getElementById('onboard-company-number').value = company.company_number || '';
+        document.getElementById('onboard-tenant-name').value = company.title || '';
+        document.getElementById('company-search').value = company.title || '';
+        document.getElementById('company-dropdown').classList.add('hidden');
+        this._companySelectedIndex = -1;
+
+        if (company.company_number) {
+            API.getCompanyProfile(company.company_number).then(profile => {
+                console.log('Company profile loaded:', profile);
+            }).catch(() => { /* best-effort */ });
+        }
+    },
+
+    _esc(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    },
+
     // Step 1: Azure AD login
     // Step 1: Redirect to Microsoft for sign-in
     onboardingLogin() {
@@ -127,6 +268,7 @@ const App = {
             default_currency: 'GBP',
             timezone: 'Europe/London',
             locale: 'en_GB',
+            registration_number: document.getElementById('onboard-company-number').value || null,
         };
         if (!payload.tenant_name) return this.showError('register-error', 'Tenant name is required');
 

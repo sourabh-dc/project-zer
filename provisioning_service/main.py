@@ -24,6 +24,7 @@ from provisioning_service.services.budget_routes import router as budget_router
 from provisioning_service.services.user_budget_routes import router as user_budget_router
 from provisioning_service.services.approval_policy_routes import router as approval_policy_router
 from provisioning_service.services.budget_change_request_routes import router as budget_change_router
+from provisioning_service.services.companies_house_routes import router as companies_house_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 
@@ -138,6 +139,7 @@ app.include_router(budget_router)
 app.include_router(user_budget_router)
 app.include_router(approval_policy_router)
 app.include_router(budget_change_router)
+app.include_router(companies_house_router)
 
 
 @app.get("/health")
