@@ -81,6 +81,7 @@ _STRIPE_WH   = _secret("stripeWebhookSecret", "STRIPE_WEBHOOK_SECRET",       "")
 _EMAIL_CS    = _secret("azure-email",         "AZURE_EMAIL_CONNECTION_STRING","")
 _AIFI_KEY    = _secret("aifi-api-key",        "AIFI_API_KEY",                "")
 _SB_CONN     = _secret("service-bus-connection", "SERVICE_BUS_CONNECTION_STRING", "")
+_CH_API_KEY  = _secret("companies-house-api-key", "COMPANIES_HOUSE_API_KEY",     "")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -135,7 +136,7 @@ class Settings(BaseSettings):
     AIFI_LOCATION_ID: str = os.getenv("AIFI_LOCATION_ID", "")
 
     # ── Companies House ───────────────────────────────────────────
-    COMPANIES_HOUSE_API_KEY: str = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+    COMPANIES_HOUSE_API_KEY: str = _CH_API_KEY
     COMPANIES_HOUSE_BASE_URL: str = os.getenv(
         "COMPANIES_HOUSE_BASE_URL", "https://api.company-information.service.gov.uk"
     )
