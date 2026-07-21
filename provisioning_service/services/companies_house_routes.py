@@ -121,7 +121,12 @@ async def search_companies(
             resp.raise_for_status()
             data = resp.json()
 
-        items = [_build_search_item(hit) for hit in data.get("items", [])]
+        # Build results, excluding dissolved/liquidated companies
+        items = [
+            _build_search_item(hit)
+            for hit in data.get("items", [])
+            if hit.get("company_status") not in ("dissolved", "liquidation", "converted-closed")
+        ]
         return CompanySearchResponse(
             items=items,
             total_results=data.get("total_results", len(items)),
