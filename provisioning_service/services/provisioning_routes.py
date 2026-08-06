@@ -2475,7 +2475,37 @@ async def get_role_permissions(
         role_code: str,
         db: Session = Depends(get_db)
 ):
-    """Get all permissions for a role"""
+    """Get all permissions for a role (global or tenant-scoped).
+
+    - If ``role_code`` is a UUID, it's treated as a tenant-role ``role_id``.
+    - Otherwise it's treated as a global role ``code``.
+    """
+    # Try to parse as UUID -> tenant role lookup
+    try:
+        role_id = uuid.UUID(role_code)
+        role = db.query(TenantRole).filter(TenantRole.role_id == role_id).first()
+        if role:
+            perms = db.query(TenantRolePermission, Permission).join(
+                Permission, TenantRolePermission.permission_code == Permission.code
+            ).filter(
+                TenantRolePermission.tenant_role_id == role_id
+            ).all()
+            return {
+                "role_code": role_code,
+                "role_type": "tenant",
+                "permissions": [
+                    {
+                        "permission_code": trp.permission_code,
+                        "code": p.code,
+                        "description": p.description
+                    }
+                    for trp, p in perms
+                ]
+            }
+    except ValueError:
+        pass  # Not a UUID, treat as global role code
+
+    # Global role lookup
     role_perms = db.query(RolePermission, Permission).join(
         Permission, RolePermission.permission_code == Permission.code
     ).filter(
@@ -2484,9 +2514,10 @@ async def get_role_permissions(
 
     return {
         "role_code": role_code,
+        "role_type": "global",
         "permissions": [
             {
-                "permission_code": str(p.permission_code),
+                "permission_code": str(rp.permission_code),
                 "code": p.code,
                 "description": p.description
             }
@@ -2600,12 +2631,62 @@ async def list_tenant_roles(
 ):
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     roles = db.query(TenantRole).filter(TenantRole.tenant_id == uuid.UUID(str(tenant_id))).all()
+
+    # Fetch permissions for all tenant roles in one query
+    role_ids = [r.role_id for r in roles]
+    permissions_map: dict = {rid: [] for rid in role_ids}
+    if role_ids:
+        perms = (
+            db.query(TenantRolePermission, Permission)
+            .join(Permission, TenantRolePermission.permission_code == Permission.code)
+            .filter(TenantRolePermission.tenant_role_id.in_(role_ids))
+            .all()
+        )
+        for trp, p in perms:
+            permissions_map[trp.tenant_role_id].append({
+                "permission_code": trp.permission_code,
+                "description": p.description
+            })
+
     return {
         "roles": [
-            {"role_id": str(r.role_id), "code": r.code, "description": r.description}
+            {
+                "role_id": str(r.role_id),
+                "code": r.code,
+                "description": r.description,
+                "permissions": permissions_map.get(r.role_id, [])
+            }
             for r in roles
         ]
     }
+
+
+@router.delete("/tenant-roles/{role_id}", status_code=204)
+async def delete_tenant_role(
+    role_id: str,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin")),
+    policy=Depends(require_policy("tenant_role.delete", resource_from="none")),
+):
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    role = db.query(TenantRole).filter(
+        TenantRole.role_id == uuid.UUID(role_id),
+        TenantRole.tenant_id == uuid.UUID(str(tenant_id))
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Tenant role not found")
+
+    # Remove all permission assignments
+    db.query(TenantRolePermission).filter(
+        TenantRolePermission.tenant_role_id == role.role_id
+    ).delete()
+    # Remove all user assignments
+    db.query(TenantUserRole).filter(
+        TenantUserRole.tenant_role_id == role.role_id
+    ).delete()
+    db.delete(role)
+    db.commit()
+    return Response(status_code=204)
 
 @router.post("/users/{user_id}/roles", status_code=201)
 async def assign_role_to_user(
@@ -2706,28 +2787,46 @@ async def get_user_roles(
         # Get identity for email
         identity = db.query(UserIdentity).filter(UserIdentity.user_id == uuid.UUID(user_id)).first()
 
-        # Get user roles
-        user_roles = (
+        # Get global roles
+        global_roles = (
             db.query(UserRole, Role)
             .join(Role, UserRole.role_id == Role.role_id)
             .filter(UserRole.user_id == uuid.UUID(user_id))
             .all()
         )
 
+        # Get tenant-scoped custom roles
+        tenant_roles = (
+            db.query(TenantUserRole, TenantRole)
+            .join(TenantRole, TenantUserRole.tenant_role_id == TenantRole.role_id)
+            .filter(TenantUserRole.user_id == uuid.UUID(user_id))
+            .all()
+        )
+
+        roles_list = []
+        for ur, r in global_roles:
+            roles_list.append({
+                "role_id": str(r.role_id),
+                "role_code": r.code,
+                "role_name": r.code,
+                "type": "global",
+                "assigned_at": ur.created_at.isoformat()
+            })
+        for tur, tr in tenant_roles:
+            roles_list.append({
+                "role_id": str(tr.role_id),
+                "role_code": tr.code,
+                "role_name": tr.code,
+                "type": "tenant",
+                "assigned_at": tur.created_at.isoformat()
+            })
+
         return {
             "user_id": user_id,
             "email": identity.email if identity else None,
             "display_name": user.display_name,
-            "roles": [
-                {
-                    "role_id": str(r.role_id),
-                    "role_code": r.code,
-                    "role_name": r.code,
-                    "assigned_at": ur.created_at.isoformat()
-                }
-                for ur, r in user_roles
-            ],
-            "total": len(user_roles)
+            "roles": roles_list,
+            "total": len(roles_list)
         }
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
@@ -2751,17 +2850,28 @@ async def remove_role_from_user(
     try:
         req_total.labels(operation="remove_role", status="start").inc()
 
-        # Find user role assignment
+        # Find user role assignment (check both global and tenant roles)
         user_role = db.query(UserRole).filter(
             UserRole.user_id == uuid.UUID(user_id),
             UserRole.role_id == uuid.UUID(role_id)
         ).first()
 
+        tenant_user_role = None
         if not user_role:
+            tenant_user_role = db.query(TenantUserRole).filter(
+                TenantUserRole.user_id == uuid.UUID(user_id),
+                TenantUserRole.tenant_role_id == uuid.UUID(role_id)
+            ).first()
+
+        if not user_role and not tenant_user_role:
             raise HTTPException(status_code=404, detail="Role assignment not found")
 
-        user = db.query(User).filter(User.user_id == user_role.user_id).first()
-        db.delete(user_role)
+        if user_role:
+            user = db.query(User).filter(User.user_id == user_role.user_id).first()
+            db.delete(user_role)
+        else:
+            user = db.query(User).filter(User.user_id == tenant_user_role.user_id).first()
+            db.delete(tenant_user_role)
         db.commit()
 
         # Outbox audit event

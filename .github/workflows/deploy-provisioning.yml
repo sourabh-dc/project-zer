@@ -18,10 +18,10 @@ jobs:
         component:
           - name: api
             dockerfile: provisioning_service/Dockerfile
-            image: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-api
+            image: provisioning-api
           - name: worker
             dockerfile: provisioning_service/Dockerfile.worker
-            image: ${{ secrets.ACR_NAME }}.azurecr.io/provisioning-worker
+            image: provisioning-worker
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,8 +41,8 @@ jobs:
           file: ${{ matrix.component.dockerfile }}
           push: true
           tags: |
-            ${{ matrix.component.image }}:${{ github.sha }}
-            ${{ matrix.component.image }}:latest
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ matrix.component.image }}:${{ github.sha }}
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ matrix.component.image }}:latest
 
   # ── Deploy API ───────────────────────────────────────────────────
   deploy-api:

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import Role, Permission, RolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
+from provisioning_service.Models import Role, Permission, RolePermission, TenantRole, TenantRolePermission, SubscriptionPlan, Feature, PlanFeature, PlanPrice
 from provisioning_service.Schemas import RoleRequest, SubscriptionPlanRequest, FeatureRequest
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
@@ -772,7 +772,34 @@ async def remove_permission_from_role(role_code: str, permission_code: str, db: 
 
 @router.get("/roles/{role_code}/permissions")
 async def get_role_permissions(role_code: str, db: Session = Depends(get_db)):
-    """Get all permissions for a role."""
+    """Get all permissions for a role (global or tenant-scoped).
+
+    - If ``role_code`` is a UUID, it's treated as a tenant-role ``role_id``.
+    - Otherwise it's treated as a global role ``code``.
+    """
+    # Try to parse as UUID -> tenant role lookup
+    try:
+        role_id = uuid.UUID(role_code)
+        role = db.query(TenantRole).filter(TenantRole.role_id == role_id).first()
+        if role:
+            perms = db.query(TenantRolePermission, Permission).join(
+                Permission, TenantRolePermission.permission_code == Permission.code
+            ).filter(
+                TenantRolePermission.tenant_role_id == role_id
+            ).all()
+            return {
+                "role_code": role_code,
+                "role_type": "tenant",
+                "permissions": [
+                    {"code": p.code, "description": p.description}
+                    for trp, p in perms
+                ],
+                "total": len(perms)
+            }
+    except ValueError:
+        pass  # Not a UUID, treat as global role code
+
+    # Global role lookup
     if not db.query(Role).filter(Role.code == role_code).first():
         raise HTTPException(404, "Role not found")
 
@@ -784,6 +811,7 @@ async def get_role_permissions(role_code: str, db: Session = Depends(get_db)):
 
     return {
         "role_code": role_code,
+        "role_type": "global",
         "permissions": [
             {"code": p.code, "description": p.description}
             for rp, p in role_perms

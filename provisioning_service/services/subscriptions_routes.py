@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserRole, Role, \
+from provisioning_service.Models import SubscriptionPlan, TenantSubscription, Tenant, User, UserIdentity, UserRole, Role, \
     PlanPrice, Feature, PlanFeature, RolePermission, Permission
 from provisioning_service.Schemas import TenantSubscriptionRequest, CurrentSubscriptionResponse, \
     CancelSubscriptionRequest, TenantSubscriptionUpgradeRequest, UpgradePreviewResponse, UserContext, SubscribeRequest
@@ -41,6 +41,9 @@ async def whoami(
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+
+    # Get user identity (contains email, auth info)
+    user_identity = db.query(UserIdentity).filter(UserIdentity.user_id == user_id).first()
 
     # Get tenant
     tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
@@ -149,7 +152,7 @@ async def whoami(
 
     return {
         "user_id": str(user.user_id),
-        "email": user.email,
+        "email": user_identity.email if user_identity else None,
         "display_name": user.display_name,
         "tenant_id": str(tenant.tenant_id),
         "tenant_name": tenant.tenant_name,
