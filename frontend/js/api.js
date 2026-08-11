@@ -197,4 +197,31 @@ const API = {
     // ── Companies House ───────────────────────────────────────────
     searchCompanies(query)  { return this._fetch('GET', `/companies-house/search?q=${encodeURIComponent(query)}`); },
     getCompanyProfile(num)  { return this._fetch('GET', `/companies-house/company/${encodeURIComponent(num)}`); },
+
+    // ── Roles & Responsibilities ──────────────────────────────────
+    listRoles()                  { return this._fetch('GET', '/roles'); },
+    getRoleResponsibilities(code) { return this._fetch('GET', `/roles/${encodeURIComponent(code)}/responsibilities`); },
+    listJobFunctions()           { return this._fetch('GET', '/roles/job-functions'); },
+    listScopes(tenantId)         { return this._fetch('GET', `/roles/scopes?tenant_id=${tenantId}`); },
+
+    // ── Approval Controls ─────────────────────────────────────────
+    listApprovalControls(userId)     { return this._fetch('GET', `/approval-controls?user_id=${userId}`); },
+    createApprovalControl(payload)   { return this._fetch('POST', '/approval-controls', payload); },
+    updateApprovalControl(id, data)  { return this._fetch('PUT', `/approval-controls/${id}`, data); },
+    deleteApprovalControl(id)        { return this._fetch('DELETE', `/approval-controls/${id}`); },
+
+    // ── Delegations ───────────────────────────────────────────────
+    listDelegations(userId)          { return this._fetch('GET', `/delegations?user_id=${userId}`); },
+    createDelegation(payload)        { return this._fetch('POST', '/delegations', payload); },
+    revokeDelegation(id)             { return this._fetch('DELETE', `/delegations/${id}`); },
+
+    // ── Audit & Confirmation ─────────────────────────────────────
+    listAudit(tenantId, params)      { return this._fetch('GET', `/audit?tenant_id=${tenantId}${params ? '&' + new URLSearchParams(params).toString() : ''}`); },
+    confirmAccess(payload)           { return this._fetch('POST', '/audit/confirm-access', payload); },
+
+    // ── Sub-Tenants & Advanced Access ────────────────────────────
+    listSubTenants(tenantId)         { return this._fetch('GET', `/tenants/${tenantId}/sub-tenants`); },
+    listResponsibilityScopes(userId) { return this._fetch('GET', `/user-responsibility-scopes?user_id=${userId}`); },
+    createResponsibilityScope(p)     { return this._fetch('POST', '/user-responsibility-scopes', p); },
+    deleteResponsibilityScope(id)    { return this._fetch('DELETE', `/user-responsibility-scopes/${id}`); },
 };

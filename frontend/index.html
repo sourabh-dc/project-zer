@@ -209,17 +209,19 @@
                     <h2>Invitations</h2>
                     <div class="form-row mb-16">
                         <input type="email" id="invite-email" placeholder="colleague@acmecorp.com" style="flex:1;">
-                        <select id="invite-role" style="width:180px;">
-                            <option value="">No role</option>
-                            <option value="tenant_admin">Tenant Admin</option>
-                            <option value="procurement_manager">Procurement Manager</option>
-                            <option value="store_manager">Store Manager</option>
-                            <option value="viewer">Viewer</option>
+                        <select id="invite-role" style="width:200px;">
+                            <option value="">Loading roles…</option>
                         </select>
-                        <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">Send</button>
                     </div>
-                    <div id="invite-error" class="alert alert-error hidden"></div>
-                    <table><thead><tr><th>Email</th><th>Status</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody id="invitations-table"></tbody></table>
+                    <div class="form-row mb-16">
+                        <input type="text" id="invite-job-title" placeholder="Job title (e.g. Maintenance Manager)" style="flex:1;">
+                        <select id="invite-job-function" style="width:220px;">
+                            <option value="">Job function (optional)</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createInvitation()">Send Invitation</button>
+                    <div id="invite-error" class="alert alert-error hidden mt-16"></div>
+                    <table class="mt-16"><thead><tr><th>Email</th><th>Status</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody id="invitations-table"></tbody></table>
                 </div>
             </div>
 

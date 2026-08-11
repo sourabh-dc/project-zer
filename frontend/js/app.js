@@ -237,9 +237,19 @@ const App = {
         if (company.company_number) {
             API.getCompanyProfile(company.company_number).then(profile => {
                 console.log('Company profile loaded:', profile);
+                // Auto-fill registered address from Companies House
+                const addr = profile.registered_office_address;
+                if (addr) {
+                    const countryEl = document.getElementById('onboard-country-reg');
+                    if (countryEl && addr.country) countryEl.value = addr.country;
+                }
+                // Store full address for later submission
+                this._companyAddress = addr || null;
             }).catch(() => { /* best-effort */ });
         }
     },
+
+    _companyAddress: null,
 
     _esc(str) {
         if (!str) return '';
@@ -263,12 +273,16 @@ const App = {
             admin_email: document.getElementById('onboard-email').value,
             admin_firstname: document.getElementById('onboard-firstname').value,
             admin_lastname: document.getElementById('onboard-lastname').value,
+            admin_job_title: document.getElementById('onboard-job-title')?.value || null,
             plan_code: document.getElementById('onboard-plan').value,
             billing_cycle: document.getElementById('onboard-billing').value,
             default_currency: 'GBP',
             timezone: 'Europe/London',
             locale: 'en_GB',
             registration_number: document.getElementById('onboard-company-number').value || null,
+            company_size: document.getElementById('onboard-company-size')?.value || null,
+            country_of_registration: document.getElementById('onboard-country-reg')?.value || null,
+            registered_address: this._companyAddress || null,  // from Companies House or manual entry
         };
         if (!payload.tenant_name) return this.showError('register-error', 'Tenant name is required');
 
@@ -464,6 +478,47 @@ const App = {
             console.error('Dashboard load failed:', err.message, err.status);
             document.getElementById('dash-tenant-name').textContent = 'Error loading data';
         }
+
+        // Load role & job function catalogues for invitation form
+        try { await this._loadRoleOptions(); } catch (e) { console.warn('Roles not loaded:', e); }
+        try { await this._loadJobFunctionOptions(); } catch (e) { console.warn('Job functions not loaded:', e); }
+    },
+
+    // ── Role & Job Function catalogue loaders ─────────────────────
+
+    async _loadRoleOptions() {
+        const data = await API.listRoles();
+        const select = document.getElementById('invite-role');
+        if (!select) return;
+        select.innerHTML = '<option value="">No role (choose later)</option>';
+        const categories = {};
+        (data.roles || []).forEach(r => {
+            if (!categories[r.category]) categories[r.category] = [];
+            categories[r.category].push(r);
+        });
+        for (const [cat, roles] of Object.entries(categories)) {
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = cat;
+            roles.forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = r.code;
+                opt.textContent = r.description;
+                optgroup.appendChild(opt);
+            });
+            select.appendChild(optgroup);
+        }
+    },
+
+    async _loadJobFunctionOptions() {
+        const data = await API.listJobFunctions();
+        const select = document.getElementById('invite-job-function');
+        if (!select) return;
+        (data.job_functions || []).forEach(jf => {
+            const opt = document.createElement('option');
+            opt.value = jf.code;
+            opt.textContent = jf.description;
+            select.appendChild(opt);
+        });
     },
 
     // ── Invitations ────────────────────────────────────────────────
@@ -498,12 +553,21 @@ const App = {
     async createInvitation() {
         const email = document.getElementById('invite-email').value;
         const role = document.getElementById('invite-role').value || null;
+        const jobTitle = document.getElementById('invite-job-title').value || null;
+        const jobFunction = document.getElementById('invite-job-function').value || null;
         if (!email) return this.showError('invite-error', 'Email is required');
 
         try {
-            await API.createInvitation({ email, role_code: role });
+            await API.createInvitation({
+                email,
+                role_code: role,
+                display_job_title: jobTitle,
+                job_function: jobFunction,
+            });
             document.getElementById('invite-email').value = '';
             document.getElementById('invite-role').value = '';
+            document.getElementById('invite-job-title').value = '';
+            document.getElementById('invite-job-function').value = '';
             this.hideElement('invite-error');
             await this.loadInvitations();
         } catch (err) {
