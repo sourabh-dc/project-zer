@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from provisioning_service.Models import Base
 from provisioning_service.core.db_config import engine
-from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv
+from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv, seed_job_functions
 from provisioning_service.core.helpers.load_features import insert_features_from_csv
 from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
 from provisioning_service.services.provisioning_routes import router as provisioning_router
@@ -25,6 +25,11 @@ from provisioning_service.services.user_budget_routes import router as user_budg
 from provisioning_service.services.approval_policy_routes import router as approval_policy_router
 from provisioning_service.services.budget_change_request_routes import router as budget_change_router
 from provisioning_service.services.companies_house_routes import router as companies_house_router
+from provisioning_service.services.roles_routes import router as roles_router
+from provisioning_service.services.approval_controls_routes import router as approval_controls_router
+from provisioning_service.services.delegation_routes import router as delegation_router
+from provisioning_service.services.audit_routes import router as audit_router
+from provisioning_service.services.advanced_access_routes import router as advanced_access_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 
@@ -87,11 +92,80 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Outbox migration step skipped or failed: {e}")
 
-        # Load static data (permissions/features)
+        # Migrate users: add display_job_title, job_function columns
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("users"):
+                existing_cols = {c["name"] for c in insp.get_columns("users")}
+                with engine.begin() as conn:
+                    if "display_job_title" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE users ADD COLUMN display_job_title VARCHAR(255)"
+                        ))
+                        logger.info("✅ Added display_job_title column to users")
+                    if "job_function" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE users ADD COLUMN job_function VARCHAR(100)"
+                        ))
+                        logger.info("✅ Added job_function column to users")
+        except Exception as e:
+            logger.warning(f"User columns migration skipped or failed: {e}")
+
+        # Migrate tenants: add strict_sod_enabled column
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("tenants"):
+                existing_cols = {c["name"] for c in insp.get_columns("tenants")}
+                with engine.begin() as conn:
+                    if "strict_sod_enabled" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE tenants ADD COLUMN strict_sod_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+                        ))
+                        logger.info("✅ Added strict_sod_enabled column to tenants")
+        except Exception as e:
+            logger.warning(f"Tenant columns migration skipped or failed: {e}")
+
+        # Migrate tenants: add parent_tenant_id for sub-tenant hierarchy (Phase 6)
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("tenants"):
+                existing_cols = {c["name"] for c in insp.get_columns("tenants")}
+                with engine.begin() as conn:
+                    if "parent_tenant_id" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE tenants ADD COLUMN parent_tenant_id UUID"
+                        ))
+                        logger.info("✅ Added parent_tenant_id column to tenants")
+        except Exception as e:
+            logger.warning(f"Parent tenant migration skipped or failed: {e}")
+
+        # Migrate mandates: add admin_job_title, company_size, country_of_registration
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("mandates"):
+                existing_cols = {c["name"] for c in insp.get_columns("mandates")}
+                with engine.begin() as conn:
+                    for col, col_type in [
+                        ("admin_job_title", "VARCHAR(255)"),
+                        ("company_size", "VARCHAR(50)"),
+                        ("country_of_registration", "VARCHAR(100)"),
+                    ]:
+                        if col not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE mandates ADD COLUMN {col} {col_type}"))
+                            logger.info(f"✅ Added {col} column to mandates")
+        except Exception as e:
+            logger.warning(f"Mandate columns migration skipped or failed: {e}")
+
+        # Load static data (permissions/features/job functions)
         try:
             insert_permissions_from_csv(r'provisioning_service/permissions.csv')
             insert_features_from_csv(r'provisioning_service/features.csv')
             load_product_features_on_startup()
+            seed_job_functions()
         except Exception as ex:
             logger.warning(f"Initial data load failed: {ex}")
 
@@ -140,6 +214,11 @@ app.include_router(user_budget_router)
 app.include_router(approval_policy_router)
 app.include_router(budget_change_router)
 app.include_router(companies_house_router)
+app.include_router(roles_router)
+app.include_router(approval_controls_router)
+app.include_router(delegation_router)
+app.include_router(audit_router)
+app.include_router(advanced_access_router)
 
 
 @app.get("/health")

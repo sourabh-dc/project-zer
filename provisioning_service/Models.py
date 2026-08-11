@@ -34,6 +34,8 @@ class Tenant(Base):
     industry = Column(String, nullable=True)
     tech_contact_email = Column(String, nullable=True)
     support_contact_email = Column(String, nullable=True)
+    strict_sod_enabled = Column(Boolean, nullable=False, default=False)  # Phase 4 — Segregation of Duties toggle
+    parent_tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="SET NULL"), nullable=True, index=True)  # Phase 6 — sub-tenant hierarchy
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -108,6 +110,8 @@ class User(Base):
     display_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     position = Column(String, nullable=True)
+    display_job_title = Column(String, nullable=True)       # user's job title (descriptive, never grants access)
+    job_function = Column(String, nullable=True)            # job function from catalogue (Procurement, Finance, etc.)
     profile_image = Column(String, nullable=True)
     home_site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id"), nullable=True)
     home_store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=True)
@@ -617,6 +621,7 @@ class Mandate(Base):
     admin_email = Column(String, nullable=False)
     admin_firstname = Column(String(150), nullable=False)
     admin_lastname = Column(String(150), nullable=False)
+    admin_job_title = Column(String(255), nullable=True)
 
     # Billing
     plan_code = Column(String(50), nullable=False)
@@ -638,6 +643,8 @@ class Mandate(Base):
     locale = Column(String, nullable=True, default="en_GB")
     industry = Column(String, nullable=True)
     registration_number = Column(String(100), nullable=True)
+    company_size = Column(String(50), nullable=True)
+    country_of_registration = Column(String(100), nullable=True)
     billing_address = Column(JSONB, nullable=True)
     primary_domain = Column(String, nullable=True)
     billing_email = Column(String, nullable=True)
@@ -935,6 +942,63 @@ class TenantCarrier(Base):
     __table_args__ = (
         Index('ix_tenant_carrier_unique', 'tenant_id', 'carrier_id', unique=True),
     )
+
+
+class JobFunction(Base):
+    """Standard job-function catalogue (12 categories per ZeroQue Roles v1.1).
+
+    Used for organising users, filtering, reporting, and intelligent role
+    suggestions.  Job function does NOT grant permissions or approval authority.
+    """
+    __tablename__ = "job_functions"
+
+    code = Column(String(50), primary_key=True)
+    description = Column(String(200), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+class UserApprovalControl(Base):
+    """Per-user approval authority controls (Phase 3).
+
+    Defines the scope, transaction limits, period limits, effective dates and
+    escalation route for a user's approval responsibility.  This is the
+    runtime enforcement data for the "Controls" step of the setup journey.
+
+    A user may have multiple control records — one per scope (e.g. different
+    limits for Swindon site vs. Engineering cost centre).
+    """
+    __tablename__ = "user_approval_controls"
+
+    control_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # ── Scope ─────────────────────────────────────────────────────
+    scope_type = Column(String(30), nullable=False)   # organisation | site | cost_centre | department
+    scope_id = Column(String(100), nullable=True)      # FK reference (site_id, cost_centre_id, org_unit_id)
+
+    # ── Approval limits ───────────────────────────────────────────
+    max_transaction_minor = Column(BigInteger, nullable=True)   # max per-transaction value (minor units)
+    max_period_minor = Column(BigInteger, nullable=True)       # max cumulative per period (minor units)
+    period_type = Column(String(20), nullable=True)            # weekly | monthly | quarterly | annual | custom
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    currency = Column(String(3), nullable=True, default="GBP")
+
+    # ── Escalation ────────────────────────────────────────────────
+    escalation_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+
+    # ── Effective dates ───────────────────────────────────────────
+    effective_from = Column(Date, nullable=True)
+    effective_to = Column(Date, nullable=True)
+
+    # ── Status ────────────────────────────────────────────────────
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 class UserApprover(Base):
@@ -1639,3 +1703,152 @@ class AuditLog(Base):
     user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
 
+
+
+class Delegation(Base):
+    """Delegated approval authority — Phase 4.
+
+    Allows an approver (delegator) to delegate their approval authority
+    to another user (delegate) for a defined scope, period, and limit.
+
+    Rules (per ZeroQue Roles v1.1):
+      - One-hop cap: if A delegates to B, B cannot re-delegate to C.
+      - Delegation cannot bypass Segregation of Duties or self-approval.
+      - Must have an expiry date.
+      - Requires reason and explicit approval.
+    """
+    __tablename__ = "delegations"
+
+    delegation_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    delegator_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    delegate_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    responsibility_code = Column(String(150), nullable=False)
+    scope_type = Column(String(30), nullable=False)
+    scope_id = Column(String(100), nullable=True)
+    max_transaction_minor = Column(BigInteger, nullable=True)
+
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=False)
+    reason = Column(String(500), nullable=False)
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+
+    status = Column(String(20), nullable=False, default="pending")
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+
+# ==================================================================================
+# PHASE 5 — AUDIT & CONFIRMATION
+# ==================================================================================
+
+class AuditEntry(Base):
+    """Append-only audit trail — Phase 5.
+
+    Every access change, approval decision, and confirmation is recorded as
+    an immutable entry.  Historical snapshots preserve the authority that
+    existed at the time of the decision — they are never rewritten when
+    current permissions, limits, or policies change.
+
+    Key principles:
+      - Append-only — rows are never updated after creation.
+      - Snapshot preservation — previous_value / new_value capture state at decision time.
+      - Every approval carries the authority context that applied then.
+    """
+    __tablename__ = "audit_entries"
+
+    audit_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    event_type = Column(String(50), nullable=False, index=True)     # access_change | approval_decision | confirmation | sod_event | delegation
+    actor_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    affected_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+
+    # What changed
+    resource_type = Column(String(50), nullable=True)    # user_profile | approval_control | role_assignment | delegation
+    resource_id = Column(String(100), nullable=True)
+    field_changed = Column(String(100), nullable=True)
+    previous_value = Column(JSONB, nullable=True)        # snapshot of state before change
+    new_value = Column(JSONB, nullable=True)              # snapshot of state after change
+
+    # Context
+    reason = Column(String(500), nullable=True)
+    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    confirmation_summary = Column(Text, nullable=True)    # plain-English summary shown to admin
+
+    # Immutability marker
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    # NOTE: no updated_at column — rows are append-only
+
+
+class ConfirmationSnapshot(Base):
+    """Historical snapshot of approval authority at decision time — Phase 5.
+
+    When an approval decision is made, the authority that existed at that
+    moment is frozen here.  This ensures that if Sarah had a £5,000 limit in
+    June and £10,000 in July, the June approval still shows £5,000.
+    """
+    __tablename__ = "confirmation_snapshots"
+
+    snapshot_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    audit_id = Column(SQLUUID(as_uuid=True), ForeignKey("audit_entries.audit_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    role_code = Column(String(100), nullable=True)
+    scope_type = Column(String(30), nullable=True)
+    scope_id = Column(String(100), nullable=True)
+    max_transaction_minor = Column(BigInteger, nullable=True)
+    max_period_minor = Column(BigInteger, nullable=True)
+    period_type = Column(String(20), nullable=True)
+    escalation_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    effective_from = Column(Date, nullable=True)
+    effective_to = Column(Date, nullable=True)
+
+    # The plain-English summary frozen at approval time
+    summary_text = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ==================================================================================
+# PHASE 6 — SUB-TENANT HIERARCHY & ADVANCED ACCESS
+# ==================================================================================
+
+# ── Add parent_tenant_id to Tenant via ALTER (handled in main.py migration) ──
+# The Tenant model already exists; parent_tenant_id is added via migration.
+
+
+class UserResponsibilityScope(Base):
+    """Advanced Access: per-responsibility scope overrides — Phase 6.
+
+    The standard journey applies one common scope to all responsibilities.
+    Advanced Access allows different scopes per responsibility.
+
+    Example: Requester across Swindon site, Approver only for ENG-001 cost centre.
+    """
+    __tablename__ = "user_responsibility_scopes"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+
+    responsibility_code = Column(String(150), nullable=False)   # e.g. "approvals.requests.respond"
+    scope_type = Column(String(30), nullable=False)             # site | cost_centre | department
+    scope_id = Column(String(100), nullable=False)
+
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_urs_user_resp_unique", "user_id", "responsibility_code", "scope_type", "scope_id", unique=True),
+    )

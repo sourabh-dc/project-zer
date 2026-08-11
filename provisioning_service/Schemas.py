@@ -152,6 +152,8 @@ class UserRequest(BaseModel):
     email: EmailStr = Field(..., description="Valid email address")
     first_name: str = Field(..., min_length=1, max_length=255, description="First name")
     last_name: str = Field(..., min_length=1, max_length=255, description="Last name")
+    display_job_title: Optional[str] = Field(None, max_length=255, description="User's job title (descriptive only, never grants access)")
+    job_function: Optional[str] = Field(None, max_length=100, description="Job function from catalogue (Procurement, Finance, etc.)")
     phone: Optional[str] = Field(None, description="Contact phone number (E.164 or digits)")
     position: Optional[str] = Field(None, description="Position / job title (optional)")
     profile_image: Optional[str] = Field(None, description="Profile image URL (optional)")
@@ -293,6 +295,8 @@ class UserUpdateRequest(BaseModel):
     """User update request — all fields optional"""
     first_name: Optional[str] = Field(None, min_length=1, max_length=255)
     last_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    display_job_title: Optional[str] = Field(None, max_length=255, description="User's job title")
+    job_function: Optional[str] = Field(None, max_length=100, description="Job function from catalogue")
     phone: Optional[str] = None
     position: Optional[str] = None
     profile_image: Optional[str] = None
@@ -347,7 +351,9 @@ class TokenExchangeRequest(BaseModel):
 class InvitationRequest(BaseModel):
     """Create an invitation for a user to join the tenant."""
     email: EmailStr = Field(..., description="Email address to invite")
-    role_code: Optional[str] = Field(None, description="Role code to assign on acceptance")
+    role_code: Optional[str] = Field(None, description="Role code to assign on acceptance (one of 12 standard roles)")
+    display_job_title: Optional[str] = Field(None, max_length=255)
+    job_function: Optional[str] = Field(None, max_length=100)
 
 
 class InvitationResponse(BaseModel):
@@ -427,6 +433,8 @@ class LoginResponse(BaseModel):
     display_name: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    display_job_title: Optional[str] = None
+    job_function: Optional[str] = None
     last_login_at: Optional[str] = None
     token: str
     expiring_at: datetime
@@ -438,6 +446,17 @@ class LoginResponse(BaseModel):
 
 
 # ── Mandate schemas ──────────────────────────────────────────────
+
+
+class RegisteredAddress(BaseModel):
+    """Structured registered office / business address — embedded in mandate, not a DB table."""
+    country: Optional[str] = Field(None, max_length=100)
+    address_line_1: Optional[str] = Field(None, max_length=255)
+    address_line_2: Optional[str] = Field(None, max_length=255)
+    town_city: Optional[str] = Field(None, max_length=100)
+    county: Optional[str] = Field(None, max_length=100)
+    postcode: Optional[str] = Field(None, max_length=20)
+
 
 class MandateCreateRequest(BaseModel):
     """Step 1: create a billing mandate before any tenant data is persisted.
@@ -453,6 +472,7 @@ class MandateCreateRequest(BaseModel):
     admin_email: EmailStr
     admin_firstname: str = Field(min_length=1, max_length=150)
     admin_lastname: str = Field(min_length=1, max_length=150)
+    admin_job_title: Optional[str] = Field(None, max_length=255, description="Admin's display job title")
     plan_code: str = Field(..., description="Subscription plan code")
     billing_cycle: str = Field(default="monthly")
     is_trial: bool = Field(
@@ -465,7 +485,9 @@ class MandateCreateRequest(BaseModel):
     locale: Optional[str] = "en_GB"
     industry: Optional[str] = None
     registration_number: Optional[str] = None
-    billing_address: Optional[str] = None
+    company_size: Optional[str] = Field(None, max_length=50, description="Company size band (1-10, 11-50, 51-200, 201-500, 500+)")
+    country_of_registration: Optional[str] = Field(None, max_length=100, description="ISO country code of registration")
+    registered_address: Optional[RegisteredAddress] = Field(None, description="Structured registered office address")
     primary_domain: Optional[str] = None
     billing_email: Optional[EmailStr] = None
     tech_contact_email: Optional[EmailStr] = None

@@ -20,13 +20,14 @@ from provisioning_service.Models import (
     OutboxEventDelivery,
 )
 from provisioning_service.core.db_config import SessionLocal
+from provisioning_service.core.config import SETTINGS
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
 
-SB_NAMESPACE = "zeroque.servicebus.windows.net"
-QUEUE_NAME = "outbox-task-queue"
+SB_NAMESPACE = SETTINGS.SB_NAMESPACE
+QUEUE_NAME = SETTINGS.QUEUE_NAME
 
 
 def _decode_message_body(msg):

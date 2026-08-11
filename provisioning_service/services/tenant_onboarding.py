@@ -110,6 +110,7 @@ async def create_mandate(
             admin_email=req.admin_email,
             admin_firstname=req.admin_firstname,
             admin_lastname=req.admin_lastname,
+            admin_job_title=req.admin_job_title,
             plan_code=req.plan_code,
             billing_cycle=req.billing_cycle,
             is_trial=True,      # mandatory trial — cannot be bypassed
@@ -123,7 +124,9 @@ async def create_mandate(
             locale=req.locale,
             industry=req.industry,
             registration_number=req.registration_number,
-            billing_address=req.billing_address,
+            company_size=req.company_size,
+            country_of_registration=req.country_of_registration,
+            billing_address=req.registered_address.model_dump() if req.registered_address else None,
             primary_domain=req.primary_domain,
             billing_email=req.billing_email,
             tech_contact_email=req.tech_contact_email,
