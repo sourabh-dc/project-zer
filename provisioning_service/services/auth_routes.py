@@ -151,8 +151,12 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
         )
 
     oid = azure_claims.oid
-    first_name = azure_claims.given_name or (azure_claims.name.split(" ")[0] if azure_claims.name else "")
-    last_name = azure_claims.family_name or (" ".join(azure_claims.name.split(" ")[1:]) if azure_claims.name else "")
+    # Extract name from claims — may legitimately be empty if CIAM token
+    # doesn't include given_name/family_name. Do NOT fabricate from email
+    # (emails are often misleading: sales@, admin@, it.support@).
+    name = (azure_claims.name or "").strip()
+    first_name = azure_claims.given_name or (name.split(" ")[0] if name else "")
+    last_name = azure_claims.family_name or (" ".join(name.split(" ")[1:]) if name else "")
 
     # ── Invitation path ──────────────────────────────────────────────
     if req.invitation_token:

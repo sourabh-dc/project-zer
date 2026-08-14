@@ -7,9 +7,9 @@ from fastapi.responses import JSONResponse
 
 from provisioning_service.Models import Base
 from provisioning_service.core.db_config import engine
-from provisioning_service.core.helpers.load_permissions import insert_permissions_from_csv, seed_job_functions
-from provisioning_service.core.helpers.load_features import insert_features_from_csv
+from provisioning_service.core.helpers.load_permissions import seed_roles_and_permissions, seed_job_functions
 from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
+from provisioning_service.core.helpers.load_plans import seed_plans_and_features
 from provisioning_service.services.provisioning_routes import router as provisioning_router
 from provisioning_service.services.catalog_routes import router as catalog_router
 from provisioning_service.services.auth_routes import router as auth_router
@@ -160,12 +160,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Mandate columns migration skipped or failed: {e}")
 
-        # Load static data (permissions/features/job functions)
+        # Load static data (roles/permissions/plans/features/job functions)
         try:
-            insert_permissions_from_csv(r'provisioning_service/permissions.csv')
-            insert_features_from_csv(r'provisioning_service/features.csv')
+            seed_roles_and_permissions()
             load_product_features_on_startup()
             seed_job_functions()
+            seed_plans_and_features()
         except Exception as ex:
             logger.warning(f"Initial data load failed: {ex}")
 

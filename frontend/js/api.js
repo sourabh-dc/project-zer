@@ -194,6 +194,9 @@ const API = {
     // ── Health ────────────────────────────────────────────────────
     health() { return this._fetch('GET', '/health'); },
 
+    // ── Plans & Features ─────────────────────────────────────────
+    getPlans() { return this._fetch('GET', '/plans/'); },
+
     // ── Companies House ───────────────────────────────────────────
     searchCompanies(query)  { return this._fetch('GET', `/companies-house/search?q=${encodeURIComponent(query)}`); },
     getCompanyProfile(num)  { return this._fetch('GET', `/companies-house/company/${encodeURIComponent(num)}`); },

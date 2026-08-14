@@ -488,6 +488,7 @@ class MandateCreateRequest(BaseModel):
     company_size: Optional[str] = Field(None, max_length=50, description="Company size band (1-10, 11-50, 51-200, 201-500, 500+)")
     country_of_registration: Optional[str] = Field(None, max_length=100, description="ISO country code of registration")
     registered_address: Optional[RegisteredAddress] = Field(None, description="Structured registered office address")
+    billing_address: Optional[str] = Field(None, description="[LEGACY] Flat billing address string. Prefer registered_address.")
     primary_domain: Optional[str] = None
     billing_email: Optional[EmailStr] = None
     tech_contact_email: Optional[EmailStr] = None

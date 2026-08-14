@@ -4,7 +4,6 @@ Seed roles, permissions, and role→permission mappings on startup.
 Replaces the CSV-based approach with a single code-defined source of truth
 aligned to the ZeroQue Roles, Access and Approval v1.1 document.
 """
-import csv
 import uuid
 from typing import List, Tuple
 
@@ -268,44 +267,6 @@ def seed_job_functions():
     except Exception as e:
         session.rollback()
         print(f"❌ Error seeding job functions: {e}")
-        raise
-    finally:
-        session.close()
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Legacy CSV loader (kept for backwards compatibility, delegates to master seed)
-# ═══════════════════════════════════════════════════════════════════
-
-def insert_permissions_from_csv(csv_file: str):
-    """Legacy entry point — now delegates to the master seed function.
-
-    The CSV is still read for any permissions not in the master catalogue,
-    but all role/permission definitions are now managed in-code via
-    ``ALL_PERMISSIONS`` and ``ROLES`` above.
-    """
-    session = SessionLocal()
-    try:
-        # Run the master seed first
-        _seed_permissions(session)
-        _seed_roles(session)
-        _seed_role_permissions(session)
-
-        # Then handle any additional permissions from the CSV
-        with open(csv_file, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            existing = {p.code for p in session.query(Permission).all()}
-            for row in reader:
-                if row["code"] not in existing:
-                    perm = Permission(code=row["code"], description=row["description"])
-                    session.add(perm)
-                    existing.add(row["code"])
-
-        session.commit()
-        print("✅ Permissions seeded (legacy CSV + master catalogue).")
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error: {e}")
         raise
     finally:
         session.close()

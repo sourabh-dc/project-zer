@@ -96,18 +96,22 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label>Plan</label>
-                        <select id="onboard-plan">
-                            <option value="core_01">Core Plan</option>
+                        <select id="onboard-plan" onchange="App.onPlanSelected()">
+                            <option value="">Loading plans…</option>
                         </select>
                     </div>
                     <div class="form-group">
                         <label>Billing Cycle</label>
-                        <select id="onboard-billing">
+                        <select id="onboard-billing" onchange="App.onPlanSelected()">
                             <option value="monthly">Monthly</option>
                             <option value="quarterly">Quarterly</option>
                             <option value="yearly">Yearly</option>
                         </select>
                     </div>
+                </div>
+                <!-- Plan details (price + features) -->
+                <div id="plan-details" class="card" style="padding:16px;margin-top:8px;">
+                    <p class="text-muted" style="font-size:0.8rem;">Select a plan to see pricing and features.</p>
                 </div>
                 <button class="btn btn-primary" onclick="App.onboardingRegister()">Create Mandate &amp; Continue</button>
                 <div id="register-error" class="alert alert-error hidden mt-16"></div>

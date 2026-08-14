@@ -126,7 +126,11 @@ async def create_mandate(
             registration_number=req.registration_number,
             company_size=req.company_size,
             country_of_registration=req.country_of_registration,
-            billing_address=req.registered_address.model_dump() if req.registered_address else None,
+            billing_address=(
+                req.registered_address.model_dump()
+                if req.registered_address
+                else ({"address_line_1": req.billing_address} if req.billing_address else None)
+            ),
             primary_domain=req.primary_domain,
             billing_email=req.billing_email,
             tech_contact_email=req.tech_contact_email,

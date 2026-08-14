@@ -89,6 +89,60 @@ const App = {
     showOnboarding() {
         this.showView('view-onboarding');
         this.renderStep(1);
+        this.loadPlans();  // populate plan dropdown
+    },
+
+    // ── Plans & Features ──────────────────────────────────────────
+
+    _plans: [],
+
+    async loadPlans() {
+        const select = document.getElementById('onboard-plan');
+        if (!select) return;
+        try {
+            const data = await API.getPlans();
+            this._plans = data.plans || [];
+            if (!this._plans.length) {
+                select.innerHTML = '<option value="">No plans available</option>';
+                return;
+            }
+            select.innerHTML = this._plans.map(p =>
+                `<option value="${this._esc(p.code)}">${this._esc(p.name)}</option>`
+            ).join('');
+            this.onPlanSelected();
+        } catch (e) {
+            console.error('Failed to load plans:', e);
+            select.innerHTML = '<option value="">Failed to load plans</option>';
+        }
+    },
+
+    onPlanSelected() {
+        const code = document.getElementById('onboard-plan')?.value;
+        const cycle = document.getElementById('onboard-billing')?.value || 'monthly';
+        const box = document.getElementById('plan-details');
+        if (!box || !code) return;
+
+        const plan = this._plans.find(p => p.code === code);
+        if (!plan) { box.innerHTML = '<p class="text-muted">No plan details.</p>'; return; }
+
+        const pricing = plan.pricing?.[cycle] || plan.pricing?.monthly;
+        let priceLine = 'Custom pricing';
+        if (pricing && pricing.amount_minor) {
+            const amt = pricing.amount_minor / 100;
+            priceLine = `£${amt.toFixed(2)} / ${cycle}`;
+        }
+
+        const features = (plan.features || []).map(f => {
+            const limit = f.max_unit != null ? ` (${f.max_unit})` : '';
+            return `<li>${this._esc(f.name)}${limit}</li>`;
+        }).join('');
+
+        box.innerHTML = `
+            <h3 style="margin-bottom:8px;">${this._esc(plan.name)}</h3>
+            <p class="text-muted" style="margin-bottom:8px;">${this._esc(plan.description || '')}</p>
+            <p style="font-size:1.2rem;font-weight:700;color:var(--primary);margin-bottom:8px;">${priceLine}</p>
+            ${features ? `<ul style="margin:0;padding-left:18px;font-size:0.8rem;color:var(--text-muted);">${features}</ul>` : ''}
+        `;
     },
 
     renderStep(step) {
