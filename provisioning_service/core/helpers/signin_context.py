@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
     Tenant, TenantSubscription, SubscriptionPlan, PlanFeature, Feature,
-    CostCentre, UserCostCentre, CostCenterBudget,
+    CostCentre, UserCostCentre, CostCenterBudget, User, TenantSeatBlock,
 )
 from provisioning_service.Schemas import (
     SubscriptionContext, TenantContext, BalanceContext, RBACContext,
@@ -52,19 +52,44 @@ def build_subscription_context(
     # Full feature usage/limits
     is_active, _, _, features_dict = load_tenant_features(db, str(tenant_id))
 
+    # For 'active.users', usage is authoritative from the actual user rows
+    # (not SubscriptionUsage counters), so the sign-in payload reflects
+    # real seat consumption and deactivations.
+    active_user_count = None
+    extra_seats = 0
+    if "active.users" in features_dict:
+        active_user_count = db.query(User).filter(
+            User.tenant_id == tenant_id,
+            User.is_active == True,
+        ).count()
+        # Phase D2 — purchased additional-user blocks raise the seat limit
+        try:
+            blocks = db.query(TenantSeatBlock).filter(
+                TenantSeatBlock.tenant_id == tenant_id,
+                TenantSeatBlock.status == "active",
+            ).all()
+            extra_seats = sum(b.quantity * b.block_size for b in blocks)
+        except Exception:
+            extra_seats = 0
+
     feature_limits: List[FeatureLimitStatus] = []
     any_exceeded = False
     for code, fu in features_dict.items():
+        used = active_user_count if code == "active.users" and active_user_count is not None else fu.used
+        limit = fu.limit
+        if code == "active.users" and limit is not None and extra_seats:
+            limit = limit + extra_seats
+        remaining = max(0, limit - used) if limit is not None else None
         exceeded = False
-        if fu.limit is not None and fu.used >= fu.limit:
+        if limit is not None and used >= limit:
             exceeded = True
             any_exceeded = True
         feature_limits.append(FeatureLimitStatus(
             code=fu.code,
             name=fu.name,
-            limit=fu.limit,
-            used=fu.used,
-            remaining=fu.remaining,
+            limit=limit,
+            used=used,
+            remaining=remaining,
             reset_period=fu.reset_period,
             resets_at=fu.resets_at.isoformat() if fu.resets_at else None,
             exceeded=exceeded,

@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from provisioning_service.Models import (
-    TenantSubscription, PlanFeature, Feature, SubscriptionUsage, SubscriptionPlan
+    Tenant, TenantSubscription, PlanFeature, Feature, SubscriptionUsage, SubscriptionPlan, User,
+    TenantIntegrationPack, IntegrationPackFeature, TenantSeatBlock
 )
 from provisioning_service.Schemas import FeatureUsage
 from provisioning_service.utils.logger import logger
@@ -68,7 +69,7 @@ def get_period_boundaries(
 
 def load_tenant_features(db: Session, tenant_id: str) -> tuple[bool, Optional[str], Optional[str], Dict[str, FeatureUsage]]:
     """
-    Load all features with usage for a tenant.
+    Load all features with usage for a tenant, including from integration packs.
     
     Returns:
         (subscription_active, plan_code, plan_name, features_dict)
@@ -94,18 +95,57 @@ def load_tenant_features(db: Session, tenant_id: str) -> tuple[bool, Optional[st
     
     plan_name = plan.name if plan else sub.plan_code
     
-    # Get all features in the plan
-    plan_features = db.query(PlanFeature, Feature).join(
+    # Get all features in the base plan
+    plan_features_query = db.query(PlanFeature, Feature).join(
         Feature, PlanFeature.feature_code == Feature.code
     ).filter(
         PlanFeature.plan_code == sub.plan_code,
         PlanFeature.enabled == True,
         Feature.active == True
-    ).all()
+    )
     
+    # Get all features from active integration packs
+    integration_pack_features_query = db.query(IntegrationPackFeature, Feature).join(
+        Feature, IntegrationPackFeature.feature_code == Feature.code
+    ).join(
+        TenantIntegrationPack, and_(
+            TenantIntegrationPack.pack_code == IntegrationPackFeature.pack_code,
+            TenantIntegrationPack.tenant_id == tenant_uuid,
+            TenantIntegrationPack.status == 'active'
+        )
+    )
+
+    # Phase C4 — shared integration hub: inherit the parent tenant's
+    # packs that are flagged shared_with_subtenants.
+    shared_pack_features = []
+    tenant_row = db.query(Tenant).filter(Tenant.tenant_id == tenant_uuid).first()
+    if tenant_row is not None and tenant_row.parent_tenant_id is not None:
+        shared_pack_features = db.query(IntegrationPackFeature, Feature).join(
+            Feature, IntegrationPackFeature.feature_code == Feature.code
+        ).join(
+            TenantIntegrationPack, and_(
+                TenantIntegrationPack.pack_code == IntegrationPackFeature.pack_code,
+                TenantIntegrationPack.tenant_id == tenant_row.parent_tenant_id,
+                TenantIntegrationPack.status == 'active',
+                TenantIntegrationPack.shared_with_subtenants == True,
+            )
+        ).all()
+
+    # Combine plan features and integration pack features
+    # For integration pack features, we create a "dummy" PlanFeature object
+    # as the processing loop expects it for accessing limits.
+    all_features = [
+        (pf, feature) for pf, feature in plan_features_query.all()
+    ]
+    for ipf, feature in integration_pack_features_query.all() + shared_pack_features:
+        # Avoid adding duplicates if a feature is somehow in both
+        if not any(f.code == feature.code for _, f in all_features):
+            mock_plan_feature = PlanFeature(enabled=True, limits={})
+            all_features.append((mock_plan_feature, feature))
+
     features: Dict[str, FeatureUsage] = {}
     
-    for pf, feature in plan_features:
+    for pf, feature in all_features:
         # Calculate period boundaries
         period_start, period_end = get_period_boundaries(
             sub.current_period_start,
@@ -367,4 +407,94 @@ def decrement_feature_usage(
         return {"decremented": count, "total": usage.usage_count}
     
     return {"decremented": 0, "total": usage.usage_count if usage else 0}
+
+
+def enforce_active_user_limit(
+    db: Session,
+    tenant_id: str,
+    adding: int = 1
+) -> Dict[str, Any]:
+    """
+    Enforce the per-plan 'active.users' seat limit at user-creation time.
+
+    Unlike `check_feature_limit` (which reads SubscriptionUsage counters),
+    this counts ACTUAL active user rows for the tenant. This keeps seat
+    enforcement authoritative even if usage counters drift, and it correctly
+    reflects deactivations.
+
+    Raises:
+        HTTPException 403: no active subscription or 'active.users' not in plan
+        HTTPException 429: seat limit would be exceeded
+
+    Returns:
+        Dict with current, limit, remaining (for logging/response context)
+    """
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except (ValueError, TypeError):
+        logger.error(f"enforce_active_user_limit: invalid tenant_id {tenant_id!r}")
+        raise HTTPException(status_code=400, detail="Invalid tenant_id")
+
+    # Count existing active users in the tenant
+    current_count = db.query(User).filter(
+        User.tenant_id == tenant_uuid,
+        User.is_active == True
+    ).count()
+
+    # Resolve the plan's configured seat limit for 'active.users'
+    active, _plan_code, _plan_name, features_dict = load_tenant_features(db, tenant_id)
+
+    if not active:
+        raise HTTPException(status_code=403, detail="No active subscription")
+
+    active_users = features_dict.get("active.users")
+    if active_users is None:
+        # Feature not mapped into the plan -> treat as not entitled
+        raise HTTPException(status_code=403, detail="User seats are not enabled on your plan")
+
+    limit = active_users.limit
+    if limit is None:
+        # No numeric limit configured -> unlimited (enterprise/distributor)
+        return {
+            "current": current_count,
+            "limit": None,
+            "remaining": None,
+            "exceeded": False,
+        }
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        logger.warning(f"active.users limit is not numeric: {limit!r}; treating as unlimited")
+        return {"current": current_count, "limit": None, "remaining": None, "exceeded": False}
+
+    # Phase D2 — additional-user blocks raise the effective seat limit
+    extra_seats = 0
+    try:
+        blocks = db.query(TenantSeatBlock).filter(
+            TenantSeatBlock.tenant_id == tenant_uuid,
+            TenantSeatBlock.status == "active",
+        ).all()
+        extra_seats = sum(b.quantity * b.block_size for b in blocks)
+    except Exception as _e:
+        logger.warning(f"Seat block lookup failed for tenant {tenant_id}: {_e}")
+    effective_limit = limit + extra_seats
+
+    if current_count + adding > effective_limit:
+        logger.warning(
+            f"Seat limit exceeded for tenant {tenant_id}: "
+            f"current={current_count}, adding={adding}, limit={effective_limit} "
+            f"(plan={limit} + blocks={extra_seats})"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"User seat limit reached ({effective_limit}). Upgrade your plan or buy additional-user blocks to add more users."
+        )
+
+    return {
+        "current": current_count,
+        "limit": effective_limit,
+        "remaining": effective_limit - (current_count + adding),
+        "exceeded": False,
+    }
 

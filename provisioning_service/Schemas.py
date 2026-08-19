@@ -809,6 +809,81 @@ class SubscribeRequest(BaseModel):
 
 
 # ==================================================================================
+# INTEGRATION PACK SCHEMAS (Phase B)
+# ==================================================================================
+
+class IntegrationPackOut(BaseModel):
+    """Public representation of an available integration pack."""
+    pack_code: str
+    pack_name: str
+    description: Optional[str] = None
+    stripe_product_id: Optional[str] = None
+    stripe_price_id: Optional[str] = None
+    price_monthly_minor: Optional[int] = None
+    currency: Optional[str] = None
+    billing_interval: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TenantIntegrationPackOut(BaseModel):
+    """Public representation of a tenant's subscribed integration pack."""
+    pack_code: str
+    status: str
+    subscribed_at: datetime
+    cancelled_at: Optional[datetime] = None
+    stripe_subscription_id: Optional[str] = None
+    current_period_end: Optional[datetime] = None
+    shared_with_subtenants: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntegrationPackShareRequest(BaseModel):
+    """Toggle sharing a pack with sub-tenants (Phase C4)."""
+    shared: bool
+
+
+class SeatBlockCheckoutRequest(BaseModel):
+    """Request to create a Stripe Checkout Session for additional-user blocks (Phase D2)."""
+    tenant_id: str
+    quantity: int = Field(default=1, ge=1, le=100)
+    email: Optional[EmailStr] = None
+
+
+class SeatBlockOut(BaseModel):
+    """Public representation of a tenant's seat-block subscription."""
+    id: str
+    quantity: int
+    block_size: int
+    extra_seats: int
+    price_monthly_minor: int
+    currency: str
+    status: str
+    current_period_end: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntegrationPackPurchaseRequest(BaseModel):
+    """Request to purchase (subscribe to) an integration pack."""
+    pack_code: str
+
+
+class PackCheckoutRequest(BaseModel):
+    """Request to create a Stripe Checkout Session for an integration pack."""
+    tenant_id: str
+    pack_code: str
+    email: Optional[EmailStr] = None
+
+
+class PackCheckoutResponse(BaseModel):
+    """Response containing the Stripe Checkout URL."""
+    checkout_url: str
+    session_id: str
+
+
+# ==================================================================================
 # APPROVED RANGE SCHEMAS
 # ==================================================================================
 

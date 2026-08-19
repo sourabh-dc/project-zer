@@ -22,7 +22,7 @@ from provisioning_service.Schemas import UserContext, SiteRequest, StoreRequest,
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
 from provisioning_service.core.policy_client import require_policy
-from provisioning_service.core.entitlement_helpers import record_feature_usage
+from provisioning_service.core.entitlement_helpers import record_feature_usage, enforce_active_user_limit
 from provisioning_service.core.helpers.resource_loaders import (
     site_quota_resource,
     store_quota_resource,
@@ -293,7 +293,7 @@ async def create_site(
         db.refresh(site)
         
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "sites.manage", count=1)
+        record_feature_usage(db, req.tenant_id, "multi.site", count=1)
 
         logger.info(f"Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
@@ -692,7 +692,7 @@ async def create_store(
         db.refresh(store)
         
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "stores.manage", count=1)
+        record_feature_usage(db, req.tenant_id, "multi.location", count=1)
 
         # Outbox audit event
         try:
@@ -1017,6 +1017,9 @@ async def create_invitation(
         ).first()
         if existing_user:
             raise HTTPException(status_code=409, detail="User is already a member of this tenant")
+
+    # Enforce the per-plan active user (seat) limit before reserving a seat
+    enforce_active_user_limit(db, tenant_id_str, adding=1)
 
     # Generate token
     raw_token = secrets.token_urlsafe(48)
@@ -1364,7 +1367,7 @@ async def create_vendor(
         db.refresh(vendor)
         
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "vendors.manage", count=1)
+        record_feature_usage(db, req.tenant_id, "supplier.records", count=1)
 
         # Outbox audit event
         try:
@@ -1678,7 +1681,7 @@ async def create_cost_centre(
         db.refresh(cc_budget)
 
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "cost_centres", count=1)
+        record_feature_usage(db, req.tenant_id, "cost.centres", count=1)
 
         # Outbox audit event
         try:

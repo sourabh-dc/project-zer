@@ -93,7 +93,7 @@ const API = {
                     if (data.token) {
                         this.setToken(data.token);
                         this.setRefreshToken(data.refresh_token);
-                        this.setUser({ user_id: data.user_id, tenant_id: data.tenant_id, email: data.email, display_name: data.display_name });
+                        this.setUser(data);
                         return data.token;
                     }
                 } catch (e) { /* re-auth failed */ }
@@ -114,6 +114,10 @@ const API = {
     refreshJwt(payload)    { return this._fetch('POST', '/authentication/refresh-jwt', payload); },
     whoami()               { return this._fetch('GET', '/authentication/whoami'); },
     logout()               { return this._fetch('POST', `/authentication/logout?user_id=${this.getUser()?.user_id}`); },
+
+    // ── Branding (Phase C3) ───────────────────────────────────────
+    getBranding(tenantId)  { return this._fetch('GET', `/tenants/${tenantId}/branding`); },
+    saveBranding(tenantId, payload) { return this._fetch('PUT', `/tenants/${tenantId}/branding`, payload); },
 
     // ── Invitations ───────────────────────────────────────────────
     createInvitation(payload)  { return this._fetch('POST', '/provisioning/invitations', payload); },

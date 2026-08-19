@@ -38,12 +38,12 @@ const App = {
                 if (result.token && result.tenant_id) {
                     API.setToken(result.token);
                     API.setRefreshToken(result.refresh_token);
-                    API.setUser({ user_id: result.user_id, tenant_id: result.tenant_id, email: result.email, display_name: result.display_name });
+                    API.setUser(result);
                     this.showDashboard();
                     return;
                 }
                 if (result.status === 'pending_onboarding' || result.user_id) {
-                    API.setUser({ user_id: result.user_id, email: result.email });
+                    API.setUser(result);
                     this.showOnboarding();
                     document.getElementById('onboard-email').value = result.email || '';
                     document.getElementById('onboard-firstname').value = result.first_name || '';
@@ -132,6 +132,25 @@ const App = {
             priceLine = `£${amt.toFixed(2)} / ${cycle}`;
         }
 
+        // Phase D1 — show "two months free" savings on yearly billing
+        let savingsLine = '';
+        if (cycle === 'yearly' && plan.pricing?.yearly?.savings_minor > 0) {
+            const saved = plan.pricing.yearly.savings_minor / 100;
+            savingsLine = `<p style="font-size:0.8rem;color:var(--success,#16a34a);margin-bottom:8px;">Two months free — saves £${saved.toFixed(2)} vs monthly</p>`;
+        }
+
+        // Phase D3 — one-time implementation fee
+        let feeLine = '';
+        if (plan.implementation_fee_minor > 0) {
+            feeLine = `<p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;">+ £${(plan.implementation_fee_minor / 100).toFixed(2)} one-time implementation fee</p>`;
+        }
+
+        // Phase D2 — additional-user block pricing
+        let seatLine = '';
+        if (plan.seat_block?.available) {
+            seatLine = `<p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;">Extra users: £${(plan.seat_block.price_monthly_minor / 100).toFixed(2)}/mo per block of ${plan.seat_block.block_size}</p>`;
+        }
+
         const features = (plan.features || []).map(f => {
             const limit = f.max_unit != null ? ` (${f.max_unit})` : '';
             return `<li>${this._esc(f.name)}${limit}</li>`;
@@ -141,6 +160,7 @@ const App = {
             <h3 style="margin-bottom:8px;">${this._esc(plan.name)}</h3>
             <p class="text-muted" style="margin-bottom:8px;">${this._esc(plan.description || '')}</p>
             <p style="font-size:1.2rem;font-weight:700;color:var(--primary);margin-bottom:8px;">${priceLine}</p>
+            ${savingsLine}${feeLine}${seatLine}
             ${features ? `<ul style="margin:0;padding-left:18px;font-size:0.8rem;color:var(--text-muted);">${features}</ul>` : ''}
         `;
     },
@@ -446,11 +466,45 @@ const App = {
 
         // Show/hide admin tabs based on role
         this._applyRoleVisibility();
+        this.applyBranding(user.tenant_id);
 
         this._setupTabNavigation();
         try { await this.loadDashboardData(); } catch (e) { console.error('Dashboard data:', e); }
         try { await this.loadInvitations(); } catch (e) { console.error('Invitations:', e); }
         this.switchTab('tab-overview');
+    },
+
+    // ── White-label branding (Phase C3) ───────────────────────────
+
+    async applyBranding(tenantId) {
+        if (!tenantId) return;
+        try {
+            const b = await API.getBranding(tenantId);
+            if (!b || b.is_default) return;
+            const root = document.documentElement;
+            if (b.primary_color) root.style.setProperty('--primary', b.primary_color);
+            if (b.primary_hover_color) root.style.setProperty('--primary-hover', b.primary_hover_color);
+            if (b.display_name) {
+                document.title = b.display_name;
+                const logoEl = document.querySelector('header .logo');
+                if (logoEl) logoEl.textContent = b.display_name;
+            }
+            if (b.logo_url) {
+                const logoEl = document.querySelector('header .logo');
+                if (logoEl) logoEl.innerHTML = `<img src="${b.logo_url}" alt="${b.display_name || 'Logo'}" style="height:28px;vertical-align:middle;">`;
+            }
+            if (b.favicon_url) {
+                let link = document.querySelector('link[rel="icon"]');
+                if (!link) {
+                    link = document.createElement('link');
+                    link.rel = 'icon';
+                    document.head.appendChild(link);
+                }
+                link.href = b.favicon_url;
+            }
+        } catch (e) {
+            console.warn('Branding load failed:', e);
+        }
     },
 
     _applyRoleVisibility() {

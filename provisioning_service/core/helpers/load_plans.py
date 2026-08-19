@@ -13,46 +13,73 @@ Aligned to ZeroQue Pricing Architecture v1.2:
   Distributor POA / custom              Multi-tenant platform leverage
 """
 import uuid
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
 from provisioning_service.Models import SubscriptionPlan, PlanPrice, Feature, PlanFeature
 from provisioning_service.core.db_config import SessionLocal
 
 # ═══════════════════════════════════════════════════════════════════
-# Plans: (code, name, description, monthly_minor, quarterly_minor, yearly_minor)
+# Plans.
+#
+# yearly = 10 x monthly  → "two months free" annual anchor (Phase D1).
+# implementation_fee_minor — one-time fee guardrail (Phase D3).
+# seat_block_price_minor — per-block monthly price for extra users;
+#   block size is 5 seats (Phase D2, pending final block-pricing decision).
+# is_public — listed on the website vs sales-only (Phase D4):
+#   Starter/Growth/Business public; Enterprise/Distributor sales-only.
 # ═══════════════════════════════════════════════════════════════════
-PLANS: List[Tuple[str, str, str, int, int, int]] = [
-    (
-        "starter",
-        "Starter Plan",
-        "Simple controlled procurement — up to 5 active users",
-        14900, 42465, 160920,   # £149/mo, quarterly -5%, yearly -10%
-    ),
-    (
-        "growth",
-        "Growth Plan",
-        "Governed procurement for SMEs — up to 15 active users",
-        39900, 113715, 430920,  # £399/mo
-    ),
-    (
-        "business",
-        "Business Plan",
-        "Multi-site control and supplier orchestration — up to 40 active users",
-        95000, 270750, 1026000,  # from £950/mo
-    ),
-    (
-        "enterprise",
-        "Enterprise Plan",
-        "Full control-plane deployment — up to 100 active users",
-        275000, 783750, 2970000,  # from £2,750/mo
-    ),
-    (
-        "distributor",
-        "Distributor Platform",
-        "Multi-tenant platform leverage — custom by sub-tenant model",
-        0, 0, 0,  # price on application
-    ),
+PLANS: List[Dict[str, Any]] = [
+    {
+        "code": "starter",
+        "name": "Starter Plan",
+        "description": "Simple controlled procurement — up to 5 active users",
+        "monthly": 14900,                      # £149/mo
+        "is_public": True,
+        "implementation_fee_minor": 0,
+        "seat_block_price_minor": 3900,        # £39/mo per 5 extra seats
+    },
+    {
+        "code": "growth",
+        "name": "Growth Plan",
+        "description": "Governed procurement for SMEs — up to 15 active users",
+        "monthly": 39900,                      # £399/mo
+        "is_public": True,
+        "implementation_fee_minor": 0,
+        "seat_block_price_minor": 7500,        # £75/mo per 5 extra seats
+    },
+    {
+        "code": "business",
+        "name": "Business Plan",
+        "description": "Multi-site control and supplier orchestration — up to 40 active users",
+        "monthly": 95000,                      # from £950/mo
+        "is_public": True,
+        "implementation_fee_minor": 150000,    # £1,500 one-time
+        "seat_block_price_minor": 9900,        # £99/mo per 5 extra seats
+    },
+    {
+        "code": "enterprise",
+        "name": "Enterprise Plan",
+        "description": "Full control-plane deployment — up to 100 active users",
+        "monthly": 275000,                     # from £2,750/mo
+        "is_public": False,                    # sales-only
+        "implementation_fee_minor": 500000,    # £5,000 one-time
+        "seat_block_price_minor": 14900,       # £149/mo per 5 extra seats
+    },
+    {
+        "code": "distributor",
+        "name": "Distributor Platform",
+        "description": "Multi-tenant platform leverage — custom by sub-tenant model",
+        "monthly": 0,                          # price on application
+        "is_public": False,                    # sales-only
+        "implementation_fee_minor": 0,         # quoted per rollout
+        "seat_block_price_minor": 0,
+    },
 ]
+
+# Quarterly −5%; yearly = 10 × monthly ("two months free").
+for _p in PLANS:
+    _p["quarterly"] = round(_p["monthly"] * 3 * 0.95)
+    _p["yearly"] = _p["monthly"] * 10
 
 # ═══════════════════════════════════════════════════════════════════
 # Features: (code, name, description, cluster)
@@ -206,7 +233,6 @@ _PLAN_FEATURE_MAP: List[Tuple[str, str, bool, dict]] = [
     ("enterprise", "advanced.reasoning", True, None),
     ("enterprise", "multi.location", True, None),
     ("enterprise", "multi.site", True, None),
-    ("enterprise", "erp.integration", True, None),
     ("enterprise", "sso.security", True, None),
     ("enterprise", "high.availability", True, None),
     ("enterprise", "custom.workflow", True, None),
@@ -240,46 +266,108 @@ _PLAN_FEATURE_MAP: List[Tuple[str, str, bool, dict]] = [
 ]
 
 
+INTEGRATION_PACKS: List[Dict[str, Any]] = [
+    {
+        "pack_code": "standard",
+        "pack_name": "Standard Integration Pack",
+        "description": "ERP connector and structured data imports.",
+        "stripe_product_id": "prod_V5eQsSpkx3FSOu",
+        "stripe_price_id": "price_1U5T7SLrHi1hCr87VoVT9Jz8",
+        "price_monthly_minor": 15000,  # £150.00
+        "currency": "GBP",
+        "billing_interval": "month",
+    },
+    {
+        "pack_code": "advanced",
+        "pack_name": "Advanced Integration Pack",
+        "description": "API, cXML, EDI, and marketplace integrations.",
+        "stripe_product_id": "prod_V5eQVUPuzWW7x6",
+        "stripe_price_id": "price_1U5T7kLrHi1hCr87jR6Y3avz",
+        "price_monthly_minor": 40000,  # £400.00
+        "currency": "GBP",
+        "billing_interval": "month",
+    },
+    {
+        "pack_code": "enterprise",
+        "pack_name": "Enterprise Integration Pack",
+        "description": "Custom middleware, advanced monitoring, and direct support.",
+        "stripe_product_id": "prod_V5eQ9zP16VvSNS",
+        "stripe_price_id": "price_1U5T83LrHi1hCr87TBcyzeCo",
+        "price_monthly_minor": 100000,  # £1,000.00 (from £1,000)
+        "currency": "GBP",
+        "billing_interval": "month",
+    },
+]
+
+INTEGRATION_PACK_FEATURES: List[Tuple[str, str]] = [
+    # Standard Pack
+    ("standard", "erp.integration"),
+
+    # Advanced Pack
+    ("advanced", "api.integration"),
+    ("advanced", "cxml.edi"),
+    ("advanced", "marketplace.handoff"),
+]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Seed functions (idempotent)
 # ═══════════════════════════════════════════════════════════════════
 
 def _seed_plans(session) -> int:
-    existing = {p.code for p in session.query(SubscriptionPlan).all()}
+    existing = {p.code: p for p in session.query(SubscriptionPlan).all()}
     added = 0
-    for code, name, desc, monthly, quarterly, yearly in PLANS:
-        if code not in existing:
+    for p in PLANS:
+        row = existing.get(p["code"])
+        if row is None:
             session.add(SubscriptionPlan(
                 plan_id=uuid.uuid4(),
-                code=code,
-                name=name,
-                description=desc,
+                code=p["code"],
+                name=p["name"],
+                description=p["description"],
                 is_active=True,
+                is_public=p["is_public"],
                 created_by="zeroque_admin",
             ))
-            existing.add(code)
             added += 1
+        else:
+            # Refresh descriptive fields + visibility (Phase D4)
+            row.name = p["name"]
+            row.description = p["description"]
+            row.is_public = p["is_public"]
     if added:
         session.flush()
     return added
 
 
 def _seed_prices(session) -> int:
-    existing = {p.plan_code for p in session.query(PlanPrice).all()}
+    """Upsert plan pricing so annual-anchor / fee / seat-block changes propagate."""
+    existing = {p.plan_code: p for p in session.query(PlanPrice).all()}
     added = 0
-    for code, name, desc, monthly, quarterly, yearly in PLANS:
-        if code not in existing:
+    for p in PLANS:
+        row = existing.get(p["code"])
+        if row is None:
             session.add(PlanPrice(
-                plan_code=code,
+                plan_code=p["code"],
                 currency="GBP",
-                price_monthly_minor=monthly,
+                price_monthly_minor=p["monthly"],
                 quarterly_discount_pct=5,
-                yearly_discount_pct=10,
-                price_quarterly_minor=quarterly,
-                price_yearly_minor=yearly,
+                yearly_discount_pct=16.67,  # two months free
+                price_quarterly_minor=p["quarterly"],
+                price_yearly_minor=p["yearly"],
+                implementation_fee_minor=p["implementation_fee_minor"],
+                seat_block_size=5,
+                seat_block_price_minor=p["seat_block_price_minor"],
             ))
-            existing.add(code)
             added += 1
+        else:
+            row.price_monthly_minor = p["monthly"]
+            row.price_quarterly_minor = p["quarterly"]
+            row.price_yearly_minor = p["yearly"]
+            row.yearly_discount_pct = 16.67
+            row.implementation_fee_minor = p["implementation_fee_minor"]
+            row.seat_block_size = 5
+            row.seat_block_price_minor = p["seat_block_price_minor"]
     if added:
         session.flush()
     return added
@@ -329,6 +417,60 @@ def _seed_plan_features(session) -> int:
     return added
 
 
+def _seed_integration_packs(session) -> int:
+    """Seeds (and idempotently refreshes pricing on) the IntegrationPack table."""
+    from provisioning_service.Models import IntegrationPack
+    existing = {p.pack_code: p for p in session.query(IntegrationPack).all()}
+    added = 0
+    for pack in INTEGRATION_PACKS:
+        row = existing.get(pack["pack_code"])
+        if row is None:
+            session.add(IntegrationPack(
+                pack_code=pack["pack_code"],
+                pack_name=pack["pack_name"],
+                description=pack.get("description"),
+                stripe_product_id=pack.get("stripe_product_id"),
+                stripe_price_id=pack.get("stripe_price_id"),
+                price_monthly_minor=pack.get("price_monthly_minor"),
+                currency=pack.get("currency", "GBP"),
+                billing_interval=pack.get("billing_interval", "month"),
+                is_active=True,
+            ))
+            added += 1
+        else:
+            # Refresh pricing/config in case Stripe IDs or prices change.
+            row.pack_name = pack["pack_name"]
+            row.description = pack.get("description")
+            row.stripe_product_id = pack.get("stripe_product_id")
+            row.stripe_price_id = pack.get("stripe_price_id")
+            row.price_monthly_minor = pack.get("price_monthly_minor")
+            row.currency = pack.get("currency", "GBP")
+            row.billing_interval = pack.get("billing_interval", "month")
+    if added:
+        session.flush()
+    return added
+
+
+def _seed_integration_pack_features(session) -> int:
+    """Seeds the IntegrationPackFeature table."""
+    from provisioning_service.Models import IntegrationPackFeature
+    existing_pairs = {
+        (pf.pack_code, pf.feature_code) for pf in session.query(IntegrationPackFeature).all()
+    }
+    added = 0
+    for pack_code, feature_code in INTEGRATION_PACK_FEATURES:
+        if (pack_code, feature_code) not in existing_pairs:
+            session.add(IntegrationPackFeature(
+                pack_code=pack_code,
+                feature_code=feature_code,
+            ))
+            existing_pairs.add((pack_code, feature_code))
+            added += 1
+    if added:
+        session.flush()
+    return added
+
+
 def seed_plans_and_features():
     """Master seed: plans → prices → features → plan_features. Idempotent."""
     session = SessionLocal()
@@ -337,8 +479,10 @@ def seed_plans_and_features():
         pr = _seed_prices(session)
         f = _seed_features(session)
         pf = _seed_plan_features(session)
+        ip = _seed_integration_packs(session)
+        ipf = _seed_integration_pack_features(session)
         session.commit()
-        print(f"[OK] Plans & features seeded: {p} plans, {pr} prices, {f} features, {pf} mappings")
+        print(f"[OK] Plans & features seeded: {p} plans, {pr} prices, {f} features, {pf} mappings, {ip} packs, {ipf} pack_features")
     except Exception as e:
         session.rollback()
         print(f"[ERROR] Error seeding plans/features: {e}")

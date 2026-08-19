@@ -508,6 +508,113 @@ class UserCostCentre(Base):
     cc_budget = relationship("CostCenterBudget", foreign_keys=[cc_budget_id])
 
 
+# ==================================================================================
+# INTEGRATION PACKS (Phase B)
+# ==================================================================================
+
+class IntegrationPack(Base):
+    """Defines a purchasable integration pack add-on."""
+    __tablename__ = "integration_packs"
+
+    pack_code = Column(String(50), primary_key=True)
+    pack_name = Column(String(100), nullable=False)
+    description = Column(String(500), nullable=True)
+    stripe_product_id = Column(String(100), nullable=True, index=True)
+    stripe_price_id = Column(String(100), nullable=True, index=True)
+    price_monthly_minor = Column(Integer, nullable=True)  # e.g. 15000 = £150.00
+    currency = Column(String(3), nullable=False, default="GBP")
+    billing_interval = Column(String(10), nullable=False, default="month")  # month | year
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class IntegrationPackFeature(Base):
+    """Links features to an integration pack, bundling them."""
+    __tablename__ = "integration_pack_features"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pack_code = Column(String(50), ForeignKey("integration_packs.pack_code", ondelete="CASCADE"), nullable=False, index=True)
+    feature_code = Column(String(50), ForeignKey("features.code", ondelete="CASCADE"), nullable=False, index=True)
+
+    __table_args__ = (
+        Index('ix_integration_pack_feature_unique', 'pack_code', 'feature_code', unique=True),
+    )
+
+
+class TenantIntegrationPack(Base):
+    """Tracks which tenants have subscribed to which integration packs."""
+    __tablename__ = "tenant_integration_packs"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    pack_code = Column(String(50), ForeignKey("integration_packs.pack_code", ondelete="CASCADE"), nullable=False, index=True)
+
+    status = Column(String(20), nullable=False, default="active", index=True)  # active | cancelled | past_due
+    subscribed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    stripe_subscription_id = Column(String(100), nullable=True, index=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+    # Phase C4 — shared integration hub: distributor packs cascade to sub-tenants
+    shared_with_subtenants = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    __table_args__ = (
+        Index('ix_tenant_integration_pack_unique', 'tenant_id', 'pack_code', unique=True),
+    )
+
+
+class TenantBranding(Base):
+    """Phase C3 — white-label / branded experience per tenant."""
+    __tablename__ = "tenant_branding"
+
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True)
+    display_name = Column(String(200), nullable=True)          # brand name shown in UI
+    logo_url = Column(String(500), nullable=True)
+    favicon_url = Column(String(500), nullable=True)
+    primary_color = Column(String(9), nullable=True)           # e.g. "#2563eb"
+    primary_hover_color = Column(String(9), nullable=True)
+    login_background_url = Column(String(500), nullable=True)
+    custom_domain = Column(String(255), nullable=True, unique=True, index=True)
+    support_email = Column(String(255), nullable=True)
+    login_message = Column(String(500), nullable=True)         # tagline on the login screen
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+
+class TenantSeatBlock(Base):
+    """Phase D2 — additional-user block pricing.
+
+    Each row is a Stripe subscription for `quantity` blocks of
+    `block_size` extra seats on top of the plan's included seats.
+    """
+    __tablename__ = "tenant_seat_blocks"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=1)       # number of blocks purchased
+    block_size = Column(Integer, nullable=False, default=5)     # seats per block
+    price_monthly_minor = Column(Integer, nullable=False, default=0)  # per block
+    currency = Column(String(3), nullable=False, default="GBP")
+
+    status = Column(String(20), nullable=False, default="active", index=True)  # active | cancelled | past_due
+    stripe_subscription_id = Column(String(100), nullable=True, index=True)
+    subscribed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class SubscriptionPlan(Base):
     """Subscription plan"""
     __tablename__ = "subscription_plans"
@@ -516,6 +623,8 @@ class SubscriptionPlan(Base):
     name = Column(String(100), nullable=False)
     description = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
+    # Phase D4 — public (listed on website) vs sales-only (contact sales)
+    is_public = Column(Boolean, default=True, nullable=False, index=True)
     created_by = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
@@ -532,6 +641,11 @@ class PlanPrice(Base):
     yearly_discount_pct = Column(Numeric(5, 2), nullable=False, server_default=text("10.0"))
     price_quarterly_minor = Column(Numeric, nullable=False)
     price_yearly_minor = Column(Numeric, nullable=False)
+    # Phase D3 — one-time implementation fee guardrail (0 = none)
+    implementation_fee_minor = Column(Numeric, nullable=False, server_default=text("0"))
+    # Phase D2 — additional-user block pricing for this plan
+    seat_block_size = Column(Integer, nullable=False, server_default=text("5"))
+    seat_block_price_minor = Column(Numeric, nullable=False, server_default=text("0"))
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
     updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)

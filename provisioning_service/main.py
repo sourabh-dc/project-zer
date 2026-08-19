@@ -30,6 +30,8 @@ from provisioning_service.services.approval_controls_routes import router as app
 from provisioning_service.services.delegation_routes import router as delegation_router
 from provisioning_service.services.audit_routes import router as audit_router
 from provisioning_service.services.advanced_access_routes import router as advanced_access_router
+from provisioning_service.services.integration_pack_routes import router as integration_pack_router
+from provisioning_service.services.branding_routes import router as branding_router
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 
@@ -160,6 +162,68 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Mandate columns migration skipped or failed: {e}")
 
+        # Migrate integration packs (Phase B): pricing + subscription period columns
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            with engine.begin() as conn:
+                if insp.has_table("integration_packs"):
+                    existing_cols = {c["name"] for c in insp.get_columns("integration_packs")}
+                    for col, col_type in [
+                        ("stripe_price_id", "VARCHAR(100)"),
+                        ("price_monthly_minor", "INTEGER"),
+                        ("currency", "VARCHAR(3) DEFAULT 'GBP'"),
+                        ("billing_interval", "VARCHAR(10) DEFAULT 'month'"),
+                    ]:
+                        if col not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE integration_packs ADD COLUMN {col} {col_type}"))
+                            logger.info(f"✅ Added {col} column to integration_packs")
+                if insp.has_table("tenant_integration_packs"):
+                    existing_cols = {c["name"] for c in insp.get_columns("tenant_integration_packs")}
+                    for col, col_type in [
+                        ("current_period_start", "TIMESTAMPTZ"),
+                        ("current_period_end", "TIMESTAMPTZ"),
+                        ("shared_with_subtenants", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                    ]:
+                        if col not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE tenant_integration_packs ADD COLUMN {col} {col_type}"))
+                            logger.info(f"✅ Added {col} column to tenant_integration_packs")
+        except Exception as e:
+            logger.warning(f"Integration pack columns migration skipped or failed: {e}")
+
+        # Migrate subscription plans (Phase D4): public vs sales-only visibility
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("subscription_plans"):
+                existing_cols = {c["name"] for c in insp.get_columns("subscription_plans")}
+                with engine.begin() as conn:
+                    if "is_public" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE subscription_plans ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT TRUE"
+                        ))
+                        logger.info("✅ Added is_public column to subscription_plans")
+        except Exception as e:
+            logger.warning(f"Subscription plan columns migration skipped or failed: {e}")
+
+        # Migrate plan pricing (Phase D2/D3): implementation fee + seat blocks
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("plan_price"):
+                existing_cols = {c["name"] for c in insp.get_columns("plan_price")}
+                with engine.begin() as conn:
+                    for col, col_type in [
+                        ("implementation_fee_minor", "NUMERIC NOT NULL DEFAULT 0"),
+                        ("seat_block_size", "INTEGER NOT NULL DEFAULT 5"),
+                        ("seat_block_price_minor", "NUMERIC NOT NULL DEFAULT 0"),
+                    ]:
+                        if col not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE plan_price ADD COLUMN {col} {col_type}"))
+                            logger.info(f"✅ Added {col} column to plan_price")
+        except Exception as e:
+            logger.warning(f"Plan price columns migration skipped or failed: {e}")
+
         # Load static data (roles/permissions/plans/features/job functions)
         try:
             seed_roles_and_permissions()
@@ -219,6 +283,8 @@ app.include_router(approval_controls_router)
 app.include_router(delegation_router)
 app.include_router(audit_router)
 app.include_router(advanced_access_router)
+app.include_router(integration_pack_router)
+app.include_router(branding_router)
 
 
 @app.get("/health")

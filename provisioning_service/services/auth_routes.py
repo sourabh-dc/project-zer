@@ -28,6 +28,7 @@ from provisioning_service.core.helpers.auth_helper import issue_refresh_token, r
 from provisioning_service.core.user_auth import check_user_authorization, decode_jwt_with_settings
 from provisioning_service.core.azure_auth import validate_azure_token, is_azure_auth_configured
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
+from provisioning_service.core.entitlement_helpers import enforce_active_user_limit
 from provisioning_service.utils.logger import logger
 import bcrypt
 from sqlalchemy import func
@@ -213,6 +214,14 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
 
         # Create or update User row
         user = db.query(User).filter(User.user_id == user_id).first()
+        already_member = (
+            user is not None
+            and str(user.tenant_id) == str(matched_inv.tenant_id)
+            and user.is_active
+        )
+        if not already_member:
+            # This acceptance consumes a seat in the inviting tenant
+            enforce_active_user_limit(db, str(matched_inv.tenant_id), adding=1)
         if not user:
             user = User(
                 user_id=user_id,

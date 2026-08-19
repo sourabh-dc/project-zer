@@ -44,7 +44,7 @@ async def create_category(
             raise HTTPException(403, "Tenant mismatch")
         
         # Check entitlement limit
-        check_feature_limit(db, req.tenant_id, "categories", count=1)
+        check_feature_limit(db, req.tenant_id, "product.records", count=1)
     except HTTPException:
         raise
     except Exception as e:
@@ -89,7 +89,7 @@ async def create_category(
         db.commit()
         db.refresh(category)
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "categories", count=1)
+        record_feature_usage(db, req.tenant_id, "product.records", count=1)
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Category code conflict")
@@ -173,7 +173,7 @@ async def create_product(
         raise HTTPException(403, "Tenant mismatch")
     
     # Check entitlement limit
-    check_feature_limit(db, req.tenant_id, "products", count=1)
+    check_feature_limit(db, req.tenant_id, "product.records", count=1)
 
     # SKU must be unique per tenant
     if db.query(Product).filter(
@@ -356,7 +356,7 @@ async def create_product(
             logger.warning(f"❌ AiFi product sync failed, continuing: {e}")
             db.rollback()
         # Record feature usage
-        record_feature_usage(db, req.tenant_id, "products", count=1)
+        record_feature_usage(db, req.tenant_id, "product.records", count=1)
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(409, "SKU or EAN conflict")
@@ -464,7 +464,7 @@ async def create_variant(
     policy=Depends(require_policy("variant.create")),
 ):
     # Check entitlement limit
-    check_feature_limit(db, str(ctx.tenant_id), "variants", count=1)
+    check_feature_limit(db, str(ctx.tenant_id), "product.records", count=1)
     
     try:
         product_id = UUID(req.product_id)
@@ -502,7 +502,7 @@ async def create_variant(
     try:
         db.commit()
         # Record feature usage
-        record_feature_usage(db, str(ctx.tenant_id), "variants", count=1)
+        record_feature_usage(db, str(ctx.tenant_id), "product.records", count=1)
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Variant SKU conflict")
@@ -533,7 +533,7 @@ async def add_product_to_store(
     policy=Depends(require_policy("store_product.create")),
 ):
     # Check entitlement limit
-    check_feature_limit(db, str(ctx["tenant_id"]), "store_products", count=1)
+    check_feature_limit(db, str(ctx["tenant_id"]), "product.records", count=1)
     
     try:
         store_id = UUID(req.store_id)
@@ -577,7 +577,7 @@ async def add_product_to_store(
     db.commit()
     
     # Record feature usage
-    record_feature_usage(db, str(ctx["tenant_id"]), "store_products", count=1)
+    record_feature_usage(db, str(ctx["tenant_id"]), "product.records", count=1)
 
     # Outbox audit event
     try:
@@ -914,7 +914,7 @@ async def bulk_upload_products(
         try:
             db.commit()
             # Record feature usage for all created products
-            record_feature_usage(db, str(tenant_id), "products", count=len(created_products))
+            record_feature_usage(db, str(tenant_id), "product.records", count=len(created_products))
             # Single outbox event for the entire batch – the product worker will
             # iterate the product_ids list and sync each one to AiFi asynchronously.
             product_ids = [p["product_id"] for p in created_products]

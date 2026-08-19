@@ -1,12 +1,14 @@
 from datetime import timezone, datetime, timedelta
+import asyncio
+import uuid
+
 import stripe
 from fastapi import HTTPException, APIRouter, Request, Depends
 from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
 from sqlalchemy.orm import Session
 
-from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, Tenant, Mandate
-from provisioning_service.Schemas import CheckoutRequest
+from provisioning_service.Models import TenantSubscription, SubscriptionPlan, PlanPrice, Tenant, Mandate, IntegrationPack, TenantIntegrationPack, TenantSeatBlock
+from provisioning_service.Schemas import CheckoutRequest, PackCheckoutRequest, PackCheckoutResponse, SeatBlockCheckoutRequest, SeatBlockOut
 from provisioning_service.core.config import SETTINGS
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
@@ -58,11 +60,17 @@ async def create_checkout_session(
         if not price_amount:
             raise HTTPException(status_code=404, detail="Plan price not found")
 
+        # Phase D3 — one-time implementation fee guardrail, invoiced on first bill
+        price_row = db.query(PlanPrice).filter(PlanPrice.plan_code == data.plan_code).first()
+        implementation_fee = int(price_row.implementation_fee_minor or 0) if price_row else 0
+
         metadata = {
             "tenant_id": data.tenant_id,
             "plan_code": data.plan_code,
             "billing_cycle": data.billing_cycle or "monthly"
         }
+        if implementation_fee > 0:
+            metadata["implementation_fee_minor"] = str(implementation_fee)
         stripe_customer_id = getattr(data, "stripe_customer_id", None)
         if not stripe_customer_id and getattr(data, "email", None):
             customer = stripe.Customer.create(email=data.email, metadata={"tenant_id": data.tenant_id})
@@ -135,6 +143,236 @@ async def create_portal_session(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _get_or_create_stripe_customer(db: Session, tenant_id: str, email: str = None) -> str:
+    """Resolve the tenant's Stripe customer, creating one if necessary."""
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except (ValueError, TypeError):
+        tenant_uuid = None
+
+    if tenant_uuid:
+        mandate = db.query(Mandate).filter(
+            Mandate.tenant_id == tenant_uuid,
+            Mandate.status.in_(["active", "pending"]),
+        ).first()
+        if mandate and mandate.stripe_customer_id:
+            return mandate.stripe_customer_id
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Stripe customer not found and no email provided")
+    customer = stripe.Customer.create(email=email, metadata={"tenant_id": tenant_id})
+    return customer.id
+
+
+def _build_pack_checkout_session(db: Session, tenant_id: str, pack_code: str, email: str = None) -> dict:
+    """Create a Stripe Checkout Session for an integration pack subscription."""
+    pack = db.query(IntegrationPack).filter(
+        IntegrationPack.pack_code == pack_code,
+        IntegrationPack.is_active == True,
+    ).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail=f"Integration pack '{pack_code}' not found or inactive")
+    if not pack.stripe_price_id:
+        raise HTTPException(status_code=400, detail=f"Integration pack '{pack_code}' has no Stripe price configured")
+
+    customer_id = _get_or_create_stripe_customer(db, tenant_id, email)
+
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        payment_method_types=["card"],
+        mode="subscription",
+        line_items=[{"price": pack.stripe_price_id, "quantity": 1}],
+        success_url="http://127.0.0.1:8000/payments/success",
+        cancel_url="http://127.0.0.1:8000/payments/cancel",
+        metadata={
+            "tenant_id": tenant_id,
+            "pack_code": pack_code,
+            "subscription_type": "integration_pack",
+        },
+    )
+
+    return {"checkout_url": session.url, "session_id": session.id}
+
+
+@router.post("/create-pack-checkout-session", response_model=PackCheckoutResponse)
+async def create_pack_checkout_session(
+    data: PackCheckoutRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("subscriptions.tenant.manage")),
+):
+    """Create a Stripe Checkout Session to subscribe a tenant to an integration pack."""
+    try:
+        if not SETTINGS.STRIPE_SECRET_KEY:
+            raise HTTPException(status_code=400, detail="Stripe not configured")
+        if str(ctx.get("tenant_id")) != data.tenant_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this tenant's subscriptions")
+
+        result = _build_pack_checkout_session(db, data.tenant_id, data.pack_code, data.email)
+
+        try:
+            create_outbox_event(db, data.tenant_id, "payment.pack_checkout_session.created", {
+                "tenant_id": data.tenant_id,
+                "pack_code": data.pack_code,
+                "session_id": result["session_id"],
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for payment.pack_checkout_session.created: {_oe}")
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Pack checkout session failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Additional-user blocks (Phase D2) ─────────────────────────────
+
+def _build_seat_block_checkout_session(db: Session, tenant_id: str, quantity: int, email: str = None) -> dict:
+    """Create a Stripe Checkout Session for additional-user seat blocks."""
+    sub = db.query(TenantSubscription).filter(
+        TenantSubscription.tenant_id == tenant_id,
+        TenantSubscription.is_active == True,
+    ).first()
+    if not sub:
+        raise HTTPException(status_code=403, detail="No active subscription — subscribe to a plan first")
+
+    price_row = db.query(PlanPrice).filter(PlanPrice.plan_code == sub.plan_code).first()
+    block_size = int(price_row.seat_block_size or 5) if price_row else 5
+    block_price = int(price_row.seat_block_price_minor or 0) if price_row else 0
+    if block_price <= 0:
+        raise HTTPException(status_code=400, detail=f"Seat blocks are not available on plan '{sub.plan_code}'")
+
+    customer_id = _get_or_create_stripe_customer(db, tenant_id, email)
+
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        payment_method_types=["card"],
+        mode="subscription",
+        line_items=[{
+            "price_data": {
+                "currency": "gbp",
+                "product_data": {"name": f"Additional users — block of {block_size} seats"},
+                "unit_amount": block_price,
+                "recurring": {"interval": "month"},
+            },
+            "quantity": quantity,
+        }],
+        success_url="http://127.0.0.1:8000/payments/success",
+        cancel_url="http://127.0.0.1:8000/payments/cancel",
+        metadata={
+            "tenant_id": tenant_id,
+            "subscription_type": "seat_block",
+            "quantity": str(quantity),
+            "block_size": str(block_size),
+            "price_monthly_minor": str(block_price),
+        },
+    )
+    return {"checkout_url": session.url, "session_id": session.id}
+
+
+@router.post("/create-seat-block-checkout-session", response_model=PackCheckoutResponse)
+async def create_seat_block_checkout_session(
+    data: SeatBlockCheckoutRequest,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("subscriptions.tenant.manage")),
+):
+    """Create a Stripe Checkout Session for additional-user blocks (Phase D2)."""
+    try:
+        if not SETTINGS.STRIPE_SECRET_KEY:
+            raise HTTPException(status_code=400, detail="Stripe not configured")
+        if str(ctx.get("tenant_id")) != data.tenant_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this tenant's subscriptions")
+
+        result = _build_seat_block_checkout_session(db, data.tenant_id, data.quantity, data.email)
+
+        try:
+            create_outbox_event(db, data.tenant_id, "payment.seat_block_checkout_session.created", {
+                "tenant_id": data.tenant_id,
+                "quantity": data.quantity,
+                "session_id": result["session_id"],
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for payment.seat_block_checkout_session.created: {_oe}")
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Seat block checkout session failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/tenants/{tenant_id}/seat-blocks", response_model=list[SeatBlockOut])
+async def list_seat_blocks(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("subscriptions.tenant.view")),
+):
+    """List the tenant's additional-user block subscriptions."""
+    if str(ctx.get("tenant_id")) != tenant_id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this tenant's seat blocks")
+
+    blocks = db.query(TenantSeatBlock).filter(
+        TenantSeatBlock.tenant_id == tenant_id,
+    ).all()
+    return [
+        SeatBlockOut(
+            id=str(b.id),
+            quantity=b.quantity,
+            block_size=b.block_size,
+            extra_seats=b.quantity * b.block_size,
+            price_monthly_minor=b.price_monthly_minor,
+            currency=b.currency,
+            status=b.status,
+            current_period_end=b.current_period_end,
+        )
+        for b in blocks
+    ]
+
+
+@router.post("/tenants/{tenant_id}/seat-blocks/{block_id}/cancel", response_model=SeatBlockOut)
+async def cancel_seat_block(
+    tenant_id: str,
+    block_id: str,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("subscriptions.tenant.manage")),
+):
+    """Cancel an additional-user block subscription."""
+    if str(ctx.get("tenant_id")) != tenant_id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this tenant's subscriptions")
+
+    block = db.query(TenantSeatBlock).filter(
+        TenantSeatBlock.id == block_id,
+        TenantSeatBlock.tenant_id == tenant_id,
+    ).first()
+    if not block or block.status == "cancelled":
+        raise HTTPException(status_code=404, detail="Active seat block not found")
+
+    try:
+        if block.stripe_subscription_id:
+            stripe.Subscription.delete(block.stripe_subscription_id)
+    except Exception as _e:
+        logger.warning(f"Stripe cancellation failed for seat block {block_id}: {_e}")
+
+    block.status = "cancelled"
+    block.cancelled_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(block)
+    return SeatBlockOut(
+        id=str(block.id),
+        quantity=block.quantity,
+        block_size=block.block_size,
+        extra_seats=block.quantity * block.block_size,
+        price_monthly_minor=block.price_monthly_minor,
+        currency=block.currency,
+        status=block.status,
+        current_period_end=block.current_period_end,
+    )
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db=Depends(get_db)):
     """
@@ -166,21 +404,41 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
     # ── Routing ─────────────────────────────────────────────────────
 
     if event_type == "invoice.payment_succeeded":
+        if _find_pack_by_stripe_id(db, data.get("subscription")):
+            return _handle_pack_invoice_paid(db, data)
+        if _find_seat_block_by_stripe_id(db, data.get("subscription")):
+            return _handle_seat_block_invoice_paid(db, data)
         return _handle_invoice_paid(db, data)
 
     if event_type == "invoice.payment_failed":
+        if _find_pack_by_stripe_id(db, data.get("subscription")):
+            return _handle_pack_invoice_failed(db, data)
+        if _find_seat_block_by_stripe_id(db, data.get("subscription")):
+            return _handle_seat_block_invoice_failed(db, data)
         return _handle_invoice_failed(db, data)
 
     if event_type == "customer.subscription.updated":
+        if _find_pack_by_stripe_id(db, data.get("id")):
+            return _handle_pack_subscription_updated(db, data)
+        if _find_seat_block_by_stripe_id(db, data.get("id")):
+            return _handle_seat_block_subscription_updated(db, data)
         return _handle_subscription_updated(db, data)
 
     if event_type == "customer.subscription.deleted":
+        if _find_pack_by_stripe_id(db, data.get("id")):
+            return _handle_pack_subscription_deleted(db, data)
+        if _find_seat_block_by_stripe_id(db, data.get("id")):
+            return _handle_seat_block_subscription_deleted(db, data)
         return _handle_subscription_deleted(db, data)
 
     if event_type == "customer.subscription.trial_will_end":
         return _handle_trial_will_end(db, data)
 
     if event_type == "checkout.session.completed":
+        if data.get("metadata", {}).get("pack_code"):
+            return _handle_pack_checkout_completed(db, data)
+        if data.get("metadata", {}).get("subscription_type") == "seat_block":
+            return _handle_seat_block_checkout_completed(db, data)
         return _handle_checkout_completed(db, data)
 
     if event_type == "setup_intent.succeeded":
@@ -534,6 +792,21 @@ def _handle_checkout_completed(db: Session, data: dict):
     sub.status = "active"
     db.commit()
 
+    # Phase D3 — bill the one-time implementation fee on the first invoice
+    fee_minor = data.get("metadata", {}).get("implementation_fee_minor")
+    if fee_minor and int(fee_minor) > 0 and data.get("customer"):
+        try:
+            stripe.InvoiceItem.create(
+                customer=data["customer"],
+                amount=int(fee_minor),
+                currency=data.get("currency", "gbp"),
+                description=f"One-time implementation fee — plan {plan_code}",
+                metadata={"tenant_id": tenant_id, "plan_code": plan_code},
+            )
+            logger.info(f"Implementation fee {fee_minor} minor invoiced for tenant={tenant_id}")
+        except Exception as _fe:
+            logger.warning(f"Implementation fee invoice item failed for tenant={tenant_id}: {_fe}")
+
     try:
         create_outbox_event(db, tenant_id, "payment.checkout.completed", {
             "tenant_id": tenant_id,
@@ -586,6 +859,271 @@ def _handle_setup_intent_succeeded(db: Session, setup_intent: dict):
         logger.warning(f"Outbox failed for payment.setup_intent_succeeded: {_oe}")
 
     logger.info(f"setup_intent.succeeded: customer={customer_id} pm={payment_method}")
+    return {"status": "ok"}
+
+
+# ── Integration Pack (Phase B) handlers ─────────────────────────────
+
+def _find_pack_by_stripe_id(db: Session, stripe_sub_id: str):
+    """Look up a TenantIntegrationPack by its Stripe subscription ID."""
+    if not stripe_sub_id:
+        return None
+    return db.query(TenantIntegrationPack).filter(
+        TenantIntegrationPack.stripe_subscription_id == stripe_sub_id
+    ).first()
+
+
+def _handle_pack_checkout_completed(db: Session, session_data: dict):
+    """Activate a TenantIntegrationPack when its checkout completes."""
+    metadata = session_data.get("metadata", {}) or {}
+    tenant_id = metadata.get("tenant_id")
+    pack_code = metadata.get("pack_code")
+    if not tenant_id or not pack_code:
+        return {"status": "ok", "detail": "missing pack metadata"}
+
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except (ValueError, TypeError):
+        return {"status": "ok", "detail": "invalid tenant_id"}
+
+    stripe_sub_id = session_data.get("subscription")
+    now = datetime.now(timezone.utc)
+    period_start, period_end = now, _period_end(now, "monthly")
+
+    # Authoritative period from Stripe where available.
+    if stripe_sub_id:
+        try:
+            stripe_sub = stripe.Subscription.retrieve(stripe_sub_id)
+            if stripe_sub.get("current_period_start"):
+                period_start = datetime.fromtimestamp(stripe_sub["current_period_start"], tz=timezone.utc)
+            if stripe_sub.get("current_period_end"):
+                period_end = datetime.fromtimestamp(stripe_sub["current_period_end"], tz=timezone.utc)
+        except Exception as _e:
+            logger.warning(f"Could not retrieve Stripe subscription {stripe_sub_id}: {_e}")
+
+    pack = db.query(TenantIntegrationPack).filter(
+        TenantIntegrationPack.tenant_id == tenant_uuid,
+        TenantIntegrationPack.pack_code == pack_code,
+    ).first()
+    if not pack:
+        pack = TenantIntegrationPack(
+            tenant_id=tenant_uuid,
+            pack_code=pack_code,
+            status="active",
+            stripe_subscription_id=stripe_sub_id,
+            current_period_start=period_start,
+            current_period_end=period_end,
+        )
+        db.add(pack)
+    else:
+        pack.status = "active"
+        pack.cancelled_at = None
+        pack.stripe_subscription_id = stripe_sub_id or pack.stripe_subscription_id
+        pack.current_period_start = period_start
+        pack.current_period_end = period_end
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.pack_checkout.completed", {
+            "tenant_id": tenant_id,
+            "pack_code": pack_code,
+            "stripe_subscription_id": stripe_sub_id,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.pack_checkout.completed: {_oe}")
+
+    return {"status": "ok"}
+
+
+def _handle_pack_subscription_updated(db: Session, stripe_sub: dict):
+    """Map a pack subscription status change onto TenantIntegrationPack."""
+    pack = _find_pack_by_stripe_id(db, stripe_sub.get("id"))
+    if not pack:
+        return {"status": "ok"}
+
+    new_status = stripe_sub.get("status")  # trialing, active, past_due, canceled, unpaid
+    if new_status in ("canceled", "unpaid"):
+        pack.status = "cancelled"
+        pack.cancelled_at = pack.cancelled_at or datetime.now(timezone.utc)
+    elif new_status == "past_due":
+        pack.status = "past_due"
+    else:
+        pack.status = "active"
+
+    period_start = stripe_sub.get("current_period_start")
+    period_end = stripe_sub.get("current_period_end")
+    if period_start:
+        pack.current_period_start = datetime.fromtimestamp(period_start, tz=timezone.utc)
+    if period_end:
+        pack.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc)
+
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_pack_subscription_deleted(db: Session, stripe_sub: dict):
+    """Cancel a pack subscription when its Stripe subscription is deleted."""
+    pack = _find_pack_by_stripe_id(db, stripe_sub.get("id"))
+    if not pack:
+        return {"status": "ok"}
+
+    pack.status = "cancelled"
+    pack.cancelled_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_pack_invoice_paid(db: Session, invoice: dict):
+    """Reactivate + extend a pack subscription on successful payment."""
+    pack = _find_pack_by_stripe_id(db, invoice.get("subscription"))
+    if not pack:
+        return {"status": "ok"}
+    now = datetime.now(timezone.utc)
+    pack.status = "active"
+    pack.current_period_start = now
+    pack.current_period_end = _period_end(now, "monthly")
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_pack_invoice_failed(db: Session, invoice: dict):
+    """Mark a pack subscription past_due on failed payment."""
+    pack = _find_pack_by_stripe_id(db, invoice.get("subscription"))
+    if not pack:
+        return {"status": "ok"}
+    pack.status = "past_due"
+    db.commit()
+    return {"status": "ok"}
+
+
+# ── Seat Block (Phase D2) handlers ─────────────────────────────────
+
+def _find_seat_block_by_stripe_id(db: Session, stripe_sub_id: str):
+    """Look up a TenantSeatBlock by its Stripe subscription ID."""
+    if not stripe_sub_id:
+        return None
+    return db.query(TenantSeatBlock).filter(
+        TenantSeatBlock.stripe_subscription_id == stripe_sub_id
+    ).first()
+
+
+def _handle_seat_block_checkout_completed(db: Session, session_data: dict):
+    """Activate a TenantSeatBlock when its checkout completes."""
+    metadata = session_data.get("metadata", {}) or {}
+    tenant_id = metadata.get("tenant_id")
+    if not tenant_id:
+        return {"status": "ok", "detail": "missing seat block metadata"}
+
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+        quantity = int(metadata.get("quantity", "1"))
+        block_size = int(metadata.get("block_size", "5"))
+        price_minor = int(metadata.get("price_monthly_minor", "0"))
+    except (ValueError, TypeError):
+        return {"status": "ok", "detail": "invalid seat block metadata"}
+
+    stripe_sub_id = session_data.get("subscription")
+    now = datetime.now(timezone.utc)
+    period_start, period_end = now, _period_end(now, "monthly")
+
+    if stripe_sub_id:
+        try:
+            stripe_sub = stripe.Subscription.retrieve(stripe_sub_id)
+            if stripe_sub.get("current_period_start"):
+                period_start = datetime.fromtimestamp(stripe_sub["current_period_start"], tz=timezone.utc)
+            if stripe_sub.get("current_period_end"):
+                period_end = datetime.fromtimestamp(stripe_sub["current_period_end"], tz=timezone.utc)
+        except Exception as _e:
+            logger.warning(f"Could not retrieve Stripe subscription {stripe_sub_id}: {_e}")
+
+    block = TenantSeatBlock(
+        tenant_id=tenant_uuid,
+        quantity=quantity,
+        block_size=block_size,
+        price_monthly_minor=price_minor,
+        status="active",
+        stripe_subscription_id=stripe_sub_id,
+        current_period_start=period_start,
+        current_period_end=period_end,
+    )
+    db.add(block)
+    db.commit()
+
+    try:
+        create_outbox_event(db, tenant_id, "payment.seat_block_checkout.completed", {
+            "tenant_id": tenant_id,
+            "quantity": quantity,
+            "block_size": block_size,
+            "extra_seats": quantity * block_size,
+            "stripe_subscription_id": stripe_sub_id,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for payment.seat_block_checkout.completed: {_oe}")
+
+    logger.info(f"Seat block activated: tenant={tenant_id} +{quantity * block_size} seats")
+    return {"status": "ok"}
+
+
+def _handle_seat_block_subscription_updated(db: Session, stripe_sub: dict):
+    """Map a seat-block subscription status change onto TenantSeatBlock."""
+    block = _find_seat_block_by_stripe_id(db, stripe_sub.get("id"))
+    if not block:
+        return {"status": "ok"}
+
+    new_status = stripe_sub.get("status")
+    if new_status in ("canceled", "unpaid"):
+        block.status = "cancelled"
+        block.cancelled_at = block.cancelled_at or datetime.now(timezone.utc)
+    elif new_status == "past_due":
+        block.status = "past_due"
+    else:
+        block.status = "active"
+
+    period_start = stripe_sub.get("current_period_start")
+    period_end = stripe_sub.get("current_period_end")
+    if period_start:
+        block.current_period_start = datetime.fromtimestamp(period_start, tz=timezone.utc)
+    if period_end:
+        block.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc)
+
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_seat_block_subscription_deleted(db: Session, stripe_sub: dict):
+    """Cancel a seat-block subscription when its Stripe subscription is deleted."""
+    block = _find_seat_block_by_stripe_id(db, stripe_sub.get("id"))
+    if not block:
+        return {"status": "ok"}
+
+    block.status = "cancelled"
+    block.cancelled_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_seat_block_invoice_paid(db: Session, invoice: dict):
+    """Reactivate + extend a seat-block subscription on successful payment."""
+    block = _find_seat_block_by_stripe_id(db, invoice.get("subscription"))
+    if not block:
+        return {"status": "ok"}
+    now = datetime.now(timezone.utc)
+    block.status = "active"
+    block.current_period_start = now
+    block.current_period_end = _period_end(now, "monthly")
+    db.commit()
+    return {"status": "ok"}
+
+
+def _handle_seat_block_invoice_failed(db: Session, invoice: dict):
+    """Mark a seat-block subscription past_due on failed payment."""
+    block = _find_seat_block_by_stripe_id(db, invoice.get("subscription"))
+    if not block:
+        return {"status": "ok"}
+    block.status = "past_due"
+    db.commit()
     return {"status": "ok"}
 
 

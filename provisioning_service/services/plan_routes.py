@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import SubscriptionPlan, PlanFeature, Feature, PlanPrice
@@ -9,15 +9,25 @@ router = APIRouter(prefix="/plans", tags=["Plan Management"])
 
 
 @router.get("/", status_code=200)
-async def get_plans(db: Session = Depends(get_db)):
+async def get_plans(
+    include_private: bool = Query(False, description="Include sales-only (non-public) plans"),
+    db: Session = Depends(get_db),
+):
     """
     Get all active subscription plans with their features and pricing.
     Returns both monthly and yearly prices for each plan.
+
+    Phase D4: by default only publicly-listed plans are returned;
+    pass ``include_private=true`` to also see sales-only plans.
     """
     try:
-        plans = db.query(SubscriptionPlan).filter(
+        query = db.query(SubscriptionPlan).filter(
             SubscriptionPlan.is_active == True
-        ).all()
+        )
+        if not include_private:
+            query = query.filter(SubscriptionPlan.is_public == True)
+
+        plans = query.all()
 
         if not plans:
             return {"plans": []}
@@ -61,12 +71,16 @@ async def get_plans(db: Session = Depends(get_db)):
                 })
 
             # Build plan response
+            monthly_minor = int(plan_pricing.price_monthly_minor or 0)
+            yearly_minor = int(plan_pricing.price_yearly_minor or 0)
+            implementation_fee = int(plan_pricing.implementation_fee_minor or 0)
             plan_data = {
                 "id": plan.plan_id,
                 "code": plan.code,
                 "name": plan.name,
                 "description": plan.description,
                 "currency": plan_pricing.currency,
+                "is_public": plan.is_public if plan.is_public is not None else True,
                 "pricing": {
                     "monthly": {
                         "amount_minor": plan_pricing.price_monthly_minor,
@@ -81,8 +95,19 @@ async def get_plans(db: Session = Depends(get_db)):
                     "yearly": {
                         "amount_minor": plan_pricing.price_yearly_minor,
                         "amount": plan_pricing.price_yearly_minor,
-                        "available": True
+                        "available": True,
+                        # Phase D1 — "two months free" annual anchor
+                        "anchor": "two_months_free",
+                        "savings_minor": max(0, monthly_minor * 12 - yearly_minor),
                     }
+                },
+                # Phase D3 — one-time implementation fee guardrail
+                "implementation_fee_minor": implementation_fee,
+                # Phase D2 — additional-user block pricing
+                "seat_block": {
+                    "block_size": int(plan_pricing.seat_block_size or 5),
+                    "price_monthly_minor": int(plan_pricing.seat_block_price_minor or 0),
+                    "available": bool(int(plan_pricing.seat_block_price_minor or 0) > 0),
                 },
                 "features": features_list,
                 "active": plan.is_active,
