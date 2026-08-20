@@ -119,6 +119,15 @@ const API = {
     getBranding(tenantId)  { return this._fetch('GET', `/tenants/${tenantId}/branding`); },
     saveBranding(tenantId, payload) { return this._fetch('PUT', `/tenants/${tenantId}/branding`, payload); },
 
+    // ── ERP Connectors ────────────────────────────────────────────
+    listConnectorProviders() { return this._fetch('GET', '/v1/connector-providers'); },
+    listConnections(tid)     { return this._fetch('GET', `/v1/tenants/${tid}/connections`); },
+    createConnection(tid, payload) { return this._fetch('POST', `/v1/tenants/${tid}/connections`, payload); },
+    deleteConnection(tid, id)      { return this._fetch('DELETE', `/v1/tenants/${tid}/connections/${id}`); },
+    testConnection(tid, id)        { return this._fetch('POST', `/v1/tenants/${tid}/connections/${id}/test`); },
+    syncConnection(tid, id)        { return this._fetch('POST', `/v1/tenants/${tid}/connections/${id}/sync`); },
+    listSyncRuns(tid, connId)      { return this._fetch('GET', `/v1/tenants/${tid}/sync-runs${connId ? `?connection_id=${connId}` : ''}`); },
+
     // ── Invitations ───────────────────────────────────────────────
     createInvitation(payload)  { return this._fetch('POST', '/provisioning/invitations', payload); },
     listInvitations(status)    { return this._fetch('GET', `/provisioning/invitations${status ? `?status=${status}` : ''}`); },

@@ -615,6 +615,84 @@ class TenantSeatBlock(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# ERP Connector Framework (see backlog/erp-connector-framework-plan.md)
+# ═══════════════════════════════════════════════════════════════════
+
+class ConnectorProvider(Base):
+    """Static catalogue of supported ERP providers (seeded)."""
+    __tablename__ = "connector_providers"
+
+    provider_code = Column(String(50), primary_key=True)   # dynamics_bc | sap_b1 | netsuite | oracle_erp
+    display_name = Column(String(200), nullable=False)
+    auth_type = Column(String(20), nullable=False)          # oauth2 | basic | tba
+    config_schema = Column(JSONB, nullable=False, default=dict)        # fields for setup form
+    default_field_map = Column(JSONB, nullable=False, default=dict)    # provider field -> canonical field
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TenantConnection(Base):
+    """A tenant's configured connection to one ERP instance."""
+    __tablename__ = "tenant_connections"
+
+    connection_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    provider_code = Column(String(50), ForeignKey("connector_providers.provider_code"), nullable=False, index=True)
+    name = Column(String(200), nullable=False)              # "Production SAP"
+
+    config = Column(JSONB, nullable=False, default=dict)    # non-secret config (base URL, company id)
+    credentials_ref = Column(String(255), nullable=True)    # Key Vault secret name (prod)
+    credentials_enc = Column(JSONB, nullable=True)          # local-dev only (ENV=local guard)
+    field_map = Column(JSONB, nullable=True)                # tenant overrides of default map
+
+    status = Column(String(20), nullable=False, default="active", index=True)  # active | error | disabled
+    schedule_cron = Column(String(50), nullable=True)       # e.g. "0 2 * * *" nightly
+    deactivate_missing = Column(Boolean, nullable=False, default=False)
+    last_sync_at = Column(DateTime(timezone=True), nullable=True)
+    last_sync_status = Column(String(20), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index('ix_tenant_connection_unique', 'tenant_id', 'provider_code', 'name', unique=True),
+    )
+
+
+class SyncRun(Base):
+    """One execution of a connection sync."""
+    __tablename__ = "sync_runs"
+
+    sync_run_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    connection_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_connections.connection_id", ondelete="CASCADE"), nullable=False, index=True)
+    trigger = Column(String(20), nullable=False, default="manual")  # manual | scheduled
+    status = Column(String(20), nullable=False, default="running", index=True)  # running | success | partial | failed
+
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_count = Column(Integer, nullable=False, default=0)
+    updated_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    error_summary = Column(JSONB, nullable=True)            # first N errors
+
+
+class SyncRunItem(Base):
+    """Per-row outcome within a sync run (capped at insert time)."""
+    __tablename__ = "sync_run_items"
+
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sync_run_id = Column(SQLUUID(as_uuid=True), ForeignKey("sync_runs.sync_run_id", ondelete="CASCADE"), nullable=False, index=True)
+    external_id = Column(String(100), nullable=True)
+    sku = Column(String(100), nullable=True)
+    action = Column(String(20), nullable=False)             # created | updated | skipped | error
+    message = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class SubscriptionPlan(Base):
     """Subscription plan"""
     __tablename__ = "subscription_plans"
@@ -703,6 +781,9 @@ class TenantSubscription(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     status = Column(String(20), default="active")  # active, trialing, past_due, canceled, unpaid
+
+    # Scheduled plan change (downgrade applies at period end)
+    pending_plan_code = Column(String(50), ForeignKey("subscription_plans.code"), nullable=True)
 
     # Grace period & payment failure tracking
     payment_failed_at = Column(DateTime(timezone=True), nullable=True)
@@ -842,6 +923,7 @@ class Product(Base):
     product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     external_id = Column(String(100), nullable=True, index=True)  # NetSuite/external system ID
+    source_connection_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_connections.connection_id", ondelete="SET NULL"), nullable=True, index=True)  # ERP connector origin
     aifi_product_id = Column(String(64), nullable=True, index=True)  # Legacy integration ID
     sku = Column(String(100), nullable=False)  # Stock Keeping Unit
     ean = Column(String(128), nullable=True, index=True)  # European Article Number / barcode

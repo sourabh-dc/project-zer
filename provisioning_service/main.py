@@ -32,6 +32,9 @@ from provisioning_service.services.audit_routes import router as audit_router
 from provisioning_service.services.advanced_access_routes import router as advanced_access_router
 from provisioning_service.services.integration_pack_routes import router as integration_pack_router
 from provisioning_service.services.branding_routes import router as branding_router
+from provisioning_service.services.connector_routes import router as connector_router
+from provisioning_service.core.helpers.load_connectors import seed_connector_providers
+from provisioning_service.core.connectors.scheduler import start_scheduler, stop_scheduler
 from provisioning_service.utils.logger import logger
 from provisioning_service.core.sb_client import messaging_service
 
@@ -224,19 +227,60 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Plan price columns migration skipped or failed: {e}")
 
+        # Migrate tenant_subscriptions: add pending_plan_code for scheduled downgrades
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("tenant_subscriptions"):
+                existing_cols = {c["name"] for c in insp.get_columns("tenant_subscriptions")}
+                with engine.begin() as conn:
+                    if "pending_plan_code" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE tenant_subscriptions ADD COLUMN pending_plan_code VARCHAR(50)"
+                        ))
+                        logger.info("✅ Added pending_plan_code column to tenant_subscriptions")
+        except Exception as e:
+            logger.warning(f"Tenant subscription migration skipped or failed: {e}")
+
+        # Migrate products: add source_connection_id for ERP connector origin
+        try:
+            from sqlalchemy import text, inspect
+            insp = inspect(engine)
+            if insp.has_table("products"):
+                existing_cols = {c["name"] for c in insp.get_columns("products")}
+                with engine.begin() as conn:
+                    if "source_connection_id" not in existing_cols:
+                        conn.execute(text(
+                            "ALTER TABLE products ADD COLUMN source_connection_id UUID"
+                        ))
+                        logger.info("✅ Added source_connection_id column to products")
+        except Exception as e:
+            logger.warning(f"Product connector column migration skipped or failed: {e}")
+
         # Load static data (roles/permissions/plans/features/job functions)
         try:
             seed_roles_and_permissions()
             load_product_features_on_startup()
             seed_job_functions()
             seed_plans_and_features()
+            seed_connector_providers()
         except Exception as ex:
             logger.warning(f"Initial data load failed: {ex}")
+
+        # Start ERP connector scheduler (APScheduler, in-process)
+        try:
+            start_scheduler()
+        except Exception as ex:
+            logger.warning(f"Connector scheduler failed to start: {ex}")
 
         yield
 
     finally:
         # Shutdown - stop messaging service and policy client cleanly
+        try:
+            stop_scheduler()
+        except Exception as ex:
+            logger.warning(f"Connector scheduler stop failed: {ex}")
         try:
             await messaging_service.stop()
             logger.info("✅ Messaging service stopped")
@@ -285,6 +329,7 @@ app.include_router(audit_router)
 app.include_router(advanced_access_router)
 app.include_router(integration_pack_router)
 app.include_router(branding_router)
+app.include_router(connector_router)
 
 
 @app.get("/health")

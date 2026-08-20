@@ -582,6 +582,43 @@ class UpgradePreviewResponse(BaseModel):
     next_cycle_amount: float
 
 
+class ChangePlanCheckRequest(BaseModel):
+    """Check whether switching to a target plan is safe."""
+    target_plan_code: str
+
+
+class PlanViolation(BaseModel):
+    feature: Optional[str] = None
+    name: Optional[str] = None
+    current: int
+    target_limit: Optional[int] = None
+    action_needed: str
+
+
+class ChangePlanCheckResponse(BaseModel):
+    current_plan: str
+    target_plan: str
+    direction: str                       # upgrade | downgrade | lateral
+    allowed: bool
+    violations: List[PlanViolation] = Field(default_factory=list)
+
+
+class ChangePlanRequest(BaseModel):
+    """Switch plan. Upgrades apply immediately; downgrades at period end."""
+    target_plan_code: str
+    force: bool = False                  # override downgrade violations
+
+
+class ChangePlanResponse(BaseModel):
+    status: str                          # upgraded | downgrade_scheduled
+    current_plan: str
+    target_plan: str
+    effective_at: Optional[str] = None   # when the change takes effect
+    pending_plan_code: Optional[str] = None
+    prorated_amount: Optional[float] = None
+    message: str
+
+
 class CurrentSubscriptionResponse(BaseModel):
     """Current subscription response"""
     tenant_id: str

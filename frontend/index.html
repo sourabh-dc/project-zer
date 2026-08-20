@@ -175,6 +175,7 @@
                 <a href="#" class="dash-tab admin-only" data-tab="tab-budgets">Budgets</a>
                 <a href="#" class="dash-tab admin-only" data-tab="tab-policies">Policies</a>
                 <a href="#" class="dash-tab admin-only" data-tab="tab-catalog">Catalog</a>
+                <a href="#" class="dash-tab admin-only" data-tab="tab-integrations">Integrations</a>
             </nav>
         </div>
     </header>
@@ -391,6 +392,26 @@
                     <div id="prod-error" class="alert alert-error hidden mt-16"></div>
                 </div>
                 <table><thead><tr><th>Name</th><th>SKU</th><th>Price</th><th></th></tr></thead><tbody id="products-table"></tbody></table>
+            </div>
+
+            <!-- ── TAB: Integrations (ERP connectors) ────────── -->
+            <div id="tab-integrations" class="tab-content hidden">
+                <div class="flex-between mb-16"><h2>ERP Connections</h2><button class="btn btn-primary btn-sm" onclick="App.showConnectionForm()">+ New Connection</button></div>
+                <div id="conn-form" class="card hidden">
+                    <h3>New ERP Connection</h3>
+                    <div class="form-row">
+                        <div class="form-group"><label>Provider</label><select id="conn-provider" onchange="App.onProviderSelected()"></select></div>
+                        <div class="form-group"><label>Name</label><input type="text" id="conn-name" placeholder="Production ERP"></div>
+                    </div>
+                    <div id="conn-fields"></div>
+                    <div class="form-group"><label>Schedule (cron, optional)</label><input type="text" id="conn-cron" placeholder="0 2 * * * — nightly at 02:00"></div>
+                    <button class="btn btn-primary btn-sm" onclick="App.createConnection()">Test &amp; Save</button>
+                    <div id="conn-error" class="alert alert-error hidden mt-16"></div>
+                </div>
+                <table><thead><tr><th>Name</th><th>Provider</th><th>Status</th><th>Last Sync</th><th>Schedule</th><th></th></tr></thead><tbody id="connections-table"></tbody></table>
+                <hr style="margin:24px 0;border-color:#e2e8f0;">
+                <h2 class="mb-16">Sync History</h2>
+                <table><thead><tr><th>Started</th><th>Trigger</th><th>Status</th><th>Created</th><th>Updated</th><th>Skipped</th><th>Errors</th></tr></thead><tbody id="syncruns-table"></tbody></table>
             </div>
 
         </div>

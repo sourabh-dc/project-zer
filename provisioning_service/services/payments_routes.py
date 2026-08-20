@@ -511,6 +511,13 @@ def _handle_invoice_paid(db: Session, invoice: dict):
     sub.grace_period_end = None
     sub.last_invoice_id = invoice.get("id")
 
+    # Apply a scheduled downgrade now that the paid period has rolled over
+    if sub.pending_plan_code:
+        old_plan = sub.plan_code
+        sub.plan_code = sub.pending_plan_code
+        sub.pending_plan_code = None
+        logger.info(f"Pending plan applied on renewal: tenant={sub.tenant_id} {old_plan} → {sub.plan_code}")
+
     db.commit()
 
     # Outbox audit event

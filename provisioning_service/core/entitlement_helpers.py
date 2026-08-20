@@ -498,3 +498,107 @@ def enforce_active_user_limit(
         "exceeded": False,
     }
 
+
+def plan_change_violations(db: Session, tenant_id: str, target_plan_code: str) -> List[Dict[str, Any]]:
+    """
+    Compare the tenant's CURRENT real usage against a target plan's limits.
+
+    Used before downgrades: returns a list of violations (empty = safe).
+    Each violation: {feature, name, current, target_limit, action_needed}.
+    """
+    from provisioning_service.Models import Vendor, CostCentre, Product, Site, SiteTenant, Store
+
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except (ValueError, TypeError):
+        return [{"feature": None, "name": None, "current": 0, "target_limit": 0,
+                 "action_needed": "invalid tenant_id"}]
+
+    # Target plan's configured limits
+    plan_features = db.query(PlanFeature, Feature).join(
+        Feature, PlanFeature.feature_code == Feature.code
+    ).filter(
+        PlanFeature.plan_code == target_plan_code,
+        PlanFeature.enabled == True,
+        Feature.active == True,
+    ).all()
+    limits: Dict[str, Optional[int]] = {}
+    for pf, feature in plan_features:
+        limit = None
+        if pf.limits and isinstance(pf.limits, dict):
+            mv = pf.limits.get("max_value")
+            if mv is not None:
+                try:
+                    limit = int(mv)
+                except (TypeError, ValueError):
+                    limit = None
+        limits[feature.code] = limit
+
+    def _has_feature(code: str) -> bool:
+        return code in limits
+
+    violations: List[Dict[str, Any]] = []
+
+    def _check(code: str, name: str, current: int, action: str) -> None:
+        if not _has_feature(code):
+            if current > 0:
+                violations.append({
+                    "feature": code, "name": name, "current": current,
+                    "target_limit": 0,
+                    "action_needed": f"{action} — feature not in target plan",
+                })
+            return
+        limit = limits.get(code)
+        if limit is not None and current > limit:
+            violations.append({
+                "feature": code, "name": name, "current": current,
+                "target_limit": limit,
+                "action_needed": f"Reduce to {limit} before switching ({action})",
+            })
+
+    # Real row counts (authoritative, same as enforcement)
+    user_count = db.query(User).filter(User.tenant_id == tenant_uuid, User.is_active == True).count()
+    # Seat blocks stay valid across plans — they raise the effective target limit
+    extra_seats = 0
+    try:
+        blocks = db.query(TenantSeatBlock).filter(
+            TenantSeatBlock.tenant_id == tenant_uuid,
+            TenantSeatBlock.status == "active",
+        ).all()
+        extra_seats = sum(b.quantity * b.block_size for b in blocks)
+    except Exception:
+        pass
+    user_limit = limits.get("active.users")
+    if "active.users" in limits and user_limit is not None:
+        limits["active.users"] = user_limit + extra_seats
+    _check("active.users", "Active Users", user_count, "deactivate users")
+
+    vendor_count = db.query(Vendor).filter(Vendor.tenant_id == tenant_uuid, Vendor.status == "active").count()
+    _check("supplier.records", "Supplier Records", vendor_count, "deactivate vendors")
+
+    cc_count = db.query(CostCentre).filter(CostCentre.tenant_id == tenant_uuid).count()
+    _check("cost.centres", "Cost Centres", cc_count, "remove cost centres")
+
+    product_count = db.query(Product).filter(Product.tenant_id == tenant_uuid, Product.active == True).count()
+    _check("product.records", "Product Records", product_count, "deactivate products")
+
+    # Boolean features: first site/store is free; extras need the feature
+    if not _has_feature("multi.site"):
+        site_count = db.query(SiteTenant).filter(SiteTenant.tenant_id == tenant_uuid).count()
+        if site_count > 1:
+            violations.append({
+                "feature": "multi.site", "name": "Multi-Site", "current": site_count,
+                "target_limit": 1,
+                "action_needed": "Target plan allows one site only — remove extra sites",
+            })
+    if not _has_feature("multi.location"):
+        store_count = db.query(Store).filter(Store.tenant_id == tenant_uuid, Store.active == True).count()
+        if store_count > 1:
+            violations.append({
+                "feature": "multi.location", "name": "Multi-Location", "current": store_count,
+                "target_limit": 1,
+                "action_needed": "Target plan allows one location only — remove extra stores",
+            })
+
+    return violations
+

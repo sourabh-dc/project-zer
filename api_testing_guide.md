@@ -2104,20 +2104,50 @@ POST /subscriptions/renew
 ### 24.4 Upgrade Preview
 
 ```
-GET /subscriptions/upgrade-preview?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2&upgrade_plan_code=pro_01&subscription_id=1
+POST /subscriptions/upgrade-preview
+```
+```json
+{
+  "tenant_id": "fd563534-0686-4afa-bdaf-b386fc33f2c2",
+  "subscription_id": 1,
+  "upgrade_plan_code": "growth"
+}
 ```
 
-### 24.5 Upgrade Subscription
+### 24.5 Change Plan (Upgrade or Downgrade)
 
 ```
-GET /subscriptions/upgrade?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2&upgrade_plan_code=pro_01&subscription_id=1
+POST /subscriptions/change-plan
 ```
+```json
+{
+  "target_plan_code": "business",
+  "force": false
+}
+```
+- Upgrade (higher price): applies immediately, returns prorated amount.
+- Downgrade: validated against current usage; returns `409` with violations
+  unless `force=true`. Scheduled at period end via `pending_plan_code`.
 
-### 24.6 Downgrade Subscription
+### 24.6 Change Plan Check (dry-run)
 
 ```
-GET /subscriptions/downgrade?tenant_id=fd563534-0686-4afa-bdaf-b386fc33f2c2&downgrade_plan_code=basic_01&subscription_id=1
+POST /subscriptions/change-plan/check
 ```
+```json
+{
+  "target_plan_code": "starter"
+}
+```
+Returns `direction`, `allowed`, and per-feature `violations`
+(current usage vs target limits).
+
+### 24.7 Cancel Pending Plan Change
+
+```
+POST /subscriptions/change-plan/cancel-pending
+```
+Cancels a scheduled downgrade before it takes effect.
 
 ### 24.7 Cancel Subscription
 

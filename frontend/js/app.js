@@ -507,6 +507,153 @@ const App = {
         }
     },
 
+    // ── ERP Integrations ──────────────────────────────────────────
+
+    _providers: [],
+    _connections: [],
+
+    async loadProviders() {
+        try {
+            this._providers = await API.listConnectorProviders();
+            const select = document.getElementById('conn-provider');
+            if (select) {
+                select.innerHTML = '<option value="">Select provider…</option>' +
+                    this._providers.map(p => `<option value="${this._esc(p.provider_code)}">${this._esc(p.display_name)}</option>`).join('');
+            }
+        } catch (e) { console.error('Providers:', e); }
+    },
+
+    showConnectionForm() {
+        document.getElementById('conn-form').classList.remove('hidden');
+    },
+
+    onProviderSelected() {
+        const code = document.getElementById('conn-provider').value;
+        const box = document.getElementById('conn-fields');
+        const provider = this._providers.find(p => p.provider_code === code);
+        if (!provider || !box) { if (box) box.innerHTML = ''; return; }
+
+        const fields = [];
+        (provider.config_schema?.config || []).forEach(f => {
+            fields.push(`<div class="form-group"><label>${this._esc(f.label)}${f.required ? ' *' : ''}</label>` +
+                `<input type="text" data-cfg="${f.key}" placeholder="${this._esc(f.placeholder || f.default || '')}"></div>`);
+        });
+        (provider.config_schema?.credentials || []).forEach(f => {
+            fields.push(`<div class="form-group"><label>${this._esc(f.label)}${f.required ? ' *' : ''}</label>` +
+                `<input type="${f.secret ? 'password' : 'text'}" data-cred="${f.key}"></div>`);
+        });
+        box.innerHTML = `<div class="form-row">${fields.join('')}</div>`;
+    },
+
+    async createConnection() {
+        const errBox = document.getElementById('conn-error');
+        errBox.classList.add('hidden');
+        const tenantId = API.getUser()?.tenant_id;
+        const providerCode = document.getElementById('conn-provider').value;
+        const name = document.getElementById('conn-name').value.trim();
+        if (!providerCode || !name) {
+            errBox.textContent = 'Provider and name are required';
+            errBox.classList.remove('hidden');
+            return;
+        }
+
+        const config = {}, credentials = {};
+        document.querySelectorAll('#conn-fields [data-cfg]').forEach(el => { if (el.value.trim()) config[el.dataset.cfg] = el.value.trim(); });
+        document.querySelectorAll('#conn-fields [data-cred]').forEach(el => { if (el.value.trim()) credentials[el.dataset.cred] = el.value.trim(); });
+        const cron = document.getElementById('conn-cron').value.trim();
+
+        try {
+            await API.createConnection(tenantId, {
+                provider_code: providerCode,
+                name,
+                config,
+                credentials,
+                schedule_cron: cron || null,
+            });
+            document.getElementById('conn-form').classList.add('hidden');
+            this.loadConnections();
+        } catch (e) {
+            errBox.textContent = e.message || 'Failed to create connection';
+            errBox.classList.remove('hidden');
+        }
+    },
+
+    async loadConnections() {
+        const tenantId = API.getUser()?.tenant_id;
+        if (!tenantId) return;
+        try {
+            this._connections = await API.listConnections(tenantId);
+            const tbody = document.getElementById('connections-table');
+            if (!this._connections.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No ERP connections yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = this._connections.map(c => `
+                <tr>
+                    <td>${this._esc(c.name)}</td>
+                    <td>${this._esc(c.provider_code)}</td>
+                    <td><span class="badge ${c.status === 'active' ? 'badge-active' : 'badge-expired'}">${this._esc(c.status)}</span></td>
+                    <td>${c.last_sync_at ? new Date(c.last_sync_at).toLocaleString() : '—'} ${c.last_sync_status ? `(${this._esc(c.last_sync_status)})` : ''}</td>
+                    <td>${this._esc(c.schedule_cron || '—')}</td>
+                    <td>
+                        <button class="btn btn-primary btn-sm" onclick="App.syncConnection('${c.connection_id}')">Sync now</button>
+                        <button class="btn btn-sm" onclick="App.testConnection('${c.connection_id}')">Test</button>
+                        <button class="btn btn-sm" onclick="App.deleteConnection('${c.connection_id}')">Disable</button>
+                    </td>
+                </tr>`).join('');
+        } catch (e) { console.error('Connections:', e); }
+    },
+
+    async testConnection(id) {
+        const tenantId = API.getUser()?.tenant_id;
+        try {
+            const res = await API.testConnection(tenantId, id);
+            alert(res.ok ? `✅ ${res.message}` : `❌ ${res.message}`);
+            this.loadConnections();
+        } catch (e) { alert(`Test failed: ${e.message}`); }
+    },
+
+    async syncConnection(id) {
+        const tenantId = API.getUser()?.tenant_id;
+        try {
+            await API.syncConnection(tenantId, id);
+            alert('Sync started — check Sync History below.');
+            setTimeout(() => this.loadSyncRuns(), 3000);
+        } catch (e) { alert(`Sync failed to start: ${e.message}`); }
+    },
+
+    async deleteConnection(id) {
+        const tenantId = API.getUser()?.tenant_id;
+        if (!confirm('Disable this connection? Sync history is kept.')) return;
+        try {
+            await API.deleteConnection(tenantId, id);
+            this.loadConnections();
+        } catch (e) { alert(`Failed: ${e.message}`); }
+    },
+
+    async loadSyncRuns() {
+        const tenantId = API.getUser()?.tenant_id;
+        if (!tenantId) return;
+        try {
+            const runs = await API.listSyncRuns(tenantId);
+            const tbody = document.getElementById('syncruns-table');
+            if (!runs.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No sync runs yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = runs.map(r => `
+                <tr>
+                    <td>${r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</td>
+                    <td>${this._esc(r.trigger)}</td>
+                    <td><span class="badge ${r.status === 'success' ? 'badge-active' : (r.status === 'running' ? 'badge-trial' : 'badge-expired')}">${this._esc(r.status)}</span></td>
+                    <td>${r.created_count}</td>
+                    <td>${r.updated_count}</td>
+                    <td>${r.skipped_count}</td>
+                    <td>${r.error_count}</td>
+                </tr>`).join('');
+        } catch (e) { console.error('Sync runs:', e); }
+    },
+
     _applyRoleVisibility() {
         // Check if user has tenant_admin role
         API.whoami().then(data => {
@@ -554,6 +701,7 @@ const App = {
             'tab-budgets':     () => this.loadBudgets(),
             'tab-policies':    () => this.loadApprovalPolicies(),
             'tab-catalog':     () => { this.loadCategories(); this.loadProducts(); },
+            'tab-integrations': () => { this.loadProviders(); this.loadConnections(); this.loadSyncRuns(); },
         };
         if (loaders[tabId]) loaders[tabId]();
     },
