@@ -151,6 +151,7 @@ class UserIdentity(Base):
     oid = Column(String, nullable=True, index=True)            # Azure AD object ID (stable across policies)
     auth_provider = Column(String, nullable=False, default="azure_ad")  # azure_ad | local
     first_name = Column(String, nullable=False)
+    middle_name = Column(String, nullable=True)               # optional, from Azure signup attribute
     last_name = Column(String, nullable=False)
     last_azure_login_at = Column(DateTime(timezone=True), nullable=True)
 

@@ -158,6 +158,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
     name = (azure_claims.name or "").strip()
     first_name = azure_claims.given_name or (name.split(" ")[0] if name else "")
     last_name = azure_claims.family_name or (" ".join(name.split(" ")[1:]) if name else "")
+    middle_name = (azure_claims.middle_name or "").strip()
 
     # ── Invitation path ──────────────────────────────────────────────
     if req.invitation_token:
@@ -194,6 +195,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             user_id = identity.user_id
             identity.oid = oid or identity.oid
             identity.first_name = first_name or identity.first_name
+            identity.middle_name = middle_name or identity.middle_name
             identity.last_name = last_name or identity.last_name
             identity.auth_provider = "azure_ad"
             identity.last_azure_login_at = datetime.now(timezone.utc)
@@ -207,6 +209,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
                 oid=oid,
                 auth_provider="azure_ad",
                 first_name=first_name,
+                middle_name=middle_name,
                 last_name=last_name,
                 last_azure_login_at=datetime.now(timezone.utc),
             )
@@ -295,6 +298,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
         # ── Existing user: update info, issue JWT ─────────────────
         identity.oid = oid or identity.oid
         identity.first_name = first_name or identity.first_name
+        identity.middle_name = middle_name or identity.middle_name
         identity.last_name = last_name or identity.last_name
         identity.auth_provider = "azure_ad"
         identity.last_azure_login_at = datetime.now(timezone.utc)
@@ -304,6 +308,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             # Identity exists but no User row yet — needs onboarding
             identity.oid = oid or identity.oid
             identity.first_name = first_name or identity.first_name
+            identity.middle_name = middle_name or identity.middle_name
             identity.last_name = last_name or identity.last_name
             identity.last_azure_login_at = datetime.now(timezone.utc)
             db.commit()
@@ -312,6 +317,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
                 "user_id": str(identity.user_id),
                 "email": identity.email,
                 "first_name": identity.first_name,
+                "middle_name": identity.middle_name,
                 "last_name": identity.last_name,
                 "detail": "Identity confirmed. Complete onboarding to create your tenant and account.",
             }
@@ -371,6 +377,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             oid=oid,
             auth_provider="azure_ad",
             first_name=first_name,
+            middle_name=middle_name,
             last_name=last_name,
             last_azure_login_at=datetime.now(timezone.utc),
         )
@@ -385,6 +392,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             "user_id": str(identity.user_id),
             "email": identity.email,
             "first_name": identity.first_name,
+            "middle_name": identity.middle_name,
             "last_name": identity.last_name,
             "detail": "Identity confirmed. Complete onboarding to create your tenant and account.",
         }

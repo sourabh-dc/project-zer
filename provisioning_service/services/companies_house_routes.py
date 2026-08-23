@@ -27,6 +27,7 @@ class CompanySearchItem(BaseModel):
     company_status: str
     company_type: str
     address_snippet: str = ""
+    county: str = ""     # Companies House "region" field
     date_of_creation: str = ""
     description: str = ""  # SIC code description (first one)
 
@@ -40,6 +41,7 @@ class RegisteredOffice(BaseModel):
     address_line_1: str = ""
     address_line_2: str = ""
     locality: str = ""
+    county: str = ""     # Companies House "region" field
     postal_code: str = ""
     country: str = ""
 
@@ -89,6 +91,7 @@ def _build_search_item(raw: dict) -> CompanySearchItem:
         company_status=raw.get("company_status", ""),
         company_type=raw.get("company_type", ""),
         address_snippet=snippet,
+        county=addr.get("region", ""),
         date_of_creation=raw.get("date_of_creation", ""),
         description=raw.get("description", ""),
     )
@@ -166,13 +169,14 @@ async def get_company_profile(company_number: str):
             company_status=data.get("company_status", ""),
             company_type=data.get("type", ""),
             date_of_creation=data.get("date_of_creation", ""),
-            registered_office_address=RegisteredOffice(
-                address_line_1=office.get("address_line_1", ""),
-                address_line_2=office.get("address_line_2", ""),
-                locality=office.get("locality", ""),
-                postal_code=office.get("postal_code", ""),
-                country=office.get("country", ""),
-            ),
+        registered_office_address=RegisteredOffice(
+            address_line_1=office.get("address_line_1", ""),
+            address_line_2=office.get("address_line_2", ""),
+            locality=office.get("locality", ""),
+            county=office.get("region", ""),
+            postal_code=office.get("postal_code", ""),
+            country=office.get("country", ""),
+        ),
             sic_codes=data.get("sic_codes", []),
             jurisdiction=data.get("jurisdiction", ""),
             last_full_members_list_date=data.get("last_full_members_list_date", ""),

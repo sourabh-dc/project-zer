@@ -149,6 +149,7 @@ class AzureTokenClaims:
     email: str = ""
     name: str = ""
     given_name: str = ""
+    middle_name: str = ""
     family_name: str = ""
 
     # Multi-tenant claims (custom or extension attributes)
@@ -189,12 +190,27 @@ class AzureTokenClaims:
             or claims.get("tid")                   # Entra ID directory tenant
         )
 
+        # Middle name: standard OIDC claim, or CIAM custom signup attribute
+        # which arrives as extension_<b2c-extensions-app-id>_MiddleName
+        middle_name = (
+            claims.get("middle_name")
+            or claims.get("middleName")
+            or claims.get("extension_MiddleName")
+            or ""
+        )
+        if not middle_name:
+            for key, value in claims.items():
+                if key.startswith("extension_") and key.lower().endswith("middlename") and value:
+                    middle_name = str(value)
+                    break
+
         return cls(
             sub=claims.get("sub", ""),
             oid=claims.get("oid", ""),
             email=email,
             name=claims.get("name", ""),
             given_name=claims.get("given_name", ""),
+            middle_name=middle_name,
             family_name=claims.get("family_name", ""),
             tenant_id=str(tenant_id) if tenant_id else None,
             roles=roles,
