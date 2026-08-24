@@ -10,11 +10,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from provisioning_service.core.connectors.base import BaseConnector, ConnectorError
+from provisioning_service.core.connectors.base import BaseConnector, ConnectorError, fields_from_sample
 
 RESOURCE_VERSION = "11.13.18.05"
 PAGE_SIZE = 100
 TIMEOUT = 60
+
+# Curated fallback — the standard itemsV2 fields this connector queries.
+DEFAULT_ITEM_FIELDS = [
+    {"name": "ItemNumber", "type": "string", "label": "Item Number / SKU", "custom": False},
+    {"name": "ItemDescription", "type": "string", "label": "Description", "custom": False},
+    {"name": "LongDescription", "type": "string", "label": "Long Description", "custom": False},
+    {"name": "ListPrice", "type": "number", "label": "List Price", "custom": False},
+    {"name": "CurrencyCode", "type": "string", "label": "Currency", "custom": False},
+    {"name": "ItemClass", "type": "string", "label": "Item Class / Category", "custom": False},
+    {"name": "OrganizationCode", "type": "string", "label": "Organization", "custom": False},
+    {"name": "ItemStatusValue", "type": "string", "label": "Status", "custom": False},
+]
 
 
 class OracleERPConnector(BaseConnector):
@@ -86,3 +98,38 @@ class OracleERPConnector(BaseConnector):
         has_more = bool(body.get("hasMore"))
         next_cursor = str(offset + PAGE_SIZE) if has_more else None
         return items, next_cursor
+
+    def discover_schema(self) -> List[Dict[str, Any]]:
+        """Discover itemsV2 fields via the Oracle REST ``describe`` action.
+
+        Flexfield (custom) attributes arrive under ``*_EFF`` / ``*_DFF``
+        naming and are flagged custom=True. Falls back to the curated
+        standard field list when describe is unavailable.
+        """
+        try:
+            resp = requests.get(
+                f"{self._items_url()}/describe",
+                auth=self._auth(),
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            fields: List[Dict[str, Any]] = []
+            resources = data.get("Resources") or {}
+            item_res = resources.get("itemsV2") or {}
+            for attr in item_res.get("attributes") or []:
+                name = attr.get("name", "")
+                if not name:
+                    continue
+                fields.append({
+                    "name": name,
+                    "type": str(attr.get("type", "string")).lower(),
+                    "label": attr.get("title", name),
+                    "custom": name.endswith(("_EFF", "_DFF")) or "Flexfield" in name,
+                })
+            if fields:
+                return fields
+        except Exception as e:
+            from provisioning_service.utils.logger import logger
+            logger.warning(f"Oracle describe failed, using defaults: {e}")
+        return list(DEFAULT_ITEM_FIELDS)

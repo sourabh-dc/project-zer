@@ -80,6 +80,10 @@ async def process_outbox():
                         await receiver.complete_message(msg)
                         continue
 
+                    if data.get("source") != "provisioning_service":
+                        await receiver.complete_message(msg)
+                        continue
+
                     outbox_id = data.get("outbox_id") or data.get("id")
                     if not outbox_id:
                         logger.error("No outbox_id found in message; completing message")

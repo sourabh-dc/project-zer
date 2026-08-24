@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import requests
 
-from provisioning_service.core.connectors.base import BaseConnector, ConnectorError
+from provisioning_service.core.connectors.base import BaseConnector, ConnectorError, fields_from_sample
 
 PAGE_SIZE = 500
 TIMEOUT = 60
@@ -28,6 +28,20 @@ FROM item
 WHERE isinactive = 'F'
 ORDER BY itemid
 """
+
+# Curated fallback — the standard item fields this connector queries.
+DEFAULT_ITEM_FIELDS = [
+    {"name": "itemid", "type": "string", "label": "Item ID / SKU", "custom": False},
+    {"name": "displayname", "type": "string", "label": "Display Name", "custom": False},
+    {"name": "salesdescription", "type": "string", "label": "Sales Description", "custom": False},
+    {"name": "purchasedescription", "type": "string", "label": "Purchase Description", "custom": False},
+    {"name": "baseprice", "type": "number", "label": "Base Price", "custom": False},
+    {"name": "currency", "type": "string", "label": "Currency", "custom": False},
+    {"name": "itemtype", "type": "string", "label": "Item Type", "custom": False},
+    {"name": "isinactive", "type": "boolean", "label": "Inactive (invert with !)", "custom": False},
+    {"name": "upccode", "type": "string", "label": "UPC / Barcode", "custom": False},
+    {"name": "class", "type": "string", "label": "Class / Category", "custom": False},
+]
 
 
 class NetSuiteConnector(BaseConnector):
@@ -112,3 +126,37 @@ class NetSuiteConnector(BaseConnector):
         has_more = bool(body.get("hasMore"))
         next_cursor = str(offset + PAGE_SIZE) if has_more else None
         return items, next_cursor
+
+    def discover_schema(self) -> List[Dict[str, Any]]:
+        """Discover item fields via the REST metadata catalog.
+
+        Custom fields (``custitem_*``) are flagged custom=True. The
+        catalog is not enabled on every account — falls back to the
+        curated standard field list.
+        """
+        url = f"{self._base_url()}/services/rest/record/v1/metadata-catalog/item"
+        try:
+            resp = requests.get(
+                url,
+                headers={"Authorization": self._auth_header("GET", url)},
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            fields: List[Dict[str, Any]] = []
+            # Catalog shape: {"fields": {"<name": {...}}} or nested links — parse defensively
+            raw_fields = data.get("fields") or {}
+            if isinstance(raw_fields, dict):
+                for name, meta in raw_fields.items():
+                    fields.append({
+                        "name": name,
+                        "type": str((meta or {}).get("type", "string")).lower(),
+                        "label": (meta or {}).get("label", name),
+                        "custom": name.startswith("custitem_"),
+                    })
+            if fields:
+                return fields
+        except Exception as e:
+            from provisioning_service.utils.logger import logger
+            logger.warning(f"NetSuite metadata catalog failed, using defaults: {e}")
+        return list(DEFAULT_ITEM_FIELDS)

@@ -647,6 +647,7 @@ class TenantConnection(Base):
     credentials_ref = Column(String(255), nullable=True)    # Key Vault secret name (prod)
     credentials_enc = Column(JSONB, nullable=True)          # local-dev only (ENV=local guard)
     field_map = Column(JSONB, nullable=True)                # tenant overrides of default map
+    source_schema = Column(JSONB, nullable=True)            # discovered source fields: {fields, discovered_at, source}
 
     status = Column(String(20), nullable=False, default="active", index=True)  # active | error | disabled
     schedule_cron = Column(String(50), nullable=True)       # e.g. "0 2 * * *" nightly
@@ -679,6 +680,7 @@ class SyncRun(Base):
     skipped_count = Column(Integer, nullable=False, default=0)
     error_count = Column(Integer, nullable=False, default=0)
     error_summary = Column(JSONB, nullable=True)            # first N errors
+    warnings = Column(JSONB, nullable=True)                 # non-fatal issues (e.g. stale field mappings)
 
 
 class SyncRunItem(Base):

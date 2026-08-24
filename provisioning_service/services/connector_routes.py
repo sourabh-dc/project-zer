@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from provisioning_service import Models
+from provisioning_service.core.connectors.base import CANONICAL_FIELDS
 from provisioning_service.core.connectors.credentials import store_credentials
-from provisioning_service.core.connectors.engine import build_connector, run_sync
+from provisioning_service.core.connectors.engine import build_connector, discover_and_store_schema, run_sync
 from provisioning_service.core.connectors.scheduler import schedule_connection, unschedule_connection
 from provisioning_service.core.db_config import SessionLocal, get_db
 from provisioning_service.core.entitlement_helpers import load_tenant_features
@@ -63,6 +64,8 @@ class ConnectionOut(BaseModel):
     deactivate_missing: bool
     last_sync_at: Optional[str] = None
     last_sync_status: Optional[str] = None
+    has_schema: bool = False
+    schema_discovered_at: Optional[str] = None
 
 
 class SyncRunOut(BaseModel):
@@ -77,6 +80,7 @@ class SyncRunOut(BaseModel):
     skipped_count: int
     error_count: int
     error_summary: Optional[List[Dict[str, Any]]] = None
+    warnings: Optional[List[Dict[str, Any]]] = None
 
 
 class SyncRunItemOut(BaseModel):
@@ -120,6 +124,7 @@ def _get_connection(db: Session, tenant_id: str, connection_id: str) -> Models.T
 
 
 def _conn_out(c: Models.TenantConnection) -> ConnectionOut:
+    schema = c.source_schema or {}
     return ConnectionOut(
         connection_id=str(c.connection_id),
         provider_code=c.provider_code,
@@ -132,6 +137,8 @@ def _conn_out(c: Models.TenantConnection) -> ConnectionOut:
         deactivate_missing=c.deactivate_missing or False,
         last_sync_at=c.last_sync_at.isoformat() if c.last_sync_at else None,
         last_sync_status=c.last_sync_status,
+        has_schema=bool(schema.get("fields")),
+        schema_discovered_at=schema.get("discovered_at"),
     )
 
 
@@ -148,6 +155,7 @@ def _run_out(r: Models.SyncRun) -> SyncRunOut:
         skipped_count=r.skipped_count,
         error_count=r.error_count,
         error_summary=r.error_summary,
+        warnings=r.warnings,
     )
 
 
@@ -221,6 +229,10 @@ def create_connection(
     db.commit()
     db.refresh(connection)
     schedule_connection(connection)
+
+    # Schema matcher: discover source fields for the mapping UI (best-effort)
+    discover_and_store_schema(db, connection)
+
     logger.info(f"Connection created: {connection.connection_id} ({req.provider_code}) for tenant {tenant_id}")
     return _conn_out(connection)
 
@@ -317,7 +329,56 @@ def test_connection(
     elif ok and connection.status == "error":
         connection.status = "active"
         db.commit()
+    if ok:
+        # Refresh the discovered schema while we're connected (best-effort)
+        discover_and_store_schema(db, connection)
     return TestResultOut(ok=ok, message=message)
+
+
+# ── Schema matcher ──────────────────────────────────────────────────
+
+@router.get("/canonical-fields")
+def list_canonical_fields(
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Canonical target fields for the mapping UI (same for all providers)."""
+    return {"fields": CANONICAL_FIELDS}
+
+
+@router.get("/tenants/{tenant_id}/connections/{connection_id}/schema")
+def get_connection_schema(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Return the discovered source schema stored on the connection."""
+    _check_tenant(ctx, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    schema = connection.source_schema
+    if not schema:
+        raise HTTPException(
+            status_code=404,
+            detail="No schema discovered yet — call schema/refresh or re-test the connection",
+        )
+    return schema
+
+
+@router.post("/tenants/{tenant_id}/connections/{connection_id}/schema/refresh")
+def refresh_connection_schema(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Re-discover the source schema live from the ERP and store it."""
+    _check_tenant(ctx, tenant_id)
+    _require_erp_feature(db, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    payload = discover_and_store_schema(db, connection)
+    if not payload:
+        raise HTTPException(status_code=502, detail="Schema discovery failed for this provider")
+    return payload
 
 
 # ── Sync ────────────────────────────────────────────────────────────

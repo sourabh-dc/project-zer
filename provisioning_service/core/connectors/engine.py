@@ -39,6 +39,35 @@ def build_connector(connection: TenantConnection) -> BaseConnector:
     return cls(connection.config or {}, credentials)
 
 
+def discover_and_store_schema(db: Session, connection: TenantConnection) -> Dict[str, Any]:
+    """Run the connector's discover_schema() and store it on the connection.
+
+    Best-effort: discovery failures fall back to the provider's curated
+    list, and total failure leaves any existing schema untouched.
+    Returns the stored payload: {"fields", "discovered_at", "source"}.
+    """
+    existing = connection.source_schema or {}
+    try:
+        fields = build_connector(connection).discover_schema()
+    except Exception as e:
+        logger.warning(f"Schema discovery failed for {connection.connection_id}: {e}")
+        return existing
+
+    if not fields:
+        return existing
+
+    payload = {
+        "fields": fields,
+        "discovered_at": datetime.now(timezone.utc).isoformat(),
+        "source": "live",
+        "field_count": len(fields),
+        "custom_count": sum(1 for f in fields if f.get("custom")),
+    }
+    connection.source_schema = payload
+    db.commit()
+    return payload
+
+
 def _find_or_create_category(db: Session, tenant_id, name: str) -> Optional[uuid.UUID]:
     name = name.strip()
     if not name:
@@ -116,6 +145,32 @@ def _log_item(db: Session, run: SyncRun, item: Optional[CanonicalItem], action: 
     return logged + 1
 
 
+def _validate_mappings(connection: TenantConnection, field_map: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Check mapped source fields against the discovered source schema.
+
+    Returns a list of warnings (empty when no schema stored or all good).
+    A missing field means the ERP likely renamed/removed it — the sync
+    still runs, but the canonical field gets None for every row.
+    """
+    schema = connection.source_schema or {}
+    known = {f.get("name") for f in schema.get("fields", []) if isinstance(f, dict)}
+    if not known:
+        return []
+    warnings: List[Dict[str, Any]] = []
+    for canonical, source_field in field_map.items():
+        if not source_field:
+            continue
+        name = source_field.lstrip("!")
+        if name not in known:
+            warnings.append({
+                "canonical_field": canonical,
+                "source_field": name,
+                "message": f"Mapped source field '{name}' not found in discovered schema — "
+                           f"renamed or removed in the ERP?",
+            })
+    return warnings
+
+
 def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual") -> SyncRun:
     """Execute a full sync for a connection. Returns the finished SyncRun."""
     # One running sync per connection
@@ -141,6 +196,14 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
     logged = 0
     errors: List[Dict[str, Any]] = []
     seen_external_ids: set = set()
+
+    # Schema matcher: flag stale mappings before pulling any data
+    warnings = _validate_mappings(connection, field_map)
+    if warnings:
+        run.warnings = warnings
+        db.commit()
+        for w in warnings:
+            logger.warning(f"Sync run {run.sync_run_id}: mapping warning: {w['message']}")
 
     try:
         connector = build_connector(connection)

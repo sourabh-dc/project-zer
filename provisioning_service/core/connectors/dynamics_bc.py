@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from provisioning_service.core.connectors.base import BaseConnector, ConnectorError
+from provisioning_service.core.connectors.base import BaseConnector, ConnectorError, fields_from_sample
 
 TOKEN_URL = "https://login.microsoftonline.com/{aad_tenant}/oauth2/v2.0/token"
 API_SCOPE = "https://api.businesscentral.dynamics.com/.default"
@@ -93,3 +93,50 @@ class DynamicsBCConnector(BaseConnector):
         items = body.get("value", [])
         next_link = body.get("@odata.nextLink")
         return items, next_link
+
+    def discover_schema(self) -> List[Dict[str, Any]]:
+        """Discover Item fields from the OData $metadata document.
+
+        Falls back to inferring from one sample item when metadata
+        parsing fails (extension fields still appear in samples).
+        """
+        environment = self.config.get("environment", "production")
+        aad_tenant = self.config.get("aad_tenant_id")
+        base = API_BASE.format(aad_tenant=aad_tenant, environment=environment)
+        try:
+            resp = requests.get(
+                f"{base}/api/v2.0/$metadata",
+                headers=self._headers(),
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.text)
+            fields: List[Dict[str, Any]] = []
+            for entity_type in root.iter("{http://docs.oasis-open.org/odata/ns/edm}EntityType"):
+                if entity_type.get("Name") != "Item":
+                    continue
+                for prop in entity_type.iter("{http://docs.oasis-open.org/odata/ns/edm}Property"):
+                    edm_type = (prop.get("Type") or "").replace("Edm.", "").lower()
+                    fields.append({
+                        "name": prop.get("Name", ""),
+                        "type": edm_type or "string",
+                        "label": prop.get("Name", ""),
+                        "custom": False,
+                    })
+                break
+            if fields:
+                return fields
+        except Exception as e:
+            logger_warning = f"BC $metadata discovery failed, sampling instead: {e}"
+            from provisioning_service.utils.logger import logger
+            logger.warning(logger_warning)
+
+        # Fallback: infer from one live item
+        try:
+            sample, _ = self.fetch_products(None)
+            if sample:
+                return fields_from_sample(sample[0])
+        except Exception:
+            pass
+        return []

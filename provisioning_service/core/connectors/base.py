@@ -32,6 +32,46 @@ class ConnectorError(Exception):
     """Raised for auth/transport failures. Carries a client-safe message."""
 
 
+def fields_from_sample(sample: Dict[str, Any], custom_prefixes: Tuple[str, ...] = ()) -> List[Dict[str, Any]]:
+    """Infer a schema field list from one raw provider record.
+
+    Fallback for providers where live metadata introspection fails.
+    """
+    fields: List[Dict[str, Any]] = []
+    for key, value in sample.items():
+        if isinstance(value, bool):
+            ftype = "boolean"
+        elif isinstance(value, (int, float)):
+            ftype = "number"
+        elif isinstance(value, (dict, list)):
+            ftype = "object"
+        else:
+            ftype = "string"
+        fields.append({
+            "name": key,
+            "type": ftype,
+            "label": key,
+            "custom": any(key.startswith(p) for p in custom_prefixes),
+        })
+    return fields
+
+
+# Canonical targets the mapping UI offers (canonical_field → label).
+CANONICAL_FIELDS: List[Dict[str, str]] = [
+    {"field": "external_id", "label": "External ID", "required": "true"},
+    {"field": "sku", "label": "SKU / Item Code", "required": "true"},
+    {"field": "name", "label": "Product Name", "required": "true"},
+    {"field": "description", "label": "Description", "required": "false"},
+    {"field": "category_name", "label": "Category", "required": "false"},
+    {"field": "vendor_name", "label": "Vendor", "required": "false"},
+    {"field": "purchase_price", "label": "Purchase Price", "required": "false"},
+    {"field": "currency", "label": "Currency", "required": "false"},
+    {"field": "unit", "label": "Unit of Measure", "required": "false"},
+    {"field": "ean", "label": "Barcode / EAN", "required": "false"},
+    {"field": "is_active", "label": "Active Flag (prefix source with ! to invert)", "required": "false"},
+]
+
+
 class BaseConnector(ABC):
     """Contract every ERP provider connector fulfils."""
 
@@ -51,6 +91,19 @@ class BaseConnector(ABC):
 
         Returns (raw_items, next_cursor). next_cursor=None means done.
         """
+
+    def discover_schema(self) -> List[Dict[str, Any]]:
+        """Discover the source system's item fields.
+
+        Returns a flat list: [{"name", "type", "label", "custom"}].
+        Used by the schema matcher: stored on the connection, drives the
+        mapping UI dropdown and sync-time mapping validation.
+
+        Default: empty list (provider does not support discovery).
+        Implementations must be best-effort — fall back to a curated
+        field list when live introspection fails.
+        """
+        return []
 
     def normalize(self, raw: Dict[str, Any], field_map: Dict[str, str]) -> CanonicalItem:
         """Default normalizer: apply field_map (canonical_field <- provider_field).

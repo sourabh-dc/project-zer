@@ -82,7 +82,7 @@ _EMAIL_CS    = _secret("azure-email",         "AZURE_EMAIL_CONNECTION_STRING",""
 _AIFI_KEY    = _secret("aifi-api-key",        "AIFI_API_KEY",                "")
 _SB_CONN     = _secret("service-bus-connection", "SERVICE_BUS_CONNECTION_STRING", "")
 _CH_API_KEY  = _secret("companies-house-api-key", "COMPANIES_HOUSE_API_KEY",     "")
-
+_GOOGLE_KEY  = _secret("google-maps-api-key",   "GOOGLE_MAPS_API_KEY",         "")
 
 # ═══════════════════════════════════════════════════════════════════
 # Settings
@@ -141,9 +141,15 @@ class Settings(BaseSettings):
         "COMPANIES_HOUSE_BASE_URL", "https://api.company-information.service.gov.uk"
     )
 
+    # ── Google Maps / Places ──────────────────────────────────────
+    GOOGLE_MAPS_API_KEY: str = _GOOGLE_KEY
+    GOOGLE_MAPS_BASE_URL: str = os.getenv(
+        "GOOGLE_MAPS_BASE_URL", "https://maps.googleapis.com/maps/api"
+    )
+
     # ── Service Bus ───────────────────────────────────────────────
     SB_NAMESPACE: str = os.getenv("SB_NAMESPACE", "zeroque.servicebus.windows.net")
-    QUEUE_NAME: str = os.getenv("QUEUE_NAME", "outbox-task-queue")
+    QUEUE_NAME: str = os.getenv("QUEUE_NAME", "provisioning-outbox-queue")
 
     # ── OPA / Policy Engine ───────────────────────────────────────
     OPA_URL: str = os.getenv("OPA_URL", "http://localhost:8181")

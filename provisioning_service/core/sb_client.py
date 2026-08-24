@@ -28,7 +28,7 @@ class MessagingClient:
         if not self.sender:
             await self.start()
 
-        message = ServiceBusMessage(json.dumps({"outbox_id": outbox_id}))
+        message = ServiceBusMessage(json.dumps({"outbox_id": outbox_id, "source": "provisioning_service"}))
         await self.sender.send_messages(message)
 
 

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from provisioning_service.core.connectors.base import BaseConnector, ConnectorError
+from provisioning_service.core.connectors.base import BaseConnector, ConnectorError, fields_from_sample
 
 PAGE_SIZE = 100
 TIMEOUT = 30
@@ -112,3 +112,47 @@ class SapB1Connector(BaseConnector):
 
         next_cursor = str(skip + PAGE_SIZE) if len(items) == PAGE_SIZE else None
         return items, next_cursor
+
+    def discover_schema(self) -> List[Dict[str, Any]]:
+        """Discover Item fields from the Service Layer $metadata.
+
+        SAP B1 user-defined fields appear as ``U_*`` properties and are
+        flagged custom=True. Falls back to sample-record inference.
+        """
+        try:
+            resp = requests.get(
+                f"{self._base()}/b1s/v1/$metadata",
+                headers=self._headers(),
+                timeout=TIMEOUT,
+                verify=not self.config.get("allow_insecure_ssl", False),
+            )
+            resp.raise_for_status()
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.text)
+            fields: List[Dict[str, Any]] = []
+            for entity_type in root.iter("{http://docs.oasis-open.org/odata/ns/edm}EntityType"):
+                if entity_type.get("Name") != "Item":
+                    continue
+                for prop in entity_type.iter("{http://docs.oasis-open.org/odata/ns/edm}Property"):
+                    name = prop.get("Name", "")
+                    edm_type = (prop.get("Type") or "").replace("Edm.", "").lower()
+                    fields.append({
+                        "name": name,
+                        "type": edm_type or "string",
+                        "label": name,
+                        "custom": name.startswith("U_"),
+                    })
+                break
+            if fields:
+                return fields
+        except Exception as e:
+            from provisioning_service.utils.logger import logger
+            logger.warning(f"SAP B1 $metadata discovery failed, sampling instead: {e}")
+
+        try:
+            sample, _ = self.fetch_products(None)
+            if sample:
+                return fields_from_sample(sample[0], custom_prefixes=("U_",))
+        except Exception:
+            pass
+        return []
