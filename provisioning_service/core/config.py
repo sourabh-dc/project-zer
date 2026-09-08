@@ -83,6 +83,7 @@ _AIFI_KEY    = _secret("aifi-api-key",        "AIFI_API_KEY",                "")
 _SB_CONN     = _secret("service-bus-connection", "SERVICE_BUS_CONNECTION_STRING", "")
 _CH_API_KEY  = _secret("companies-house-api-key", "COMPANIES_HOUSE_API_KEY",     "")
 _GOOGLE_KEY  = _secret("google-maps-api-key",   "GOOGLE_MAPS_API_KEY",         "")
+_CREDITSAFE_KEY = _secret("creditsafe-api-key", "CREDITSAFE_API_KEY",          "")
 
 # ═══════════════════════════════════════════════════════════════════
 # Settings
@@ -145,6 +146,15 @@ class Settings(BaseSettings):
     GOOGLE_MAPS_API_KEY: str = _GOOGLE_KEY
     GOOGLE_MAPS_BASE_URL: str = os.getenv(
         "GOOGLE_MAPS_BASE_URL", "https://maps.googleapis.com/maps/api"
+    )
+    GOOGLE_PLACES_BASE_URL: str = os.getenv(
+        "GOOGLE_PLACES_BASE_URL", "https://places.googleapis.com/v1"
+    )
+
+    # ── Creditsafe (global company data) ──────────────────────────
+    CREDITSAFE_API_KEY: str = _CREDITSAFE_KEY
+    CREDITSAFE_BASE_URL: str = os.getenv(
+        "CREDITSAFE_BASE_URL", "https://connect.creditsafe.com/v1"
     )
 
     # ── Service Bus ───────────────────────────────────────────────

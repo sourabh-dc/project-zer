@@ -1,5 +1,6 @@
 """
-Google Address & Location APIs — proxy around Google Places / Geocoding.
+Google Address & Location APIs — proxy around Google Places API (New)
+and the Geocoding API.
 
 Mirrors the Companies House pattern: the API key stays server-side and
 the frontend gets slim, form-ready responses.
@@ -10,6 +11,10 @@ Endpoints:
   - GET /google/address/reverse       — address from coordinates
         ("use current location": browser Geolocation gives lat/lng,
         this turns them into a fillable address)
+
+Note: autocomplete + place details use Places API (New) — the legacy
+Places API is unavailable on Google Cloud projects created after
+March 2025. Reverse geocoding stays on the Geocoding API.
 """
 from __future__ import annotations
 
@@ -66,18 +71,33 @@ def _api_key() -> str:
     return key
 
 
+def _places_headers(field_mask: Optional[str] = None) -> dict:
+    """Headers for Places API (New) — key header + optional field mask."""
+    headers = {"X-Goog-Api-Key": _api_key(), "Content-Type": "application/json"}
+    if field_mask:
+        headers["X-Goog-FieldMask"] = field_mask
+    return headers
+
+
 def _component(components: list, type_name: str, short: bool = False) -> str:
-    """Pull one component out of a Google address_components array."""
+    """Pull one component out of a Google address components array.
+
+    Handles both shapes: legacy (long_name/short_name) and
+    Places API (New) (longText/shortText).
+    """
     for comp in components:
         if type_name in (comp.get("types") or []):
-            return comp.get("short_name" if short else "long_name", "")
+            if short:
+                return comp.get("shortText") or comp.get("short_name", "")
+            return comp.get("longText") or comp.get("long_name", "")
     return ""
 
 
 def _build_address(result: dict) -> AddressDetails:
-    """Map a Google geocode/place-details result → AddressDetails."""
-    components = result.get("address_components", []) or []
+    """Map a geocode/place-details result → AddressDetails (both API shapes)."""
+    components = result.get("address_components") or result.get("addressComponents") or []
     geometry = (result.get("geometry") or {}).get("location") or {}
+    location = result.get("location") or {}  # Places API (New) top-level
 
     street_number = _component(components, "street_number")
     route = _component(components, "route")
@@ -91,7 +111,7 @@ def _build_address(result: dict) -> AddressDetails:
     )
 
     return AddressDetails(
-        formatted_address=result.get("formatted_address", ""),
+        formatted_address=result.get("formatted_address") or result.get("formattedAddress", ""),
         address_line_1=line_1,
         address_line_2=_component(components, "sublocality")
                        or _component(components, "sublocality_level_1"),
@@ -100,23 +120,41 @@ def _build_address(result: dict) -> AddressDetails:
         postal_code=_component(components, "postal_code"),
         country=_component(components, "country"),
         country_code=_component(components, "country", short=True),
-        latitude=geometry.get("lat"),
-        longitude=geometry.get("lng"),
+        latitude=geometry.get("lat") or location.get("latitude"),
+        longitude=geometry.get("lng") or location.get("longitude"),
     )
 
 
-def _check_status(data: dict) -> None:
-    """Translate Google status codes into HTTP errors."""
+def _check_legacy_status(data: dict) -> None:
+    """Translate Geocoding API status field into HTTP errors."""
     status = data.get("status")
     if status in ("OK", "ZERO_RESULTS"):
         return
     if status == "REQUEST_DENIED":
         logger.error(f"Google API request denied: {data.get('error_message')}")
-        raise HTTPException(status_code=500, detail="Google Maps API key invalid or API not enabled")
+        raise HTTPException(status_code=500, detail="Google API key invalid or Geocoding API not enabled")
     if status == "OVER_QUERY_LIMIT":
         raise HTTPException(status_code=429, detail="Google Maps quota exceeded — try again later")
     logger.error(f"Google API error: {status} {data.get('error_message')}")
     raise HTTPException(status_code=502, detail="Google Maps API error")
+
+
+def _check_places_response(resp: httpx.Response) -> None:
+    """Places API (New) signals errors via HTTP status, not a body field."""
+    if resp.status_code == 200:
+        return
+    try:
+        message = (resp.json().get("error") or {}).get("message", resp.text[:200])
+    except Exception:
+        message = resp.text[:200]
+    logger.error(f"Places API (New) error {resp.status_code}: {message}")
+    if resp.status_code == 403:
+        raise HTTPException(status_code=500, detail="Google API key invalid or Places API (New) not enabled")
+    if resp.status_code == 429:
+        raise HTTPException(status_code=429, detail="Google Maps quota exceeded — try again later")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Place not found")
+    raise HTTPException(status_code=502, detail="Google Places API error")
 
 
 # ---------------------------------------------------------------------------
@@ -132,37 +170,36 @@ async def address_autocomplete(
     """
     Address suggestions while the user types.
 
-    Calls Google Places Autocomplete and returns slimmed-down items
+    Calls Places API (New) Autocomplete and returns slimmed-down items
     for a dropdown. Debounce client-side (~300ms) to save quota.
     """
-    params = {
+    body: dict = {
         "input": input,
-        "types": "address",
-        "key": _api_key(),
+        "includedPrimaryTypes": ["street_address", "premise", "subpremise", "route"],
     }
     if country:
-        params["components"] = f"country:{country.lower()}"
+        body["includedRegionCodes"] = [country.lower()]
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{SETTINGS.GOOGLE_MAPS_BASE_URL}/place/autocomplete/json",
-                params=params,
+            resp = await client.post(
+                f"{SETTINGS.GOOGLE_PLACES_BASE_URL}/places:autocomplete",
+                json=body,
+                headers=_places_headers(),
             )
-            resp.raise_for_status()
-            data = resp.json()
+        _check_places_response(resp)
+        data = resp.json()
 
-        _check_status(data)
-
-        items = [
-            AddressSuggestion(
-                place_id=p.get("place_id", ""),
-                description=p.get("description", ""),
-                main_text=(p.get("structured_formatting") or {}).get("main_text", ""),
-                secondary_text=(p.get("structured_formatting") or {}).get("secondary_text", ""),
-            )
-            for p in (data.get("predictions") or [])[:max_results]
-        ]
+        items = []
+        for s in (data.get("suggestions") or [])[:max_results]:
+            prediction = s.get("placePrediction") or {}
+            fmt = prediction.get("structuredFormat") or {}
+            items.append(AddressSuggestion(
+                place_id=prediction.get("placeId", ""),
+                description=(prediction.get("text") or {}).get("text", ""),
+                main_text=(fmt.get("mainText") or {}).get("text", ""),
+                secondary_text=(fmt.get("secondaryText") or {}).get("text", ""),
+            ))
         return AddressSuggestionResponse(items=items)
     except HTTPException:
         raise
@@ -176,27 +213,17 @@ async def address_place_details(place_id: str):
     """
     Full structured address for a suggestion the user picked.
 
-    Calls Google Place Details. Use this to fill the address form after
-    the user selects from the autocomplete dropdown.
+    Calls Places API (New) Place Details. Use this to fill the address
+    form after the user selects from the autocomplete dropdown.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{SETTINGS.GOOGLE_MAPS_BASE_URL}/place/details/json",
-                params={
-                    "place_id": place_id,
-                    "fields": "formatted_address,address_component,geometry",
-                    "key": _api_key(),
-                },
+                f"{SETTINGS.GOOGLE_PLACES_BASE_URL}/places/{place_id}",
+                headers=_places_headers("formattedAddress,addressComponents,location"),
             )
-            resp.raise_for_status()
-            data = resp.json()
-
-        _check_status(data)
-        result = data.get("result")
-        if not result:
-            raise HTTPException(status_code=404, detail="Place not found")
-        return _build_address(result)
+        _check_places_response(resp)
+        return _build_address(resp.json())
     except HTTPException:
         raise
     except Exception as exc:
@@ -224,7 +251,7 @@ async def address_reverse_geocode(
             resp.raise_for_status()
             data = resp.json()
 
-        _check_status(data)
+        _check_legacy_status(data)
         results = data.get("results") or []
         if not results:
             raise HTTPException(status_code=404, detail="No address found for these coordinates")

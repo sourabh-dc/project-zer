@@ -72,17 +72,27 @@ PROVIDERS: List[Dict[str, Any]] = [
     {
         "provider_code": "netsuite",
         "display_name": "Oracle NetSuite",
-        "auth_type": "tba",
+        "auth_type": "oauth2_m2m",
         "config_schema": {
             "config": [
                 {"key": "account_id", "label": "Account ID", "required": True,
                  "placeholder": "1234567_SB1"},
+                {"key": "auth_method", "label": "Auth method", "required": False,
+                 "type": "select", "options": ["oauth2_m2m", "tba"], "default": "oauth2_m2m"},
             ],
             "credentials": [
-                {"key": "consumer_key", "label": "Consumer key", "required": True, "secret": True},
-                {"key": "consumer_secret", "label": "Consumer secret", "required": True, "secret": True},
-                {"key": "token_id", "label": "Token ID", "required": True, "secret": True},
-                {"key": "token_secret", "label": "Token secret", "required": True, "secret": True},
+                # OAuth 2.0 Client Credentials (M2M) — recommended
+                {"key": "client_id", "label": "Client ID (M2M)", "required": False},
+                {"key": "certificate_id", "label": "Certificate ID (M2M)", "required": False},
+                {"key": "private_key", "label": "Private key PEM (M2M)", "required": False,
+                 "secret": True, "type": "textarea"},
+                {"key": "algorithm", "label": "Signing algorithm (PS256/ES256)", "required": False,
+                 "default": "PS256"},
+                # TBA — legacy fallback
+                {"key": "consumer_key", "label": "Consumer key (TBA)", "required": False, "secret": True},
+                {"key": "consumer_secret", "label": "Consumer secret (TBA)", "required": False, "secret": True},
+                {"key": "token_id", "label": "Token ID (TBA)", "required": False, "secret": True},
+                {"key": "token_secret", "label": "Token secret (TBA)", "required": False, "secret": True},
             ],
         },
         "default_field_map": {

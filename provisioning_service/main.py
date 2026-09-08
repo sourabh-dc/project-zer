@@ -35,6 +35,7 @@ from provisioning_service.services.branding_routes import router as branding_rou
 from provisioning_service.services.connector_routes import router as connector_router
 from provisioning_service.services.setup_status_routes import router as setup_status_router
 from provisioning_service.services.google_places_routes import router as google_places_router
+from provisioning_service.services.creditsafe_routes import router as creditsafe_router
 from provisioning_service.core.helpers.load_connectors import seed_connector_providers
 from provisioning_service.core.connectors.scheduler import start_scheduler, stop_scheduler
 from provisioning_service.utils.logger import logger
@@ -137,6 +138,7 @@ app.include_router(branding_router)
 app.include_router(connector_router)
 app.include_router(setup_status_router)
 app.include_router(google_places_router)
+app.include_router(creditsafe_router)
 
 
 @app.get("/health")
