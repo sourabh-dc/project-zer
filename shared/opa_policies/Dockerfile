@@ -1,7 +1,7 @@
 # OPA (Open Policy Agent) Server Dockerfile
 # Loads Rego policies from shared/opa_policies/zeroque/
 
-FROM openpolicyagent/opa:latest
+FROM openpolicyagent/opa:1.20.2
 
 # Create policy directory
 WORKDIR /policies
@@ -16,4 +16,4 @@ EXPOSE 8181
 # --server: Run in server mode
 # --addr: Listen on all interfaces
 # --log-level: info logging
-CMD ["run", "--server", "--addr", ":8181", "--log-level", "info", "/policies"]
+CMD ["run", "--server", "--addr", ":8181", "--log-level", "info", "--skip-version-check", "/policies"]

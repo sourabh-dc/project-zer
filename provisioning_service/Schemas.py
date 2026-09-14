@@ -188,6 +188,9 @@ class TenantRoleRequest(BaseModel):
     """Tenant-scoped role creation"""
     code: str = Field(min_length=1, max_length=100, description="Role code (required)")
     description: Optional[str] = Field(None, max_length=500, description="Role description (optional)")
+    permissions: Optional[List[str]] = Field(
+        None, description="Permission codes to assign at creation (optional)"
+    )
 
 
 class TenantRolePermissionRequest(BaseModel):

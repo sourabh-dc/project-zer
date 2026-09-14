@@ -2546,6 +2546,20 @@ async def create_tenant_role(
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Role code already exists for this tenant")
+
+    # Validate permission codes up-front — fail before creating anything
+    perm_codes = list(dict.fromkeys(req.permissions or []))  # dedupe, keep order
+    if perm_codes:
+        found = {
+            p.code for p in db.query(Permission).filter(Permission.code.in_(perm_codes)).all()
+        }
+        unknown = [c for c in perm_codes if c not in found]
+        if unknown:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown permission code(s): {', '.join(unknown)}",
+            )
+
     role = TenantRole(
         role_id=uuid.uuid4(),
         tenant_id=uuid.UUID(str(tenant_id)),
@@ -2553,9 +2567,20 @@ async def create_tenant_role(
         description=req.description
     )
     db.add(role)
+    for pc in perm_codes:
+        db.add(TenantRolePermission(
+            id=uuid.uuid4(),
+            tenant_role_id=role.role_id,
+            permission_code=pc,
+        ))
     db.commit()
     db.refresh(role)
-    return {"role_id": str(role.role_id), "code": role.code, "description": role.description}
+    return {
+        "role_id": str(role.role_id),
+        "code": role.code,
+        "description": role.description,
+        "permissions": perm_codes,
+    }
 
 
 @router.post("/tenant-roles/{role_id}/permissions", status_code=201)
@@ -2661,6 +2686,102 @@ async def list_tenant_roles(
             }
             for r in roles
         ]
+    }
+
+
+@router.get("/tenant-roles/{role_ref}/detail")
+async def get_tenant_role_detail(
+    role_ref: str,
+    db: Session = Depends(get_db),
+    ctx = Depends(check_user_authorization("tenant.admin"))
+):
+    """Full detail for one tenant role: permissions, assigned users (with
+    scopes), and change history.
+
+    ``role_ref`` accepts either the role UUID or its code.
+    History is returned empty until role audit events are recorded.
+    """
+    from provisioning_service.Models import UserResponsibilityScope
+
+    tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing tenant context")
+    tid = uuid.UUID(str(tenant_id))
+
+    # Resolve by UUID, fall back to role code
+    role = None
+    try:
+        role_uuid = uuid.UUID(role_ref)
+        role = db.query(TenantRole).filter(
+            TenantRole.role_id == role_uuid,
+            TenantRole.tenant_id == tid,
+        ).first()
+    except ValueError:
+        pass
+    if role is None:
+        role = db.query(TenantRole).filter(
+            TenantRole.code == role_ref,
+            TenantRole.tenant_id == tid,
+        ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Tenant role not found")
+
+    # Permissions (with descriptions)
+    perm_rows = (
+        db.query(TenantRolePermission, Permission)
+        .join(Permission, TenantRolePermission.permission_code == Permission.code)
+        .filter(TenantRolePermission.tenant_role_id == role.role_id)
+        .all()
+    )
+    permissions = [
+        {"code": p.code, "description": p.description}
+        for _, p in perm_rows
+    ]
+
+    # Assigned users (+ identity for email, + responsibility scopes)
+    assignments = (
+        db.query(TenantUserRole, User)
+        .join(User, TenantUserRole.user_id == User.user_id)
+        .filter(TenantUserRole.tenant_role_id == role.role_id)
+        .all()
+    )
+    user_ids = [u.user_id for _, u in assignments]
+    identities = {
+        i.user_id: i
+        for i in db.query(UserIdentity).filter(UserIdentity.user_id.in_(user_ids)).all()
+    } if user_ids else {}
+    scope_rows = db.query(UserResponsibilityScope).filter(
+        UserResponsibilityScope.user_id.in_(user_ids),
+        UserResponsibilityScope.tenant_id == tid,
+    ).all() if user_ids else []
+    scopes_by_user: dict = {}
+    for s in scope_rows:
+        scopes_by_user.setdefault(s.user_id, []).append({
+            "responsibility_code": s.responsibility_code,
+            "scope_type": s.scope_type,
+            "scope_id": s.scope_id,
+        })
+
+    users = [
+        {
+            "user_id": str(u.user_id),
+            "display_name": u.display_name,
+            "email": identities[u.user_id].email if u.user_id in identities else None,
+            "is_active": u.is_active,
+            "assigned_at": tur.created_at.isoformat() if tur.created_at else None,
+            "scopes": scopes_by_user.get(u.user_id, []),
+        }
+        for tur, u in assignments
+    ]
+
+    return {
+        "role_id": str(role.role_id),
+        "code": role.code,
+        "description": role.description,
+        "created_at": role.created_at.isoformat() if role.created_at else None,
+        "permissions": permissions,
+        "users": users,
+        "history": [],  # TODO: populate from role audit events when recorded
     }
 
 

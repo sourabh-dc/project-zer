@@ -2,8 +2,12 @@ name: Deploy OPA Policy Server
 
 on:
   push:
+    branches:
+      - production
+      - develop
     paths:
       - "shared/opa_policies/**"
+      - ".github/workflows/deploy-opa.yml"
   workflow_dispatch:
 
 jobs:
@@ -28,6 +32,7 @@ jobs:
           context: shared/opa_policies
           file: shared/opa_policies/Dockerfile
           push: true
+          pull: true
           tags: |
             ${{ secrets.ACR_NAME }}.azurecr.io/opa-server:${{ github.sha }}
             ${{ secrets.ACR_NAME }}.azurecr.io/opa-server:latest
