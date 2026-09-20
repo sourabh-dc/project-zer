@@ -32,6 +32,8 @@ class RoleItem(BaseModel):
     code: str
     description: str
     category: str  # General | Procurement | Warehouse | Finance | Human Resources
+    is_custom: bool = False               # False for global templates, True for tenant roles
+    permissions: List[str] = Field(default_factory=list)  # preset permission codes (edit prefill)
 
 
 class RoleListResponse(BaseModel):
@@ -40,6 +42,7 @@ class RoleListResponse(BaseModel):
 
 class ResponsibilityItem(BaseModel):
     """One responsibility tick-box in business language."""
+    code: str                         # responsibility code (= permission code, stable id for submit)
     label: str                          # e.g. "Approve or reject requests"
     group: str                          # e.g. "Requests and purchasing"
     permission_code: str                # underlying code e.g. "approvals.requests.respond"
@@ -168,13 +171,15 @@ async def list_roles(db: Session = Depends(get_db)):
     db_roles = {r.code: r for r in db.query(Role).all()}
 
     items: List[RoleItem] = []
-    for code, desc, _ in ROLES:
+    for code, desc, perms in ROLES:
         # Use DB description if available (overrides code-defined), else fall back
         display_desc = db_roles[code].description if code in db_roles else desc
         items.append(RoleItem(
             code=code,
             description=display_desc,
             category=_role_category(code),
+            is_custom=False,
+            permissions=list(perms),
         ))
 
     return RoleListResponse(roles=items)
@@ -210,6 +215,7 @@ async def get_role_responsibilities(role_code: str):
         if group not in groups_map:
             groups_map[group] = []
         groups_map[group].append(ResponsibilityItem(
+            code=perm_code,
             label=label,
             group=group,
             permission_code=perm_code,
@@ -274,13 +280,26 @@ async def list_job_functions(db: Session = Depends(get_db)):
 
 
 class ScopeOption(BaseModel):
-    scope_type: str         # organisation | site | cost_centre | department
+    scope_type: str         # organisation | site | cost_centre | department | sub_tenant
     scope_id: str           # UUID of the target (or "all" for organisation)
     label: str              # display name
     parent_label: Optional[str] = None  # e.g. site name for a cost centre
 
 
+class ScopeTarget(BaseModel):
+    """One dropdown option on the Set scope page."""
+    id: str
+    name: str
+
+
 class ScopeListResponse(BaseModel):
+    # Set-scope page contract (per frontend requirements)
+    sub_tenants: List[ScopeTarget] = Field(default_factory=list)
+    locations: List[ScopeTarget] = Field(default_factory=list)
+    departments: List[ScopeTarget] = Field(default_factory=list)
+    cost_centres: List[ScopeTarget] = Field(default_factory=list)
+    plan_limits: dict = Field(default_factory=dict)  # {sub_tenant|location: "fixed"|"selectable"}
+    # Flat list, backward compatible
     scopes: List[ScopeOption] = Field(default_factory=list)
 
 
@@ -290,53 +309,167 @@ async def list_scopes(
     db: Session = Depends(get_db),
 ):
     """
-    Return all available scope targets for a tenant.
+    Plan-aware scope targets for the role wizard's Set scope page.
 
-    Used by the frontend Step 4 (Scope selection) to populate dropdowns.
-    Returns organisation, sites, cost centres, and departments.
+    Sub-tenant and Location dropdowns are locked ("fixed" in plan_limits)
+    unless the tenant's plan includes tenant.subtenant.model / multi.location.
+    Department and Cost centre are always selectable.
     """
-    scopes: List[ScopeOption] = []
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid tenant_id")
 
-    # ── Organisation (always available) ───────────────────────────
-    scopes.append(ScopeOption(
-        scope_type="organisation",
-        scope_id="all",
-        label="Entire organisation",
-    ))
+    # ── Plan features drive which fields are selectable ───────────
+    try:
+        _active, _plan, _name, features = load_tenant_features(db, tenant_id)
+    except Exception:
+        features = {}
+    subtenant_on = "tenant.subtenant.model" in features
+    location_on = ("multi.location" in features) or ("multi.site" in features)
 
-    # ── Sites ─────────────────────────────────────────────────────
-    sites = db.query(Site).filter(
-        Site.active == True,
-    ).all()
-    for s in sites:
-        scopes.append(ScopeOption(
-            scope_type="site",
-            scope_id=str(s.site_id),
-            label=s.name,
-        ))
+    plan_limits = {
+        "sub_tenant": "selectable" if subtenant_on else "fixed",
+        "location": "selectable" if location_on else "fixed",
+        "department": "selectable",
+        "cost_centre": "selectable",
+    }
 
-    # ── Cost Centres ──────────────────────────────────────────────
-    cost_centres = db.query(CostCentre).filter(
-        CostCentre.tenant_id == tenant_id,
-        CostCentre.is_active == True,
-    ).all()
-    for cc in cost_centres:
-        scopes.append(ScopeOption(
-            scope_type="cost_centre",
-            scope_id=str(cc.cost_centre_id),
-            label=f"{cc.name} ({cc.code})",
-        ))
+    # ── Sub-tenants (child tenants) — only when plan allows ───────
+    sub_tenants: List[ScopeTarget] = []
+    if subtenant_on:
+        children = db.query(Tenant).filter(
+            Tenant.parent_tenant_id == tenant_uuid,
+        ).order_by(Tenant.name).all()
+        sub_tenants = [ScopeTarget(id=str(t.tenant_id), name=t.name) for t in children]
 
-    # ── Departments / Org Units ───────────────────────────────────
+    # ── Locations (sites) — only when plan allows ─────────────────
+    locations: List[ScopeTarget] = []
+    if location_on:
+        sites = db.query(Site).filter(Site.active == True).order_by(Site.name).all()
+        locations = [ScopeTarget(id=str(s.site_id), name=s.name) for s in sites]
+
+    # ── Departments (org units) — always ──────────────────────────
     org_units = db.query(OrgUnit).filter(
         OrgUnit.tenant_id == tenant_id,
         OrgUnit.status == "active",
     ).order_by(OrgUnit.name).all()
-    for ou in org_units:
-        scopes.append(ScopeOption(
-            scope_type="department",
-            scope_id=str(ou.org_unit_id),
-            label=ou.name,
-        ))
+    departments = [ScopeTarget(id=str(ou.org_unit_id), name=ou.name) for ou in org_units]
 
-    return ScopeListResponse(scopes=scopes)
+    # ── Cost centres — always ─────────────────────────────────────
+    cc_rows = db.query(CostCentre).filter(
+        CostCentre.tenant_id == tenant_id,
+        CostCentre.is_active == True,
+    ).all()
+    cost_centres = [ScopeTarget(id=str(c.cost_centre_id), name=f"{c.name} ({c.code})") for c in cc_rows]
+
+    # ── Flat list (backward compatible, now plan-aware) ───────────
+    scopes: List[ScopeOption] = [ScopeOption(
+        scope_type="organisation", scope_id="all", label="Entire organisation",
+    )]
+    scopes += [ScopeOption(scope_type="site", scope_id=l.id, label=l.name) for l in locations]
+    scopes += [ScopeOption(scope_type="cost_centre", scope_id=c.id, label=c.name) for c in cost_centres]
+    scopes += [ScopeOption(scope_type="department", scope_id=d.id, label=d.name) for d in departments]
+
+    return ScopeListResponse(
+        sub_tenants=sub_tenants,
+        locations=locations,
+        departments=departments,
+        cost_centres=cost_centres,
+        plan_limits=plan_limits,
+        scopes=scopes,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Permission catalogue — grouped, business-labelled (role creation wizard)
+# ═══════════════════════════════════════════════════════════════════
+
+# Groups + labels match the roles-configuration design screens.
+_PERMISSION_GROUP_CATALOGUE: dict[str, list[tuple[str, str]]] = {
+    "Purchasing": [
+        ("approvals.requests.create", "Create and submit purchase requests"),
+    ],
+    "Approvals": [
+        ("approvals.requests.view", "View requests awaiting approval"),
+        ("approvals.requests.respond", "Take part in approving requests"),
+        ("approvals.chains.manage", "Configure approval chains"),
+        ("budget.approve", "Approve budget changes"),
+    ],
+    "Suppliers & Catalogue": [
+        ("catalog.products.view", "View product catalogues"),
+        ("catalog.products.manage", "Create and update products"),
+        ("catalog.categories.manage", "Manage product categories"),
+        ("catalog.variants.manage", "Manage product variants"),
+        ("vendors.manage", "Create and manage suppliers"),
+    ],
+    "Finance": [
+        ("budgets.manage", "Manage budgets and cost centres"),
+        ("budgets.manage.subordinates", "Allocate budget to team members"),
+        ("budgets.instant.request", "Request instant budget top-ups"),
+        ("budgets.instant.approve", "Approve instant budget requests"),
+        ("costcentre.manage", "Manage cost centre budgets"),
+        ("cost_centres.manage", "Create and edit cost centres"),
+    ],
+    "People & Records": [
+        ("users.manage", "Invite and manage users"),
+        ("users.password.reset", "Reset user passwords"),
+        ("roles.assign", "Assign and remove roles for users"),
+        ("org_units.manage", "Manage organisational units"),
+        ("org_units.assign", "Assign users to departments"),
+    ],
+    "Subtenants & Locations": [
+        ("sites.manage", "Manage sites"),
+        ("stores.manage", "Manage stores"),
+    ],
+    "Governance": [
+        ("audit.view", "View audit history"),
+        ("audit.export", "Export authorised audit evidence"),
+    ],
+}
+
+
+class PermissionCatalogueItem(BaseModel):
+    permission_code: str
+    label: str
+    description: Optional[str] = None
+
+
+class PermissionCatalogueGroup(BaseModel):
+    group_name: str
+    items: List[PermissionCatalogueItem] = Field(default_factory=list)
+
+
+class PermissionCatalogueResponse(BaseModel):
+    groups: List[PermissionCatalogueGroup] = Field(default_factory=list)
+
+
+@router.get("/permission-catalogue", response_model=PermissionCatalogueResponse)
+async def get_permission_catalogue(db: Session = Depends(get_db)):
+    """
+    Figma-grouped permission catalogue for the "build from scratch" wizard.
+
+    Groups and labels match the design screens (Purchasing, Approvals,
+    Suppliers & Catalogue, Finance, People & Records, Subtenants & Locations,
+    Governance). Descriptions come from the permissions table when present.
+    """
+    all_codes = [code for items in _PERMISSION_GROUP_CATALOGUE.values() for code, _ in items]
+    descriptions = {
+        p.code: p.description
+        for p in db.query(Permission).filter(Permission.code.in_(all_codes)).all()
+    }
+    groups = [
+        PermissionCatalogueGroup(
+            group_name=group_name,
+            items=[
+                PermissionCatalogueItem(
+                    permission_code=code,
+                    label=label,
+                    description=descriptions.get(code),
+                )
+                for code, label in items
+            ],
+        )
+        for group_name, items in _PERMISSION_GROUP_CATALOGUE.items()
+    ]
+    return PermissionCatalogueResponse(groups=groups)

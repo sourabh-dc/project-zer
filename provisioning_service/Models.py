@@ -235,8 +235,13 @@ class TenantRole(Base):
     role_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
     code = Column(String(100), nullable=False)
+    name = Column(String(150), nullable=True)
     description = Column(String(500), nullable=True)
+    category = Column(String(50), nullable=True)  # General | Procurement | Warehouse | Finance | Human Resources
+    status = Column(String(20), nullable=False, server_default="active")  # active | inactive
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     __table_args__ = (Index('ix_tenant_role_unique', 'tenant_id', 'code', unique=True),)
 
 
@@ -246,6 +251,29 @@ class TenantRolePermission(Base):
     id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_role_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
     permission_code = Column(String, ForeignKey("permissions.code", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantRoleScope(Base):
+    """Scope (departments / cost centres) assigned to a tenant role"""
+    __tablename__ = "tenant_role_scopes"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_role_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+    scope_type = Column(String(30), nullable=False)  # department | cost_centre
+    scope_id = Column(SQLUUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index('ix_tenant_role_scope_unique', 'tenant_role_id', 'scope_type', 'scope_id', unique=True),)
+
+
+class RoleAuditEvent(Base):
+    """Per-role change history: details, permissions, scope, status"""
+    __tablename__ = "role_audit_events"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_roles.role_id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    action = Column(String(50), nullable=False)  # created | updated | permissions.updated | scope.updated | status.changed
+    detail = Column(Text, nullable=True)  # human-readable change lines, one per line
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

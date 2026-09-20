@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 import os
+import re
 import traceback
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -102,7 +103,22 @@ async def global_exception_handler(request: Request, exc: Exception):
     """Log all unhandled exceptions"""
     tb = traceback.format_exc()
     logger.error(f"Unhandled exception in {request.url.path}: {exc}\n{tb}")
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "internal_error", "message": str(exc)}},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Standard error shape: {"error": {"code", "message"}}"""
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    code = re.sub(r"[^a-z0-9]+", "_", detail.lower()).strip("_")[:60] or "error"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": code, "message": detail}},
+        headers=getattr(exc, "headers", None),
+    )
 
 allow_origins = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(

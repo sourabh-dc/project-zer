@@ -187,10 +187,34 @@ class RoleRequest(BaseModel):
 class TenantRoleRequest(BaseModel):
     """Tenant-scoped role creation"""
     code: str = Field(min_length=1, max_length=100, description="Role code (required)")
+    name: Optional[str] = Field(None, max_length=150, description="Display name (optional, defaults to code)")
     description: Optional[str] = Field(None, max_length=500, description="Role description (optional)")
+    category: Optional[str] = Field(None, max_length=50, description="General | Procurement | Warehouse | Finance | Human Resources")
     permissions: Optional[List[str]] = Field(
         None, description="Permission codes to assign at creation (optional)"
     )
+
+
+class TenantRoleUpdateRequest(BaseModel):
+    """Update tenant role details (name / description / category)"""
+    name: Optional[str] = Field(None, max_length=150)
+    description: Optional[str] = Field(None, max_length=500)
+    category: Optional[str] = Field(None, max_length=50)
+
+
+class TenantRolePermissionsReplaceRequest(BaseModel):
+    """Replace the full permission set of a tenant role"""
+    permissions: List[str] = Field(default_factory=list, description="Complete new set of permission codes")
+
+
+class TenantRoleScopeItem(BaseModel):
+    scope_type: str = Field(description="department | cost_centre")
+    scope_id: str = Field(description="UUID of the org unit or cost centre")
+
+
+class TenantRoleScopeRequest(BaseModel):
+    """Replace the full scope set of a tenant role (empty = All)"""
+    items: List[TenantRoleScopeItem] = Field(default_factory=list)
 
 
 class TenantRolePermissionRequest(BaseModel):
