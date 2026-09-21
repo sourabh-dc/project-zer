@@ -119,6 +119,10 @@ def enrich_subject(db: Session, user_id: str, tenant_id: str) -> Dict[str, Any]:
             enriched["max_order_limit_minor"] = row["max_order_limit_minor"] or 0
     except Exception as exc:
         logger.warning(f"User lookup failed: {exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     # ── Roles ─────────────────────────────────────────────────────────
     try:
@@ -134,6 +138,10 @@ def enrich_subject(db: Session, user_id: str, tenant_id: str) -> Dict[str, Any]:
         enriched["roles"] = [r["code"] for r in rows if r["code"]]
     except Exception as exc:
         logger.warning(f"Roles lookup failed: {exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         enriched["roles"] = []
 
     is_admin = "tenant_admin" in enriched.get("roles", [])
@@ -147,15 +155,19 @@ def enrich_subject(db: Session, user_id: str, tenant_id: str) -> Dict[str, Any]:
                 text("""
                     SELECT DISTINCT rp.permission_code
                     FROM role_permissions rp
-                    WHERE rp.role_code IN :codes
+                    WHERE rp.role_code = ANY(:codes)
                 """),
-                {"codes": tuple(roles)},
+                {"codes": list(roles)},
             ).mappings().all()
             enriched["permissions"] = [p["permission_code"] for p in rows]
         else:
             enriched["permissions"] = []
     except Exception as exc:
         logger.warning(f"Permissions lookup failed: {exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         enriched["permissions"] = []
 
     if "*" in enriched.get("permissions", []):
@@ -187,6 +199,10 @@ def enrich_subject(db: Session, user_id: str, tenant_id: str) -> Dict[str, Any]:
             enriched.setdefault("spent_budget", 0)
     except Exception as exc:
         logger.warning(f"Budget lookup failed: {exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         enriched.setdefault("budget_remaining", 0)
         enriched.setdefault("allocated_budget", 0)
         enriched.setdefault("spent_budget", 0)
@@ -210,8 +226,19 @@ def enrich_subject(db: Session, user_id: str, tenant_id: str) -> Dict[str, Any]:
         enriched["subscription_active"] = row is not None
         enriched["subscription_status"] = row["status"] if row else "inactive"
         enriched["plan_code"] = row["plan_code"] if row else None
+        if row is None:
+            # Distinguish "no subscription" from "query failed" in logs
+            logger.warning(
+                f"Subscription enrichment: no active row for tenant {tid} "
+                f"(is_active=true AND current_period_end > now)"
+            )
     except Exception as exc:
-        logger.warning(f"Subscription lookup failed: {exc}")
+        # Roll back so the session stays usable for the decision log insert
+        logger.warning(f"Subscription lookup failed for tenant {tid}: {exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         enriched["subscription_active"] = False
         enriched["subscription_status"] = "inactive"
         enriched["plan_code"] = None
