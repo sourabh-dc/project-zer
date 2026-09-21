@@ -2070,6 +2070,36 @@ class ConfirmationSnapshot(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class PolicyDecision(Base):
+    """OPA / policy-engine decision audit log.
+
+    Written best-effort by ``shared.policy_engine.evaluator._write_decision_log``
+    (and the data-intelligence graph permission client). Append-only — used to
+    debug denies such as subscription / quota / cross-tenant decisions.
+    """
+    __tablename__ = "policy_decisions"
+
+    decision_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+                       nullable=False, index=True)
+    user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"),
+                     nullable=True, index=True)
+
+    action = Column(Text, nullable=False, index=True)
+    subject = Column(JSONB, nullable=True)
+    resource = Column(JSONB, nullable=True)
+    decision = Column(String(30), nullable=False, index=True)  # allow | deny | require_approval
+    matched_policies = Column(JSONB, nullable=True)
+    reason = Column(Text, nullable=True)
+    evaluation_ms = Column(Integer, nullable=True)
+    correlation_id = Column(String(100), nullable=True, index=True)
+    evaluated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_policy_decisions_tenant_action_time", "tenant_id", "action", "evaluated_at"),
+    )
+
+
 # ==================================================================================
 # PHASE 6 — SUB-TENANT HIERARCHY & ADVANCED ACCESS
 # ==================================================================================

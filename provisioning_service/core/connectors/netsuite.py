@@ -28,8 +28,8 @@ PAGE_SIZE = 500
 TIMEOUT = 60
 
 ITEMS_QUERY = """
-SELECT itemid, displayname, salesdescription, purchasedescription,
-       baseprice, currency, itemtype, isinactive, upccode, class
+SELECT itemid, displayname, description, purchasedescription,
+       lastpurchaseprice, itemtype, isinactive, department, vendorname
 FROM item
 WHERE isinactive = 'F'
 ORDER BY itemid
@@ -39,14 +39,13 @@ ORDER BY itemid
 DEFAULT_ITEM_FIELDS = [
     {"name": "itemid", "type": "string", "label": "Item ID / SKU", "custom": False},
     {"name": "displayname", "type": "string", "label": "Display Name", "custom": False},
-    {"name": "salesdescription", "type": "string", "label": "Sales Description", "custom": False},
+    {"name": "description", "type": "string", "label": "Description", "custom": False},
     {"name": "purchasedescription", "type": "string", "label": "Purchase Description", "custom": False},
-    {"name": "baseprice", "type": "number", "label": "Base Price", "custom": False},
-    {"name": "currency", "type": "string", "label": "Currency", "custom": False},
+    {"name": "lastpurchaseprice", "type": "number", "label": "Last Purchase Price", "custom": False},
     {"name": "itemtype", "type": "string", "label": "Item Type", "custom": False},
     {"name": "isinactive", "type": "boolean", "label": "Inactive (invert with !)", "custom": False},
-    {"name": "upccode", "type": "string", "label": "UPC / Barcode", "custom": False},
-    {"name": "class", "type": "string", "label": "Class / Category", "custom": False},
+    {"name": "department", "type": "string", "label": "Department", "custom": False},
+    {"name": "vendorname", "type": "string", "label": "Vendor", "custom": False},
 ]
 
 
@@ -88,6 +87,7 @@ class NetSuiteConnector(BaseConnector):
         """JWT client assertion signed with the certificate's private key.
 
         NetSuite expects: iss = sub = client_id, aud = token URL,
+        scope = rest_webservices (required; omission returns invalid_request),
         kid = certificate ID (from the client registration), PS256 (RSA)
         or ES256 (EC) depending on the uploaded certificate.
         """
@@ -102,6 +102,7 @@ class NetSuiteConnector(BaseConnector):
         payload = {
             "iss": creds["client_id"],
             "sub": creds["client_id"],
+            "scope": creds.get("scope") or "rest_webservices",
             "aud": self._token_url(),
             "iat": now,
             "exp": now + 3600,
@@ -203,16 +204,18 @@ class NetSuiteConnector(BaseConnector):
         return self._tba_header(method, url)
 
     def _query(self, query: str, offset: int = 0) -> Dict[str, Any]:
+        # SuiteQL rejects SQL LIMIT/OFFSET. Page via URL params instead.
         url = f"{self._base_url()}/services/rest/query/v1/suiteql"
         try:
             resp = requests.post(
                 url,
+                params={"limit": PAGE_SIZE, "offset": offset},
                 headers={
                     "Authorization": self._auth_header("POST", url),
                     "Content-Type": "application/json",
                     "Prefer": "transient",
                 },
-                json={"q": f"{query} LIMIT {PAGE_SIZE} OFFSET {offset}"},
+                json={"q": query},
                 timeout=TIMEOUT,
             )
             resp.raise_for_status()

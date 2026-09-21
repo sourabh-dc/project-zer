@@ -199,3 +199,14 @@ class Settings(BaseSettings):
 SETTINGS = Settings()
 SERVICE_NAME = "zeroque"
 SERVICE_VERSION = "2.0.0"
+
+# Policy engine reads DATABASE_URL / POSTGRES_* from the environment — it does
+# not call Key Vault. Sync the resolved ORM URL so OPA subject enrichment hits
+# the same database as login/subscriptions (avoids false "Active subscription required").
+if SETTINGS.DATABASE_URL:
+    os.environ["DATABASE_URL"] = SETTINGS.DATABASE_URL
+    try:
+        from shared.policy_engine.db import configure_database_url
+        configure_database_url(SETTINGS.DATABASE_URL)
+    except Exception as _pe:
+        logger.warning(f"Could not configure policy engine DB URL: {_pe}")

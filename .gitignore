@@ -17,6 +17,9 @@ env/
 .env.local
 *.env
 
+# NetSuite M2M keys — never commit
+*.pem
+
 # IDE
 .vscode/
 .idea/
