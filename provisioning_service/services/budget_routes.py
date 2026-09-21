@@ -19,12 +19,12 @@ from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
     CompanyBudgetCap, CostCentreBudgetVersion, BudgetTransaction,
-    FinancialYear, CostCentre,
+    FinancialYear, FinancialPeriod, CostCentre, CostCentreAuditEvent,
 )
 from provisioning_service.Schemas import (
     CompanyBudgetCapCreate, CompanyBudgetCapUpdate,
     CCBudgetVersionCreate, CCBudgetVersionUpdate,
-    BudgetReallocationRequest,
+    BudgetReallocationRequest, CCDistributionRequest, CarryForwardRequest,
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
@@ -199,6 +199,31 @@ async def create_cc_budget_version(
     _record_txn(db, tenant_id, "allocation", None, version.version_id,
                 req.budget_minor, req.currency, user_id, "Initial allocation")
 
+    # "Add year" on an annual version: seed period rows following the CC's
+    # usual distribution pattern (even split across that year's periods)
+    if period_id is None and cc.period_granularity in ("month", "quarter"):
+        periods = db.query(FinancialPeriod).filter(
+            FinancialPeriod.year_id == uuid.UUID(req.year_id),
+            FinancialPeriod.tenant_id == tenant_id,
+            FinancialPeriod.period_type == cc.period_granularity,
+        ).order_by(FinancialPeriod.period_number).all()
+        if periods:
+            share = req.budget_minor // len(periods)
+            remainder = req.budget_minor - share * len(periods)
+            for idx, p in enumerate(periods):
+                amount = share + (remainder if idx == len(periods) - 1 else 0)
+                db.add(CostCentreBudgetVersion(
+                    version_id=uuid.uuid4(),
+                    cost_centre_id=cc.cost_centre_id,
+                    year_id=uuid.UUID(req.year_id),
+                    period_id=p.period_id,
+                    tenant_id=tenant_id,
+                    currency=req.currency,
+                    budget_minor=amount,
+                    status="active",
+                    created_by=user_id,
+                ))
+
     db.commit()
     db.refresh(version)
 
@@ -331,9 +356,272 @@ async def reallocate_budget(
 
 
 # =============================================================================
-# BUDGET TRANSACTIONS (read-only ledger)
+# BUDGET DISTRIBUTION (per-period breakdown for a CC + financial year)
 # =============================================================================
 
+@router.get("/cc-distribution")
+async def get_cc_distribution(
+    cost_centre_id: str = Query(...),
+    year_id: str = Query(...),
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("budget.manage")),
+):
+    """Per-period budget rows for the distribution table (month/quarter/year)."""
+    tenant_id = _tid(ctx)
+    cc = db.query(CostCentre).filter(
+        CostCentre.cost_centre_id == uuid.UUID(cost_centre_id),
+        CostCentre.tenant_id == tenant_id,
+    ).first()
+    if not cc:
+        raise HTTPException(404, "Cost centre not found")
+
+    annual = db.query(CostCentreBudgetVersion).filter(
+        CostCentreBudgetVersion.cost_centre_id == cc.cost_centre_id,
+        CostCentreBudgetVersion.year_id == uuid.UUID(year_id),
+        CostCentreBudgetVersion.period_id.is_(None),
+        CostCentreBudgetVersion.status != "closed",
+    ).first()
+
+    period_versions = db.query(CostCentreBudgetVersion).filter(
+        CostCentreBudgetVersion.cost_centre_id == cc.cost_centre_id,
+        CostCentreBudgetVersion.year_id == uuid.UUID(year_id),
+        CostCentreBudgetVersion.period_id.isnot(None),
+    ).all()
+    period_ids = [v.period_id for v in period_versions]
+    periods = {
+        p.period_id: p
+        for p in db.query(FinancialPeriod).filter(FinancialPeriod.period_id.in_(period_ids)).all()
+    } if period_ids else {}
+
+    rows = []
+    for v in period_versions:
+        p = periods.get(v.period_id)
+        rows.append({
+            "version_id": str(v.version_id),
+            "period_id": str(v.period_id),
+            "period_label": p.label if p else None,
+            "period_number": p.period_number if p else None,
+            "budget_minor": v.budget_minor,
+            "used_minor": (v.spent_minor or 0) + (v.committed_minor or 0),
+            "available_minor": v.budget_minor - (v.committed_minor or 0) - (v.spent_minor or 0),
+            "status": v.status,
+        })
+    rows.sort(key=lambda r: r["period_number"] or 0)
+
+    return {
+        "cost_centre_id": cost_centre_id,
+        "year_id": year_id,
+        "mode": cc.period_granularity or "month",
+        "annual_budget_minor": annual.budget_minor if annual else 0,
+        "annual_version_id": str(annual.version_id) if annual else None,
+        "distributed_minor": sum(r["budget_minor"] for r in rows),
+        "periods": rows,
+    }
+
+
+@router.put("/cc-distribution")
+async def set_cc_distribution(
+    req: CCDistributionRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("budget.manage")),
+    policy_result: dict = Depends(require_policy("budget.update_version")),
+):
+    """Bulk-set per-period budgets. Total must equal the annual version budget."""
+    tenant_id = _tid(ctx)
+    user_id = _uid(ctx)
+
+    if req.mode not in ("monthly", "quarterly", "yearly", "one_time"):
+        raise HTTPException(400, "mode must be monthly | quarterly | yearly | one_time")
+
+    cc = db.query(CostCentre).filter(
+        CostCentre.cost_centre_id == uuid.UUID(req.cost_centre_id),
+        CostCentre.tenant_id == tenant_id,
+    ).first()
+    if not cc:
+        raise HTTPException(404, "Cost centre not found")
+
+    annual = db.query(CostCentreBudgetVersion).filter(
+        CostCentreBudgetVersion.cost_centre_id == cc.cost_centre_id,
+        CostCentreBudgetVersion.year_id == uuid.UUID(req.year_id),
+        CostCentreBudgetVersion.period_id.is_(None),
+        CostCentreBudgetVersion.status != "closed",
+    ).first()
+    if not annual:
+        raise HTTPException(404, "No active annual budget version for this cost centre + year")
+
+    total = sum(i.amount_minor for i in req.items)
+    if total != annual.budget_minor:
+        raise HTTPException(
+            400,
+            f"Distribution total ({total}) must equal annual budget ({annual.budget_minor})",
+        )
+
+    # Validate periods belong to the year
+    period_ids = [uuid.UUID(i.period_id) for i in req.items if i.period_id]
+    periods = {
+        p.period_id: p
+        for p in db.query(FinancialPeriod).filter(
+            FinancialPeriod.period_id.in_(period_ids),
+            FinancialPeriod.year_id == uuid.UUID(req.year_id),
+        ).all()
+    } if period_ids else {}
+    missing = [str(pid) for pid in period_ids if pid not in periods]
+    if missing:
+        raise HTTPException(404, f"Period(s) not found in this year: {', '.join(missing)}")
+
+    # Upsert period versions
+    existing = db.query(CostCentreBudgetVersion).filter(
+        CostCentreBudgetVersion.cost_centre_id == cc.cost_centre_id,
+        CostCentreBudgetVersion.year_id == uuid.UUID(req.year_id),
+        CostCentreBudgetVersion.period_id.isnot(None),
+    ).all()
+    existing_by_period = {str(v.period_id): v for v in existing}
+
+    for item in req.items:
+        if not item.period_id:
+            continue  # yearly/one_time: amount lives on the annual version
+        v = existing_by_period.get(item.period_id)
+        if v:
+            v.budget_minor = item.amount_minor
+            v.updated_at = datetime.now(timezone.utc)
+        else:
+            v = CostCentreBudgetVersion(
+                version_id=uuid.uuid4(),
+                cost_centre_id=cc.cost_centre_id,
+                year_id=uuid.UUID(req.year_id),
+                period_id=uuid.UUID(item.period_id),
+                tenant_id=tenant_id,
+                currency=annual.currency,
+                budget_minor=item.amount_minor,
+                status="active",
+                created_by=user_id,
+            )
+            db.add(v)
+
+    # Remove period rows no longer present
+    keep = {i.period_id for i in req.items if i.period_id}
+    for pid, v in existing_by_period.items():
+        if pid not in keep:
+            v.status = "closed"
+            v.closed_at = datetime.now(timezone.utc)
+            v.closed_by = user_id
+
+    # Remember the CC's distribution pattern ("follows usual pattern" on Add year)
+    cc.period_granularity = {"monthly": "month", "quarterly": "quarter",
+                             "yearly": "year", "one_time": "year"}[req.mode]
+    cc.updated_at = datetime.now(timezone.utc)
+
+    db.add(CostCentreAuditEvent(
+        id=uuid.uuid4(), tenant_id=tenant_id, cost_centre_id=cc.cost_centre_id,
+        actor_user_id=user_id, action="budget.updated",
+        detail=f"Set {req.mode} distribution for year {req.year_id}: {len(req.items)} period(s), total {total}",
+    ))
+    db.commit()
+
+    _write_outbox(db, tenant_id, "cc_budget_distribution.updated",
+                  {"cost_centre_id": req.cost_centre_id, "year_id": req.year_id,
+                   "mode": req.mode, "total_minor": total})
+
+    return {"status": "ok", "cost_centre_id": req.cost_centre_id,
+            "year_id": req.year_id, "mode": req.mode, "distributed_minor": total}
+
+
+# =============================================================================
+# END OF FINANCIAL YEAR — carry forward or expire remaining budget
+# =============================================================================
+
+@router.post("/cc-versions/{version_id}/carry-forward", status_code=200)
+async def carry_forward_cc_version(
+    version_id: str,
+    req: CarryForwardRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("budget.manage")),
+    policy_result: dict = Depends(require_policy("budget.update_version")),
+):
+    """
+    End-of-FY decision on an annual version:
+    - carry_forward: close this year, add remaining to next year's version
+    - expire: close this year, remaining lapses
+    """
+    tenant_id = _tid(ctx)
+    user_id = _uid(ctx)
+    v = _get_version_or_404(db, version_id, tenant_id)
+
+    if v.status == "closed":
+        raise HTTPException(400, "Budget version already closed")
+    if req.action not in ("carry_forward", "expire"):
+        raise HTTPException(400, "action must be carry_forward | expire")
+
+    remaining = v.budget_minor + (v.carry_forward_minor or 0) \
+        - (v.committed_minor or 0) - (v.spent_minor or 0)
+    if remaining < 0:
+        remaining = 0
+
+    target_version = None
+    if req.action == "carry_forward":
+        if not req.target_year_id:
+            raise HTTPException(400, "target_year_id required for carry_forward")
+        year = db.query(FinancialYear).filter(
+            FinancialYear.year_id == uuid.UUID(req.target_year_id),
+            FinancialYear.tenant_id == tenant_id,
+        ).first()
+        if not year:
+            raise HTTPException(404, "Target financial year not found")
+
+        target_version = db.query(CostCentreBudgetVersion).filter(
+            CostCentreBudgetVersion.cost_centre_id == v.cost_centre_id,
+            CostCentreBudgetVersion.year_id == uuid.UUID(req.target_year_id),
+            CostCentreBudgetVersion.period_id.is_(None),
+            CostCentreBudgetVersion.status != "closed",
+        ).first()
+        if not target_version:
+            target_version = CostCentreBudgetVersion(
+                version_id=uuid.uuid4(),
+                cost_centre_id=v.cost_centre_id,
+                year_id=uuid.UUID(req.target_year_id),
+                period_id=None,
+                tenant_id=tenant_id,
+                currency=v.currency,
+                budget_minor=0,
+                carry_forward_minor=0,
+                status="active",
+                created_by=user_id,
+            )
+            db.add(target_version)
+            db.flush()
+        target_version.carry_forward_minor = (target_version.carry_forward_minor or 0) + remaining
+        _record_txn(db, tenant_id, "carry_forward", v.version_id, target_version.version_id,
+                    remaining, v.currency, user_id, "End-of-year carry forward")
+
+    # Close the source year
+    v.status = "closed"
+    v.closed_at = datetime.now(timezone.utc)
+    v.closed_by = user_id
+    v.updated_at = datetime.now(timezone.utc)
+
+    db.add(CostCentreAuditEvent(
+        id=uuid.uuid4(), tenant_id=tenant_id, cost_centre_id=v.cost_centre_id,
+        actor_user_id=user_id, action="budget.updated",
+        detail=(f"Closed year budget: carried forward {remaining}"
+                if req.action == "carry_forward" else
+                f"Closed year budget: {remaining} expired"),
+    ))
+    db.commit()
+
+    _write_outbox(db, tenant_id, "cc_budget_version.carry_forward",
+                  {"version_id": version_id, "action": req.action, "remaining_minor": remaining})
+
+    return {
+        "status": "ok",
+        "action": req.action,
+        "remaining_minor": remaining,
+        "target_version_id": str(target_version.version_id) if target_version else None,
+    }
+
+
+# =============================================================================
+# BUDGET TRANSACTIONS (read-only ledger)
+# =============================================================================
 @router.get("/transactions")
 async def list_budget_transactions(
     version_id: Optional[str] = Query(None),

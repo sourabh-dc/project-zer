@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
-    UserCostCentreAssignment, UserBudgetLimit, User, CostCentre,
+    UserCostCentreAssignment, UserBudgetLimit, User, UserIdentity, CostCentre,
     FinancialYear, FinancialPeriod,
 )
 from provisioning_service.Schemas import (
@@ -104,13 +104,30 @@ async def list_assignments(
     if active_only:
         q = q.filter(UserCostCentreAssignment.is_active == True)
     rows = q.all()
+
+    # Enrich with user identity + cost centre names
+    user_ids = [a.user_id for a in rows]
+    cc_ids = [a.cost_centre_id for a in rows]
+    users = {u.user_id: u for u in db.query(User).filter(User.user_id.in_(user_ids)).all()} if user_ids else {}
+    identities = {
+        i.user_id: i for i in db.query(UserIdentity).filter(UserIdentity.user_id.in_(user_ids)).all()
+    } if user_ids else {}
+    ccs = {c.cost_centre_id: c for c in db.query(CostCentre).filter(CostCentre.cost_centre_id.in_(cc_ids)).all()} if cc_ids else {}
+
     return {"assignments": [
         {
             "assignment_id": str(a.assignment_id),
             "user_id": str(a.user_id),
+            "display_name": users[a.user_id].display_name if a.user_id in users else None,
+            "email": identities[a.user_id].email if a.user_id in identities else None,
+            "avatar": users[a.user_id].profile_image if a.user_id in users else None,
+            "job_title": users[a.user_id].display_job_title if a.user_id in users else None,
             "cost_centre_id": str(a.cost_centre_id),
+            "cost_centre_name": ccs[a.cost_centre_id].name if a.cost_centre_id in ccs else None,
+            "cost_centre_code": ccs[a.cost_centre_id].code if a.cost_centre_id in ccs else None,
             "is_primary": a.is_primary,
             "is_active": a.is_active,
+            "assigned_at": a.created_at.isoformat() if getattr(a, "created_at", None) else None,
             "effective_from": str(a.effective_from) if a.effective_from else None,
             "effective_to": str(a.effective_to) if a.effective_to else None,
         }

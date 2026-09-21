@@ -244,7 +244,15 @@ class CostCentreRequest(BaseModel):
     owner_user_id: Optional[str] = Field(None, description="Owner user ID (UUID, FK->users.user_id, optional)")
     is_active: Optional[bool] = Field(True, description="Is cost centre active?")
 
+    # Hierarchy + scope (wizard step 2)
+    parent_cost_centre_id: Optional[str] = Field(None, description="Parent cost centre ID (optional, for nesting)")
+    department_id: Optional[str] = Field(None, description="Org unit ID (optional, null = All departments)")
+    site_id: Optional[str] = Field(None, description="Site ID (optional, null = All sites)")
+    store_id: Optional[str] = Field(None, description="Store ID (optional, null = All stores)")
+
     fiscal_year: Optional[int] = Field(None, ge=2000, le=2100, description="Fiscal year (e.g. 2025)")
+    year_id: Optional[str] = Field(None, description="Financial year UUID (versioned budget, preferred over fiscal_year)")
+    distribution_mode: Optional[str] = Field(None, description="monthly | quarterly | yearly | one_time")
     period_type: Optional[str] = Field("annual", description="Period type: annual, quarterly, monthly, weekly")
     period_number: Optional[int] = Field(None, ge=1, description="Period number within the fiscal year (e.g. month or quarter number)")
     period_start: Optional[date] = Field(None, description="Period start date")
@@ -363,6 +371,31 @@ class CostCentreUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=500)
     owner_user_id: Optional[str] = None
     is_active: Optional[bool] = None
+    parent_cost_centre_id: Optional[str] = None
+    department_id: Optional[str] = None
+    site_id: Optional[str] = None
+    store_id: Optional[str] = None
+
+
+class CCDistributionItem(BaseModel):
+    """One period's budget inside a financial year distribution."""
+    period_id: Optional[str] = Field(None, description="Financial period UUID (null for yearly/one-time)")
+    period_label: Optional[str] = Field(None, description="Display label, e.g. 'Apr' or 'Q1 (Apr–Jun)'")
+    amount_minor: int = Field(..., ge=0)
+
+
+class CCDistributionRequest(BaseModel):
+    """Bulk-set the per-period budget distribution for a cost centre + year."""
+    cost_centre_id: str
+    year_id: str = Field(..., description="Financial year UUID")
+    mode: str = Field(..., description="monthly | quarterly | yearly | one_time")
+    items: List[CCDistributionItem] = Field(default_factory=list)
+
+
+class CarryForwardRequest(BaseModel):
+    """End-of-financial-year decision for a cost centre budget version."""
+    action: str = Field(..., description="carry_forward | expire")
+    target_year_id: Optional[str] = Field(None, description="Next financial year UUID (required for carry_forward)")
 
 
 class TokenExchangeRequest(BaseModel):
@@ -381,6 +414,11 @@ class InvitationRequest(BaseModel):
     role_code: Optional[str] = Field(None, description="Role code to assign on acceptance (one of 12 standard roles)")
     display_job_title: Optional[str] = Field(None, max_length=255)
     job_function: Optional[str] = Field(None, max_length=100)
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    approval_limit_minor: Optional[int] = Field(None, ge=0, description="Max order limit in minor units")
+    org_unit_ids: Optional[List[str]] = Field(None, description="Department UUIDs to pre-assign on acceptance")
+    cost_centre_ids: Optional[List[str]] = Field(None, description="Cost centre UUIDs to pre-assign on acceptance")
 
 
 class InvitationResponse(BaseModel):

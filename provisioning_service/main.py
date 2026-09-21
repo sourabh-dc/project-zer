@@ -11,7 +11,16 @@ from provisioning_service.core.db_config import engine
 from provisioning_service.core.helpers.load_permissions import seed_roles_and_permissions, seed_job_functions
 from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
 from provisioning_service.core.helpers.load_plans import seed_plans_and_features
-from provisioning_service.services.provisioning_routes import router as provisioning_router
+from provisioning_service.services.tenants_routes import router as tenants_router
+from provisioning_service.services.sites_routes import router as sites_router
+from provisioning_service.services.stores_routes import router as stores_router
+from provisioning_service.services.invitations_routes import router as invitations_router
+from provisioning_service.services.users_routes import router as users_router
+from provisioning_service.services.vendors_routes import router as vendors_router
+from provisioning_service.services.cost_centre_routes import router as cost_centre_router
+from provisioning_service.services.roles_admin_routes import router as roles_admin_router
+from provisioning_service.services.tenant_role_routes import router as tenant_role_router
+from provisioning_service.services.org_unit_routes import router as org_unit_router
 from provisioning_service.services.catalog_routes import router as catalog_router
 from provisioning_service.services.auth_routes import router as auth_router
 from provisioning_service.services.internal_routes import router as internal_router
@@ -121,6 +130,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 allow_origins = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]
+logger.info(f"CORS allow_origins: {allow_origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -133,7 +143,16 @@ app.include_router(onboarding_router)
 app.include_router(auth_router)
 app.include_router(internal_router)
 app.include_router(payments_router)
-app.include_router(provisioning_router)
+app.include_router(tenants_router)
+app.include_router(sites_router)
+app.include_router(stores_router)
+app.include_router(invitations_router)
+app.include_router(users_router)
+app.include_router(vendors_router)
+app.include_router(cost_centre_router)
+app.include_router(roles_admin_router)
+app.include_router(tenant_role_router)
+app.include_router(org_unit_router)
 app.include_router(catalog_router)
 app.include_router(plan_router)
 app.include_router(subscriptions_router)

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from provisioning_service.Models import (
     User, UserIdentity, Invitation, UserRole, Role, TenantSubscription, SubscriptionPlan, PlanPrice,
     TenantUserRole, TenantRole, TenantRolePermission, Permission, RolePermission,
-    PlanFeature,
+    PlanFeature, UserOrgAssignment, UserCostCentreAssignment,
 )
 from provisioning_service.Schemas import (
     RefreshJwtResponse, RefreshJwtRequest,
@@ -245,14 +245,61 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
         matched_inv.accepted_at = datetime.now(timezone.utc)
 
         # Assign role if specified
+        assigned_role = None
         if matched_inv.role_code:
             role = db.query(Role).filter(Role.code == matched_inv.role_code).first()
             if role:
+                assigned_role = role
                 existing_role = db.query(UserRole).filter(
                     UserRole.user_id == user_id, UserRole.role_id == role.role_id
                 ).first()
                 if not existing_role:
                     db.add(UserRole(id=_uuid.uuid4(), tenant_id=matched_inv.tenant_id, user_id=user_id, role_id=role.role_id))
+
+        # Apply pre-captured job details
+        if matched_inv.display_job_title:
+            user.display_job_title = matched_inv.display_job_title
+        if matched_inv.job_function:
+            user.job_function = matched_inv.job_function
+        if matched_inv.approval_limit_minor is not None:
+            user.max_order_limit_minor = matched_inv.approval_limit_minor
+        # Prefill name from invite form when the identity lacks one
+        inv_first = matched_inv.first_name or ""
+        inv_last = matched_inv.last_name or ""
+        if (inv_first or inv_last) and not (user.display_name or "").strip():
+            user.display_name = f"{inv_first} {inv_last}".strip()
+
+        # Apply pre-assigned departments (role_id required on the assignment)
+        for ou_id in (matched_inv.org_unit_ids or []):
+            existing_ou = db.query(UserOrgAssignment).filter(
+                UserOrgAssignment.user_id == user_id,
+                UserOrgAssignment.org_unit_id == _uuid.UUID(str(ou_id)),
+            ).first()
+            if not existing_ou and assigned_role:
+                db.add(UserOrgAssignment(
+                    assignment_id=_uuid.uuid4(),
+                    user_id=user_id,
+                    org_unit_id=_uuid.UUID(str(ou_id)),
+                    role_id=assigned_role.role_id,
+                    assigned_by=matched_inv.created_by,
+                ))
+
+        # Apply pre-assigned cost centres
+        for cc_id in (matched_inv.cost_centre_ids or []):
+            existing_cc = db.query(UserCostCentreAssignment).filter(
+                UserCostCentreAssignment.user_id == user_id,
+                UserCostCentreAssignment.cost_centre_id == _uuid.UUID(str(cc_id)),
+            ).first()
+            if not existing_cc:
+                db.add(UserCostCentreAssignment(
+                    assignment_id=_uuid.uuid4(),
+                    user_id=user_id,
+                    cost_centre_id=_uuid.UUID(str(cc_id)),
+                    tenant_id=matched_inv.tenant_id,
+                    is_primary=False,
+                    is_active=True,
+                    assigned_by=matched_inv.created_by,
+                ))
 
         db.commit()
         db.refresh(user)

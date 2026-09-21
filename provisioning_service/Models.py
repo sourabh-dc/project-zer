@@ -179,6 +179,13 @@ class Invitation(Base):
     token_hash = Column(String, nullable=False)                      # bcrypt hash of the random token
     status = Column(String(20), nullable=False, default="pending")    # pending | accepted | expired | revoked
     role_code = Column(String(100), nullable=True)                    # optional role assigned on acceptance
+    display_job_title = Column(String(255), nullable=True)            # applied to user on acceptance
+    job_function = Column(String(100), nullable=True)                 # applied to user on acceptance
+    first_name = Column(String(100), nullable=True)                   # prefill from invite form
+    last_name = Column(String(100), nullable=True)                    # prefill from invite form
+    approval_limit_minor = Column(BigInteger, nullable=True)          # max order limit applied on acceptance
+    org_unit_ids = Column(JSONB, nullable=True)                       # department UUIDs pre-assigned on acceptance
+    cost_centre_ids = Column(JSONB, nullable=True)                    # cost centre UUIDs pre-assigned on acceptance
     created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     accepted_by = Column(SQLUUID(as_uuid=True), nullable=True)        # user_id after acceptance
     expires_at = Column(DateTime(timezone=True), nullable=False)
@@ -453,6 +460,12 @@ class CostCentre(Base):
     gl_code = Column(String(100), nullable=True, index=True)          # General Ledger code
     owner_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
+    # Hierarchy + scope (Figma cost-centre management)
+    parent_cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="SET NULL"), nullable=True, index=True)
+    department_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="SET NULL"), nullable=True, index=True)
+    site_id = Column(SQLUUID(as_uuid=True), ForeignKey("sites.site_id", ondelete="SET NULL"), nullable=True)
+    store_id = Column(SQLUUID(as_uuid=True), ForeignKey("stores.store_id", ondelete="SET NULL"), nullable=True)
+
     # New budget control columns
     period_granularity = Column(String(20), nullable=True, default="month")  # week|month|quarter|year
     carry_forward_enabled = Column(Boolean, nullable=False, default=False)
@@ -535,6 +548,18 @@ class UserCostCentre(Base):
     user = relationship("User", back_populates="cost_centres", foreign_keys=[user_id])
     cost_centre = relationship("CostCentre", back_populates="members", foreign_keys=[cost_centre_id])
     cc_budget = relationship("CostCenterBudget", foreign_keys=[cc_budget_id])
+
+
+class CostCentreAuditEvent(Base):
+    """Per-cost-centre change history: details, budget, users, status"""
+    __tablename__ = "cost_centre_audit_events"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(SQLUUID(as_uuid=True), ForeignKey("cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    action = Column(String(50), nullable=False)  # created | updated | budget.updated | user.assigned | status.changed
+    detail = Column(Text, nullable=True)  # human-readable change lines, one per line
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ==================================================================================
