@@ -193,6 +193,17 @@ async def create_sub_tenant(
     db.add(sub)
     db.commit()
     db.refresh(sub)
+
+    # Seed default financial calendar + active FY (best-effort)
+    try:
+        from provisioning_service.core.helpers.seed_financial_calendar import seed_default_financial_calendar
+        seed_default_financial_calendar(
+            db, sub.tenant_id,
+            currency=getattr(sub, "default_currency", None) or getattr(parent, "default_currency", None) or "GBP",
+        )
+    except Exception as _se:
+        logger.warning(f"Financial calendar seeding failed for sub-tenant {sub.tenant_id}: {_se}")
+
     logger.info(f"Sub-tenant created: {sub.tenant_id} under parent {tenant_id}")
     return SubTenantDetail(
         **_sub_item(sub).model_dump(),

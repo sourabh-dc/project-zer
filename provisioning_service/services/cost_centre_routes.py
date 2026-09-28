@@ -332,8 +332,9 @@ async def list_cost_centres(
 
     # Per-FY budget from versioned budgets (when year selected)
     budget_map: dict = {}
+    period_base: Optional[dict] = None
     if year_id and ccs:
-        from provisioning_service.Models import CostCentreBudgetVersion
+        from provisioning_service.Models import CostCentreBudgetVersion, FinancialYear, FinancialPeriod
         versions = db.query(CostCentreBudgetVersion).filter(
             CostCentreBudgetVersion.year_id == uuid.UUID(year_id),
             CostCentreBudgetVersion.cost_centre_id.in_([c.cost_centre_id for c in ccs]),
@@ -346,6 +347,29 @@ async def list_cost_centres(
                 "available_minor": v.budget_minor + (v.carry_forward_minor or 0)
                                    - (v.committed_minor or 0) - (v.spent_minor or 0),
                 "status": v.status,
+            }
+
+        # Period info for the PERIOD column: year label + current open period
+        year = db.query(FinancialYear).filter(FinancialYear.year_id == uuid.UUID(year_id)).first()
+        if year:
+            today = datetime.now(timezone.utc).date()
+            current = db.query(FinancialPeriod).filter(
+                FinancialPeriod.year_id == year.year_id,
+                FinancialPeriod.start_date <= today,
+                FinancialPeriod.end_date >= today,
+            ).first()
+            period_base = {
+                "year_id": str(year.year_id),
+                "year_label": year.label,
+                "year_start": year.start_date.isoformat(),
+                "year_end": year.end_date.isoformat(),
+                "current_period": {
+                    "period_id": str(current.period_id),
+                    "label": current.label,
+                    "period_type": current.period_type,
+                    "start_date": current.start_date.isoformat(),
+                    "end_date": current.end_date.isoformat(),
+                } if current else None,
             }
 
     items = []
@@ -368,6 +392,7 @@ async def list_cost_centres(
             "is_active": bool(cc.is_active),
             "status": "Active" if cc.is_active else "Archived",
             "budget": budget_map.get(cc.cost_centre_id),
+            "period": ({**period_base, "granularity": cc.period_granularity} if period_base else None),
             "created_at": cc.created_at.isoformat()
         })
 

@@ -344,6 +344,16 @@ async def activate_mandate(
         )
         db.commit()
 
+        # ── Seed default financial calendar + active FY (best-effort) ──
+        try:
+            from provisioning_service.core.helpers.seed_financial_calendar import seed_default_financial_calendar
+            seed_default_financial_calendar(
+                db, tenant.tenant_id,
+                currency=tenant.default_currency or "GBP",
+            )
+        except Exception as _se:
+            logger.warning(f"Financial calendar seeding failed for tenant {tenant.tenant_id}: {_se}")
+
         # Best-effort queue notification
         try:
             await dispatch_outbox_to_queue(outbox)

@@ -131,10 +131,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 allow_origins = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]
 logger.info(f"CORS allow_origins: {allow_origins}")
+# Refresh token is delivered as an HttpOnly cookie, so browsers need
+# credentials enabled. NOTE: with credentials, browsers reject a wildcard
+# origin — set ALLOW_ORIGINS to the explicit frontend origin(s) in deployed envs.
+if "*" in allow_origins:
+    logger.warning("CORS: wildcard origin with allow_credentials=True — browsers will reject credentialed requests. Set ALLOW_ORIGINS explicitly.")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["*"],
 )

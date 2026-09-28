@@ -116,6 +116,18 @@ class Settings(BaseSettings):
     JWT_EXPIRY_MINUTES: int = 60
     REFRESH_TOKEN_DAYS: int = 30
 
+    # ── Refresh token cookie ────────────────────────────────────
+    # Refresh token is delivered as an HttpOnly cookie (not in the JSON body)
+    # so browser JS cannot read it. SameSite=None requires Secure.
+    REFRESH_COOKIE_NAME: str = Field(default=os.getenv("REFRESH_COOKIE_NAME", "refresh_token"))
+    REFRESH_COOKIE_PATH: str = Field(default=os.getenv("REFRESH_COOKIE_PATH", "/authentication"))
+    REFRESH_COOKIE_SAMESITE: str = Field(default=os.getenv("REFRESH_COOKIE_SAMESITE", "none"))
+    REFRESH_COOKIE_SECURE: bool = Field(
+        default=(os.getenv("REFRESH_COOKIE_SECURE") or (
+            "false" if os.getenv("ENVIRONMENT", "local").strip().lower() == "local" else "true"
+        )).lower() == "true"
+    )
+
     # ── Service ───────────────────────────────────────────────────
     PORT: int = 80
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

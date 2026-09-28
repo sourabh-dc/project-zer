@@ -8,11 +8,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, APIRouter, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from provisioning_service.Models import (
-    Tenant, User, OrgUnit, UserOrgAssignment, Role, TenantRoleScope, ApprovedRangeOrgUnit,
+    Tenant, User, UserIdentity, OrgUnit, UserOrgAssignment, Role, TenantRoleScope, ApprovedRangeOrgUnit,
+    CostCentre, OrgUnitAuditEvent,
 )
 from provisioning_service.Schemas import OrgUnitRequest, OrgUnitAssignmentRequest
 from provisioning_service.core.db_config import get_db
@@ -23,6 +25,51 @@ from provisioning_service.utils.logger import logger
 
 router = APIRouter(prefix="/provisioning", tags=["Org Units"])
 
+
+# ── Org unit history helpers ──────────────────────────────────────
+
+def _ctx_user_id(ctx) -> Optional[uuid.UUID]:
+    """Best-effort actor user id from auth context."""
+    try:
+        sub = ctx.get("sub") if isinstance(ctx, dict) else getattr(ctx, "sub", None)
+        return uuid.UUID(str(sub)) if sub else None
+    except Exception:
+        return None
+
+
+def _record_ou_event(db: Session, tenant_id, org_unit_id, actor_user_id, action: str, lines):
+    """Append one audit event for an org unit. ``lines`` = human-readable changes."""
+    if isinstance(lines, str):
+        lines = [lines]
+    db.add(OrgUnitAuditEvent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        org_unit_id=org_unit_id,
+        actor_user_id=actor_user_id,
+        action=action,
+        detail="\n".join(lines) if lines else None,
+    ))
+
+
+def _ou_history_payload(db: Session, org_unit_id, limit: int = 50) -> list:
+    """Per-org-unit audit feed: actor, action, details, timestamp — newest first."""
+    rows = (
+        db.query(OrgUnitAuditEvent, User)
+        .outerjoin(User, OrgUnitAuditEvent.actor_user_id == User.user_id)
+        .filter(OrgUnitAuditEvent.org_unit_id == org_unit_id)
+        .order_by(OrgUnitAuditEvent.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "actor": u.display_name if u else None,
+            "action": e.action,
+            "details": e.detail.split("\n") if e.detail else [],
+            "timestamp": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e, u in rows
+    ]
 
 @router.get("/org_units")
 async def list_org_units(
@@ -75,6 +122,220 @@ async def list_org_units(
         raise HTTPException(status_code=400, detail="Invalid UUID format")
     except Exception as e:
         logger.error(f"❌ List org units failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/departments")
+async def list_departments(
+    tenant_id: str = Query(...),
+    search: Optional[str] = Query(None, description="Search department name or code"),
+    status: Optional[str] = Query(None, description="active | archived"),
+    type: Optional[str] = Query(None, description="Department type filter"),
+    cost_centre_id: Optional[str] = Query(None, description="Only departments linked to this cost centre"),
+    users: Optional[str] = Query(None, description="has_users | no_users"),
+    sort: str = Query("name", description="name | users | status | created_at"),
+    order: str = Query("asc", description="asc | desc"),
+    limit: int = Query(100, le=1000, ge=1),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Departments sidebar list.
+
+    Each row: department name + code, type, linked cost centre (name + code),
+    status, approver (manager name + email), user count.
+    """
+    try:
+        tid = uuid.UUID(tenant_id)
+
+        # Users-count subquery — powers the Users filter + Users sort at SQL level
+        uc = (
+            db.query(
+                UserOrgAssignment.org_unit_id.label("org_unit_id"),
+                func.count(UserOrgAssignment.assignment_id).label("users_count"),
+            )
+            .group_by(UserOrgAssignment.org_unit_id)
+            .subquery()
+        )
+        users_count_col = func.coalesce(uc.c.users_count, 0)
+
+        q = (
+            db.query(OrgUnit, users_count_col.label("users_count"))
+            .outerjoin(uc, uc.c.org_unit_id == OrgUnit.org_unit_id)
+            .filter(OrgUnit.tenant_id == tid)
+        )
+
+        if status:
+            q = q.filter(OrgUnit.status == status)
+        if type:
+            q = q.filter(OrgUnit.type == type)
+        if search:
+            like = f"%{search}%"
+            q = q.filter((OrgUnit.name.ilike(like)) | (OrgUnit.code.ilike(like)))
+        if users == "has_users":
+            q = q.filter(users_count_col > 0)
+        elif users == "no_users":
+            q = q.filter(users_count_col == 0)
+        if cost_centre_id:
+            cc_id = uuid.UUID(cost_centre_id)
+            q = q.filter(OrgUnit.org_unit_id.in_(
+                db.query(CostCentre.department_id).filter(
+                    CostCentre.cost_centre_id == cc_id,
+                    CostCentre.department_id.isnot(None),
+                )
+            ))
+
+        total = q.count()
+
+        sort_col = {
+            "name": OrgUnit.name,
+            "status": OrgUnit.status,
+            "users": users_count_col,
+            "created_at": OrgUnit.created_at,
+        }.get(sort, OrgUnit.name)
+        q = q.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
+        rows = q.limit(limit).offset(offset).all()
+
+        departments_rows = [r for r, _cnt in rows]
+        count_map = {r.org_unit_id: cnt for r, cnt in rows}
+
+        # Batch-load linked cost centres (CostCentre.department_id -> org unit)
+        ou_ids = [r.org_unit_id for r in departments_rows]
+        cc_map = {}
+        if ou_ids:
+            ccs = db.query(CostCentre).filter(CostCentre.department_id.in_(ou_ids)).all()
+            for cc in ccs:
+                cc_map[cc.department_id] = cc
+
+        # Batch-load approvers (manager -> user identity)
+        mgr_ids = [r.manager_user_id for r in departments_rows if r.manager_user_id]
+        approver_map = {}
+        if mgr_ids:
+            idents = db.query(UserIdentity).filter(UserIdentity.user_id.in_(mgr_ids)).all()
+            for ident in idents:
+                name = f"{ident.first_name or ''} {ident.last_name or ''}".strip() or ident.email
+                approver_map[ident.user_id] = {
+                    "user_id": str(ident.user_id),
+                    "name": name,
+                    "email": ident.email,
+                }
+
+        departments = []
+        for r in departments_rows:
+            cc = cc_map.get(r.org_unit_id)
+            departments.append({
+                "org_unit_id": str(r.org_unit_id),
+                "parent_org_unit_id": str(r.parent_org_unit_id) if r.parent_org_unit_id else None,
+                "name": r.name,
+                "code": r.code,
+                "type": r.type,
+                "status": r.status,
+                "description": r.description,
+                "cost_centre": {
+                    "cost_centre_id": str(cc.cost_centre_id),
+                    "name": cc.name,
+                    "code": cc.code,
+                } if cc else None,
+                "approver": approver_map.get(r.manager_user_id),
+                "user_count": count_map.get(r.org_unit_id, 0),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            })
+
+        return {
+            "departments": departments,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except Exception as e:
+        logger.error(f"❌ List departments failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/departments/{org_unit_id}")
+async def get_department_detail(org_unit_id: str, db: Session = Depends(get_db)):
+    """Department detail for the right sidebar.
+
+    Full department info + linked cost centre + approver + assigned users.
+    """
+    try:
+        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == uuid.UUID(org_unit_id)).first()
+        if not ou:
+            raise HTTPException(status_code=404, detail="Department not found")
+
+        # Linked cost centre
+        cc = db.query(CostCentre).filter(CostCentre.department_id == ou.org_unit_id).first()
+
+        # Approver (manager -> identity)
+        approver = None
+        if ou.manager_user_id:
+            ident = db.query(UserIdentity).filter(UserIdentity.user_id == ou.manager_user_id).first()
+            if ident:
+                name = f"{ident.first_name or ''} {ident.last_name or ''}".strip() or ident.email
+                approver = {"user_id": str(ident.user_id), "name": name, "email": ident.email}
+
+        # Parent unit
+        parent = None
+        if ou.parent_org_unit_id:
+            p = db.query(OrgUnit).filter(OrgUnit.org_unit_id == ou.parent_org_unit_id).first()
+            if p:
+                parent = {"org_unit_id": str(p.org_unit_id), "name": p.name, "code": p.code}
+
+        # Assigned users (with role + identity)
+        assignments = db.query(UserOrgAssignment).filter(
+            UserOrgAssignment.org_unit_id == ou.org_unit_id
+        ).all()
+        user_ids = [a.user_id for a in assignments]
+        role_ids = [a.role_id for a in assignments]
+        ident_map = {}
+        if user_ids:
+            for ident in db.query(UserIdentity).filter(UserIdentity.user_id.in_(user_ids)).all():
+                name = f"{ident.first_name or ''} {ident.last_name or ''}".strip() or ident.email
+                ident_map[ident.user_id] = {"name": name, "email": ident.email}
+        role_map = {}
+        if role_ids:
+            role_map = {r.role_id: r.code for r in db.query(Role).filter(Role.role_id.in_(role_ids)).all()}
+
+        users = [
+            {
+                "user_id": str(a.user_id),
+                "name": ident_map.get(a.user_id, {}).get("name"),
+                "email": ident_map.get(a.user_id, {}).get("email"),
+                "role": role_map.get(a.role_id),
+                "assignment_id": str(a.assignment_id),
+                "assigned_at": a.assigned_at.isoformat() if a.assigned_at else None,
+            }
+            for a in assignments
+        ]
+
+        return {
+            "org_unit_id": str(ou.org_unit_id),
+            "tenant_id": str(ou.tenant_id),
+            "name": ou.name,
+            "code": ou.code,
+            "type": ou.type,
+            "status": ou.status,
+            "description": ou.description,
+            "external_id": ou.external_id,
+            "parent": parent,
+            "cost_centre": {
+                "cost_centre_id": str(cc.cost_centre_id),
+                "name": cc.name,
+                "code": cc.code,
+            } if cc else None,
+            "approver": approver,
+            "users": users,
+            "user_count": len(users),
+            "history": _ou_history_payload(db, ou.org_unit_id),
+            "created_at": ou.created_at.isoformat() if ou.created_at else None,
+            "updated_at": ou.updated_at.isoformat() if ou.updated_at else None,
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid department ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get department detail failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/org_units/{org_unit_id}")
@@ -163,6 +424,14 @@ async def create_org_unit(
         db.commit()
         db.refresh(ou)
 
+        # Audit history event
+        try:
+            _record_ou_event(db, ou.tenant_id, ou.org_unit_id, _ctx_user_id(ctx),
+                             "created", f"Created {ou.type} '{ou.name}'" + (f" ({ou.code})" if ou.code else ""))
+            db.commit()
+        except Exception as _he:
+            logger.warning(f"History event failed for org_unit.created: {_he}")
+
         # Outbox audit event
         try:
             create_outbox_event(
@@ -216,6 +485,13 @@ async def update_org_unit(
         if str(ou.tenant_id) != req.tenant_id:
             raise HTTPException(status_code=403, detail="Tenant mismatch")
 
+        # Snapshot old values for history diff
+        old = {
+            "name": ou.name, "type": ou.type, "status": ou.status,
+            "code": ou.code, "description": ou.description,
+            "manager_user_id": ou.manager_user_id, "parent_org_unit_id": ou.parent_org_unit_id,
+        }
+
         # Update fields
         if getattr(req, 'name', None):
             ou.name = req.name
@@ -254,6 +530,29 @@ async def update_org_unit(
 
         db.commit()
         db.refresh(ou)
+
+        # Audit history event with human-readable diff
+        try:
+            changes = []
+            if old["name"] != ou.name:
+                changes.append(f"Name: {old['name']} → {ou.name}")
+            if old["type"] != ou.type:
+                changes.append(f"Type: {old['type']} → {ou.type}")
+            if old["status"] != ou.status:
+                changes.append(f"Status: {old['status']} → {ou.status}")
+            if old["code"] != ou.code:
+                changes.append(f"Code: {old['code']} → {ou.code}")
+            if old["description"] != ou.description:
+                changes.append("Description updated")
+            if old["manager_user_id"] != ou.manager_user_id:
+                changes.append("Approver changed")
+            if old["parent_org_unit_id"] != ou.parent_org_unit_id:
+                changes.append("Parent unit changed")
+            if changes:
+                _record_ou_event(db, ou.tenant_id, ou.org_unit_id, _ctx_user_id(ctx), "updated", changes)
+                db.commit()
+        except Exception as _he:
+            logger.warning(f"History event failed for org_unit.updated: {_he}")
 
         # Outbox audit event
         try:
@@ -313,6 +612,13 @@ async def deactivate_org_unit(
     db.commit()
 
     try:
+        _record_ou_event(db, ou.tenant_id, ou_id, _ctx_user_id(ctx), "deactivated",
+                         f"Archived ({affected_users} user assignments kept)")
+        db.commit()
+    except Exception as _he:
+        logger.warning(f"History event failed for org_unit.deactivated: {_he}")
+
+    try:
         create_outbox_event(db, ou.tenant_id, "org_unit.deactivated",
                             {"org_unit_id": org_unit_id, "affected_users": affected_users})
         db.commit()
@@ -346,6 +652,12 @@ async def activate_org_unit(
     ou.status = "active"
     ou.updated_at = datetime.now(timezone.utc)
     db.commit()
+
+    try:
+        _record_ou_event(db, ou.tenant_id, ou_id, _ctx_user_id(ctx), "activated", "Reactivated")
+        db.commit()
+    except Exception as _he:
+        logger.warning(f"History event failed for org_unit.activated: {_he}")
 
     try:
         create_outbox_event(db, ou.tenant_id, "org_unit.activated", {"org_unit_id": org_unit_id})
@@ -526,6 +838,15 @@ async def assign_user_to_org_unit(
         db.add(assignment)
         db.commit()
         db.refresh(assignment)
+
+        # Audit history event
+        try:
+            ident = db.query(UserIdentity).filter(UserIdentity.user_id == user_uuid).first()
+            _record_ou_event(db, user.tenant_id, org_unit_uuid, _ctx_user_id(ctx),
+                             "user.assigned", f"User {ident.email if ident else user_uuid} assigned with role '{role.code}'")
+            db.commit()
+        except Exception as _he:
+            logger.warning(f"History event failed for org_unit_assignment.created: {_he}")
 
         # Outbox audit event
         try:
@@ -739,8 +1060,19 @@ async def remove_user_from_org_unit(
         user_id = assignment.user_id
         org_unit_id = assignment.org_unit_id
 
+        ou = db.query(OrgUnit).filter(OrgUnit.org_unit_id == org_unit_id).first()
+
         db.delete(assignment)
         db.commit()
+
+        try:
+            if ou:
+                ident = db.query(UserIdentity).filter(UserIdentity.user_id == user_id).first()
+                _record_ou_event(db, ou.tenant_id, org_unit_id, _ctx_user_id(ctx),
+                                 "user.removed", f"User {ident.email if ident else user_id} removed")
+                db.commit()
+        except Exception as _he:
+            logger.warning(f"History event failed for org_unit_assignment.removed: {_he}")
 
         logger.info(f"Removed user {user_id} from org unit {org_unit_id}")
         return Response(status_code=204)

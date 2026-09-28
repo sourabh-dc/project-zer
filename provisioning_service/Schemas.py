@@ -587,7 +587,9 @@ class MandateActivateResponse(BaseModel):
 
 class RefreshJwtRequest(BaseModel):
     user_id: str = Field(..., description="User id associated with the refresh token")
-    refresh_token: str = Field(..., description="Refresh token string returned at login")
+    # Optional: browsers send the refresh token via HttpOnly cookie.
+    # Body field kept as fallback for Swagger / non-browser clients.
+    refresh_token: Optional[str] = Field(default=None, description="Refresh token (fallback when cookie not used)")
 
 
 class RefreshJwtResponse(BaseModel):

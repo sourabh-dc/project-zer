@@ -142,6 +142,9 @@ async def create_tenant_role(
             tenant_role_id=role.role_id,
             permission_code=pc,
         ))
+    # Flush so tenant_roles exists before role_audit_events references it —
+    # no ORM relationship, so commit order is not guaranteed otherwise.
+    db.flush()
     _record_role_event(db, tenant_id, role.role_id, actor_id, "created",
                        [f"Created role {role.name} ({role.code})"])
     db.commit()
@@ -498,7 +501,8 @@ async def list_tenant_roles(
     search: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     status: Optional[str] = Query(None),  # active | inactive | all (default: all)
-    sort: str = Query("created_at"),      # name | code | created_at | users_count
+    users: Optional[str] = Query(None),   # has_users | no_users
+    sort: str = Query("created_at"),      # name | code | category | status | users | created_at
     order: str = Query("desc"),           # asc | desc
     limit: int = Query(100, le=500, ge=1),
     offset: int = Query(0, ge=0),
@@ -509,7 +513,22 @@ async def list_tenant_roles(
     tenant_id = ctx.get("tenant_id") if isinstance(ctx, dict) else getattr(ctx, "tenant_id", None)
     tid = uuid.UUID(str(tenant_id))
 
-    q = db.query(TenantRole).filter(TenantRole.tenant_id == tid)
+    # Users-count subquery — powers the Users filter + Users sort at SQL level
+    uc = (
+        db.query(
+            TenantUserRole.tenant_role_id.label("tenant_role_id"),
+            func.count(TenantUserRole.id).label("users_count"),
+        )
+        .group_by(TenantUserRole.tenant_role_id)
+        .subquery()
+    )
+    users_count_col = func.coalesce(uc.c.users_count, 0)
+
+    q = (
+        db.query(TenantRole, users_count_col.label("users_count"))
+        .outerjoin(uc, uc.c.tenant_role_id == TenantRole.role_id)
+        .filter(TenantRole.tenant_id == tid)
+    )
     if search:
         like = f"%{search}%"
         q = q.filter((TenantRole.name.ilike(like)) | (TenantRole.code.ilike(like)))
@@ -517,16 +536,27 @@ async def list_tenant_roles(
         q = q.filter(TenantRole.category == category)
     if status and status != "all":
         q = q.filter(TenantRole.status == status)
+    if users == "has_users":
+        q = q.filter(users_count_col > 0)
+    elif users == "no_users":
+        q = q.filter(users_count_col == 0)
 
     total = q.count()
 
     sort_col = {
         "name": TenantRole.name,
         "code": TenantRole.code,
+        "category": TenantRole.category,
+        "status": TenantRole.status,
+        "users": users_count_col,
+        "users_count": users_count_col,
         "created_at": TenantRole.created_at,
     }.get(sort, TenantRole.created_at)
     q = q.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
-    roles = q.offset(offset).limit(limit).all()
+    rows = q.offset(offset).limit(limit).all()
+
+    roles = [r for r, _cnt in rows]
+    users_count_map: dict = {r.role_id: cnt for r, cnt in rows}
 
     # Permissions for all listed roles in one query
     role_ids = [r.role_id for r in roles]
@@ -543,17 +573,6 @@ async def list_tenant_roles(
                 "code": trp.permission_code,
                 "description": p.description
             })
-
-    # Users count per role
-    users_count_map: dict = {}
-    if role_ids:
-        counts = (
-            db.query(TenantUserRole.tenant_role_id, func.count(TenantUserRole.id))
-            .filter(TenantUserRole.tenant_role_id.in_(role_ids))
-            .group_by(TenantUserRole.tenant_role_id)
-            .all()
-        )
-        users_count_map = {rid: c for rid, c in counts}
 
     # Scope per role, resolved to names
     scope_map: dict = {rid: {"departments": [], "cost_centres": []} for rid in role_ids}
@@ -597,10 +616,6 @@ async def list_tenant_roles(
         }
         for r in roles
     ]
-
-    # users_count sort needs the assembled list
-    if sort == "users_count":
-        items.sort(key=lambda x: x["users_count"], reverse=(order != "asc"))
 
     return {"roles": items, "total": total, "limit": limit, "offset": offset}
 

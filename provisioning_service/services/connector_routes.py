@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from provisioning_service import Models
-from provisioning_service.core.connectors.base import CANONICAL_FIELDS
+from provisioning_service.core.connectors.base import CANONICAL_FIELDS, ConnectorError
 from provisioning_service.core.connectors.credentials import store_credentials
 from provisioning_service.core.connectors.engine import build_connector, discover_and_store_schema, run_sync
 from provisioning_service.core.connectors.scheduler import schedule_connection, unschedule_connection
@@ -111,6 +111,23 @@ def _require_erp_feature(db: Session, tenant_id: str) -> None:
 def _check_tenant(ctx, tenant_id: str) -> None:
     if str(ctx.get("tenant_id")) != tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this tenant")
+
+
+def _prepare_credentials(provider_code: str, creds: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate + normalize credentials before storing.
+
+    NetSuite private keys arrive from the upload button / paste box with
+    literal "\\n" sequences or missing PEM armor — fix or reject here.
+    """
+    if provider_code == "netsuite" and creds.get("private_key"):
+        key = str(creds["private_key"]).replace("\\n", "\n").strip()
+        if "BEGIN" not in key or "PRIVATE KEY" not in key:
+            raise HTTPException(
+                status_code=400,
+                detail="private_key must be a PEM block (-----BEGIN PRIVATE KEY----- ...)",
+            )
+        creds = {**creds, "private_key": key + "\n"}
+    return creds
 
 
 def _get_connection(db: Session, tenant_id: str, connection_id: str) -> Models.TenantConnection:
@@ -218,7 +235,7 @@ def create_connection(
         deactivate_missing=req.deactivate_missing,
         status="active",
     )
-    store_credentials(connection, req.credentials)
+    store_credentials(connection, _prepare_credentials(req.provider_code, req.credentials))
 
     # Verify before saving — bad credentials should fail fast
     ok, message = build_connector(connection).test_connection()
@@ -288,7 +305,7 @@ def update_connection(
     if req.schedule_cron is not None:
         connection.schedule_cron = req.schedule_cron or None
     if req.credentials:
-        store_credentials(connection, req.credentials)
+        store_credentials(connection, _prepare_credentials(connection.provider_code, req.credentials))
 
     db.commit()
     db.refresh(connection)
@@ -379,6 +396,48 @@ def refresh_connection_schema(
     if not payload:
         raise HTTPException(status_code=502, detail="Schema discovery failed for this provider")
     return payload
+
+
+# ── Table catalogue + sample preview ──────────────────────────────
+
+@router.get("/tenants/{tenant_id}/connections/{connection_id}/tables")
+def list_connection_tables(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """List queryable tables/record types in the source ERP (table picker)."""
+    _check_tenant(ctx, tenant_id)
+    _require_erp_feature(db, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    try:
+        tables = build_connector(connection).list_tables()
+    except ConnectorError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"tables": tables, "count": len(tables)}
+
+
+@router.get("/tenants/{tenant_id}/connections/{connection_id}/preview")
+def preview_connection_table(
+    tenant_id: str,
+    connection_id: str,
+    table: str = Query(..., description="Source table / record type, e.g. item"),
+    limit: int = Query(15, ge=1, le=100),
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Return up to ``limit`` sample rows from the selected table."""
+    _check_tenant(ctx, tenant_id)
+    _require_erp_feature(db, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    try:
+        rows = build_connector(connection).preview_table(table, limit)
+    except ConnectorError as e:
+        msg = str(e)
+        code = 400 if "Invalid table" in msg else 502
+        raise HTTPException(status_code=code, detail=msg)
+    return {"table": table, "rows": rows, "count": len(rows)}
 
 
 # ── Sync ────────────────────────────────────────────────────────────

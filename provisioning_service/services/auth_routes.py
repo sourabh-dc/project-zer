@@ -3,10 +3,11 @@
 # ==================================================================================
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+import os
 import uuid as _uuid
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
@@ -24,7 +25,10 @@ from provisioning_service.core.helpers.signin_context import (
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.config import SETTINGS
-from provisioning_service.core.helpers.auth_helper import issue_refresh_token, revoke_refresh_token
+from provisioning_service.core.helpers.auth_helper import (
+    issue_refresh_token, revoke_refresh_token,
+    set_refresh_cookie, clear_refresh_cookie, read_refresh_cookie,
+)
 from provisioning_service.core.user_auth import check_user_authorization, decode_jwt_with_settings
 from provisioning_service.core.azure_auth import validate_azure_token, is_azure_auth_configured
 from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
@@ -88,9 +92,13 @@ def _issue_internal_jwt(user_id: str, email: str, tenant_id: str, roles: List[st
 
 
 def _build_login_response(db: Session, user: User, identity: UserIdentity,
-                          token: str, jwt_expires_at: datetime, refresh_token: str,
+                          token: str, jwt_expires_at: datetime,
                           roles: List[str], permissions: List[str]) -> LoginResponse:
-    """Build full LoginResponse with subscription, tenant, balance, RBAC context."""
+    """Build full LoginResponse with subscription, tenant, balance, RBAC context.
+
+    The refresh token is NOT included in the body — it is delivered as an
+    HttpOnly cookie (see set_refresh_cookie) so browser JS cannot read it.
+    """
     sub_ctx = build_subscription_context(db, user.tenant_id)
     tenant_ctx = build_tenant_context(db, user.tenant_id)
     balance_ctx = build_balance_context(db, user.user_id, user.tenant_id)
@@ -112,7 +120,7 @@ def _build_login_response(db: Session, user: User, identity: UserIdentity,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
         token=token,
         expiring_at=jwt_expires_at,
-        refresh_token=refresh_token,
+        refresh_token=None,
         subscription=sub_ctx,
         tenant=tenant_ctx,
         balance=balance_ctx,
@@ -123,7 +131,7 @@ def _build_login_response(db: Session, user: User, identity: UserIdentity,
 # ── TOKEN EXCHANGE (primary auth endpoint) ─────────────────────
 
 @router.post("/token", status_code=200)
-async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db)):
+async def token_exchange(req: TokenExchangeRequest, response: Response, db: Session = Depends(get_db)):
     """
     Exchange an Azure AD / CIAM token for an internal JWT.
 
@@ -322,6 +330,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             auth_method="azure_ad", azure_oid=oid,
         )
         refresh_token = issue_refresh_token(user, db)
+        set_refresh_cookie(response, refresh_token)
 
         logger.info(f"Invitation accepted: {identity.email} joined tenant {user.tenant_id}")
 
@@ -334,7 +343,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
         except Exception as _oe:
             logger.warning(f"Outbox failed for user.invitation_accepted: {_oe}")
 
-        return _build_login_response(db, user, identity, token, jwt_expires_at, refresh_token, all_roles, perm_list)
+        return _build_login_response(db, user, identity, token, jwt_expires_at, all_roles, perm_list)
 
     # ── Direct path (no invitation) ──────────────────────────────────
 
@@ -397,6 +406,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
             auth_method="azure_ad", azure_oid=oid,
         )
         refresh_token = issue_refresh_token(user, db)
+        set_refresh_cookie(response, refresh_token)
 
         logger.info(f"Azure SSO login for existing user {identity.email} (tenant {tenant_id})")
 
@@ -411,7 +421,7 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
         except Exception as _oe:
             logger.warning(f"Outbox failed for user.azure_sso_login: {_oe}")
 
-        return _build_login_response(db, user, identity, token, jwt_expires_at, refresh_token, all_roles, perm_list)
+        return _build_login_response(db, user, identity, token, jwt_expires_at, all_roles, perm_list)
 
     else:
         # ── Brand new identity: create UserIdentity only, no User row yet ──
@@ -447,13 +457,40 @@ async def token_exchange(req: TokenExchangeRequest, db: Session = Depends(get_db
 
 # ── REFRESH JWT ───────────────────────────────────────────────────────
 
+def _assert_allowed_origin(request: Request) -> None:
+    """Lightweight CSRF guard for cookie-authenticated endpoints.
+
+    If the request carries an Origin header (i.e. it came from a browser)
+    and ALLOW_ORIGINS is configured to an explicit list, the origin must
+    be in that list. Non-browser clients (no Origin header) are unaffected.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    allowed = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]
+    if "*" in allowed:
+        return
+    if origin not in allowed:
+        logger.warning(f"refresh-jwt rejected: origin {origin} not in ALLOW_ORIGINS")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origin not allowed")
+
+
 @router.post("/refresh-jwt", response_model=RefreshJwtResponse, status_code=200)
-async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
+async def refresh_jwt(req: RefreshJwtRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """
     Exchange a valid refresh token for a new JWT.
-    Requires: user_id and the refresh_token string returned at login.
-    Rotates the refresh token on success.
+
+    The refresh token is read from the HttpOnly ``refresh_token`` cookie
+    (browser flow). The request body field is kept as a fallback for
+    Swagger / non-browser clients. Rotates the refresh token on success
+    and sets the new value as a cookie.
     """
+    _assert_allowed_origin(request)
+
+    refresh_token_value = read_refresh_cookie(request) or req.refresh_token
+    if not refresh_token_value:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+
     user = db.query(User).filter(User.user_id == req.user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
@@ -465,7 +502,7 @@ async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
 
     try:
-        valid = bcrypt.checkpw(req.refresh_token.encode("utf-8"), user.refresh_token.encode("utf-8"))
+        valid = bcrypt.checkpw(refresh_token_value.encode("utf-8"), user.refresh_token.encode("utf-8"))
     except Exception:
         valid = False
 
@@ -501,12 +538,13 @@ async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
     token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
 
     new_refresh_token = issue_refresh_token(user, db)
+    set_refresh_cookie(response, new_refresh_token)
 
     logger.info(f"Refresh token used for user {email}, new JWT issued")
     return RefreshJwtResponse(
         token=token,
         expiring_at=jwt_expires_at.isoformat(),
-        refresh_token=new_refresh_token,
+        refresh_token=None,
         roles=roles,
     )
 
@@ -514,9 +552,10 @@ async def refresh_jwt(req: RefreshJwtRequest, db: Session = Depends(get_db)):
 # ── LOGOUT ────────────────────────────────────────────────────────────
 
 @router.post("/logout", status_code=200)
-async def logout(user_id: str, db: Session = Depends(get_db)):
+async def logout(user_id: str, response: Response, db: Session = Depends(get_db)):
     """
-    Log out a user: set last_logout_at, revoke stored refresh token.
+    Log out a user: set last_logout_at, revoke stored refresh token,
+    and clear the refresh-token cookie.
     """
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
@@ -524,6 +563,7 @@ async def logout(user_id: str, db: Session = Depends(get_db)):
 
     user.last_logout_at = datetime.now(timezone.utc)
     revoke_refresh_token(user, db)
+    clear_refresh_cookie(response)
 
     identity = db.query(UserIdentity).filter(UserIdentity.user_id == user.user_id).first()
     email = identity.email if identity else "unknown"
@@ -605,8 +645,6 @@ async def public_config():
         "azure_tenant_id": getattr(SETTINGS, "AZURE_AD_TENANT_ID", ""),
     }
 
-
-import os
 
 # ── HEALTHCHECK ───────────────────────────────────────────────────────
 

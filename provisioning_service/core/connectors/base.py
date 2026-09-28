@@ -105,6 +105,22 @@ class BaseConnector(ABC):
         """
         return []
 
+    def list_tables(self) -> List[Dict[str, Any]]:
+        """List queryable tables/record types in the source system.
+
+        Used by the connection setup UI to offer a table picker.
+        Default: empty list (provider does not support a catalogue).
+        """
+        return []
+
+    def preview_table(self, table: str, limit: int = 15) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` sample rows from a source table.
+
+        Implementations MUST validate the table identifier — it is
+        typically interpolated into a query string.
+        """
+        raise ConnectorError(f"{self.provider_code or 'This provider'} does not support table preview")
+
     def normalize(self, raw: Dict[str, Any], field_map: Dict[str, str]) -> CanonicalItem:
         """Default normalizer: apply field_map (canonical_field <- provider_field).
 

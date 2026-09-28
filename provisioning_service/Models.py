@@ -562,6 +562,18 @@ class CostCentreAuditEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class OrgUnitAuditEvent(Base):
+    """Per-org-unit change history: details, status, manager, assignments"""
+    __tablename__ = "org_unit_audit_events"
+    id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    org_unit_id = Column(SQLUUID(as_uuid=True), ForeignKey("org_units.org_unit_id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    action = Column(String(50), nullable=False)  # created | updated | activated | deactivated | deleted | user.assigned | user.removed
+    detail = Column(Text, nullable=True)  # human-readable change lines, one per line
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 # ==================================================================================
 # INTEGRATION PACKS (Phase B)
 # ==================================================================================

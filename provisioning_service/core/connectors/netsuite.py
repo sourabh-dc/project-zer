@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import time
 import uuid as _uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,10 +23,13 @@ from urllib.parse import quote
 import jwt  # PyJWT — PS256/ES256 via cryptography
 import requests
 
-from provisioning_service.core.connectors.base import BaseConnector, ConnectorError, fields_from_sample
+from provisioning_service.core.connectors.base import BaseConnector, CanonicalItem, ConnectorError, fields_from_sample
 
 PAGE_SIZE = 500
 TIMEOUT = 60
+
+# Table names are interpolated into SuiteQL — identifiers only, no exceptions.
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 ITEMS_QUERY = """
 SELECT itemid, displayname, description, purchasedescription,
@@ -203,13 +207,13 @@ class NetSuiteConnector(BaseConnector):
             return f"Bearer {self._get_m2m_token()}"
         return self._tba_header(method, url)
 
-    def _query(self, query: str, offset: int = 0) -> Dict[str, Any]:
+    def _query(self, query: str, offset: int = 0, limit: int = PAGE_SIZE) -> Dict[str, Any]:
         # SuiteQL rejects SQL LIMIT/OFFSET. Page via URL params instead.
         url = f"{self._base_url()}/services/rest/query/v1/suiteql"
         try:
             resp = requests.post(
                 url,
-                params={"limit": PAGE_SIZE, "offset": offset},
+                params={"limit": limit, "offset": offset},
                 headers={
                     "Authorization": self._auth_header("POST", url),
                     "Content-Type": "application/json",
@@ -226,6 +230,49 @@ class NetSuiteConnector(BaseConnector):
             raise ConnectorError(f"NetSuite SuiteQL failed: {e}")
         except ValueError as e:
             raise ConnectorError(f"NetSuite response malformed: {e}")
+
+    # ------------------------------------------------------------------
+    # Table catalogue + sample preview (connection setup UI)
+    # ------------------------------------------------------------------
+
+    def list_tables(self) -> List[Dict[str, Any]]:
+        """List queryable record types via the REST metadata catalog."""
+        url = f"{self._base_url()}/services/rest/record/v1/metadata-catalog"
+        try:
+            resp = requests.get(
+                url,
+                headers={"Authorization": self._auth_header("GET", url)},
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except ConnectorError:
+            raise
+        except requests.RequestException as e:
+            raise ConnectorError(f"NetSuite metadata catalog failed: {e}")
+        except ValueError as e:
+            raise ConnectorError(f"NetSuite metadata catalog response malformed: {e}")
+
+        tables = [
+            {"name": it["name"]}
+            for it in (data.get("items") or [])
+            if isinstance(it, dict) and it.get("name")
+        ]
+        tables.sort(key=lambda t: t["name"])
+        return tables
+
+    def preview_table(self, table: str, limit: int = 15) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` sample rows from a SuiteQL table.
+
+        Table name is validated (identifier chars only) — it is interpolated
+        into the query string, so anything exotic is rejected outright.
+        """
+        table = (table or "").strip()
+        if not _TABLE_NAME_RE.match(table):
+            raise ConnectorError(f"Invalid table name: {table!r}")
+        limit = max(1, min(int(limit), 100))
+        body = self._query(f"SELECT * FROM {table}", offset=0, limit=limit)
+        return body.get("items", [])
 
     def test_connection(self) -> Tuple[bool, str]:
         try:
@@ -278,3 +325,30 @@ class NetSuiteConnector(BaseConnector):
             from provisioning_service.utils.logger import logger
             logger.warning(f"NetSuite metadata catalog failed, using defaults: {e}")
         return list(DEFAULT_ITEM_FIELDS)
+
+    # ------------------------------------------------------------------
+    # Canonical mapping — NetSuite quirks cleanup
+    # ------------------------------------------------------------------
+
+    def normalize(self, raw: Dict[str, Any], field_map: Dict[str, str]) -> CanonicalItem:
+        """Canonical mapping with NetSuite-specific cleanup.
+
+        - Reference fields (vendor, department, currency) can arrive as
+          ``{"id": .., "refName": ..}`` objects — flatten to the refName
+          BEFORE the canonical model validates them.
+        - Currency falls back to the connection's configured currency when
+          the field map doesn't provide one.
+        """
+        cleaned = {
+            k: (v.get("refName") or v.get("id")) if isinstance(v, dict) else v
+            for k, v in raw.items()
+        }
+        item = super().normalize(cleaned, field_map)
+        item.raw = raw  # keep the untouched payload
+
+        if not field_map.get("currency"):
+            cfg_ccy = (self.config.get("currency") or "").strip()
+            if cfg_ccy:
+                item.currency = cfg_ccy.upper()[:3]
+
+        return item
