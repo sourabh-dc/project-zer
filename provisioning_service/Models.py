@@ -747,6 +747,13 @@ class SyncRun(Base):
     error_summary = Column(JSONB, nullable=True)            # first N errors
     warnings = Column(JSONB, nullable=True)                 # non-fatal issues (e.g. stale field mappings)
 
+    # Contract evidence (deck slice 1/2)
+    correlation_id = Column(String(64), nullable=True, index=True)   # one per run, ties envelopes + logs
+    adapter_version = Column(String(20), nullable=True)              # connector version that produced this run
+    object_type = Column(String(30), nullable=False, default="product")  # product | supplier | org_dimension | location
+    checkpoint = Column(String(100), nullable=True)                  # last committed page cursor — resume after crash
+    high_water_mark = Column(String(40), nullable=True)              # incremental sync watermark (ISO ts)
+
 
 class SyncRunItem(Base):
     """Per-row outcome within a sync run (capped at insert time)."""
@@ -758,6 +765,87 @@ class SyncRunItem(Base):
     sku = Column(String(100), nullable=True)
     action = Column(String(20), nullable=False)             # created | updated | skipped | error
     message = Column(String(500), nullable=True)
+    raw_payload = Column(JSONB, nullable=True)              # unaltered source record (evidence)
+    payload_hash = Column(String(64), nullable=True)        # sha256 of raw_payload
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ── Canonical identity + review queue (deck slice 3) ─────────────
+
+class CanonicalSupplier(Base):
+    """One true supplier identity across all ingestion routes.
+    Tenant Vendor rows link here; ERP name variants resolve here."""
+    __tablename__ = "canonical_suppliers"
+
+    canonical_supplier_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    display_name = Column(String(255), nullable=False)
+    normalized_name = Column(String(255), nullable=False, index=True)  # upper, no punctuation/legal suffixes
+    aliases = Column(JSONB, nullable=True)                # observed name variants (evidence)
+    company_number = Column(String(20), nullable=True)    # Companies House / registry id
+    status = Column(String(20), nullable=False, default="active")  # active | merged
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_canonical_supplier_tenant_name", "tenant_id", "normalized_name", unique=True),
+    )
+
+
+class CanonicalProduct(Base):
+    """One true product identity; tenant Product rows link here."""
+    __tablename__ = "canonical_products"
+
+    canonical_product_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    display_name = Column(String(255), nullable=False)
+    normalized_name = Column(String(255), nullable=False, index=True)
+    attributes = Column(JSONB, nullable=True)             # AI-extracted: {material, colour, size, ...}
+    category_name = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_canonical_product_tenant_name", "tenant_id", "normalized_name"),
+    )
+
+
+class ReviewQueueItem(Base):
+    """Low-confidence records held for human review — never auto-canonical."""
+    __tablename__ = "review_queue_items"
+
+    review_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    object_type = Column(String(30), nullable=False)      # supplier | product
+    source_record = Column(JSONB, nullable=False)         # envelope raw payload
+    payload_hash = Column(String(64), nullable=True)
+    proposed_match_id = Column(SQLUUID(as_uuid=True), nullable=True)   # suggested canonical id
+    proposed_match_name = Column(String(255), nullable=True)
+    confidence = Column(Integer, nullable=False, default=0)            # 0-100
+    reason = Column(String(255), nullable=True)           # why it landed here
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | approved | rejected
+    reviewer_user_id = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PurchaseOrderWrite(Base):
+    """Governed ERP write audit (deck slice 5). One row per createPurchaseOrder
+    attempt — gates passed, idempotency key, ERP ack. Never claim success
+    until the ERP acknowledged."""
+    __tablename__ = "purchase_order_writes"
+
+    write_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    connection_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenant_connections.connection_id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(String(64), nullable=False)                  # ZeroQue PO id
+    idempotency_key = Column(String(100), nullable=False, unique=True)
+    gates = Column(JSONB, nullable=False)                          # {declared, entitled, authorised, approved}
+    payload = Column(JSONB, nullable=False)                        # PO sent to ERP
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | acknowledged | failed
+    erp_response = Column(JSONB, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

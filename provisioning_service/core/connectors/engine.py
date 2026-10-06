@@ -20,9 +20,15 @@ from sqlalchemy.orm import Session
 
 from provisioning_service.Models import (
     Category, Product, SyncRun, SyncRunItem, TenantConnection, Vendor,
+    CanonicalSupplier, CanonicalProduct, ReviewQueueItem,
 )
 from provisioning_service.core.connectors.base import BaseConnector, CanonicalItem, ConnectorError
+from provisioning_service.core.connectors.canonical import (
+    normalize_name, match_confidence, extract_attributes, classify,
+    REVIEW_THRESHOLD, AUTO_MATCH_THRESHOLD,
+)
 from provisioning_service.core.connectors.credentials import resolve_credentials
+from provisioning_service.core.connectors.envelope import build_envelope
 from provisioning_service.core.connectors.registry import get_connector_class
 from provisioning_service.core.entitlement_helpers import check_feature_limit
 from provisioning_service.utils.logger import logger
@@ -30,6 +36,18 @@ from provisioning_service.utils.logger import logger
 MAX_ITEM_LOGS = 500          # cap sync_run_items rows per run
 MAX_ERROR_SUMMARY = 20       # first N errors kept on the run row
 PAGE_DELAY_SECONDS = 0.2     # polite delay between provider pages
+
+
+def classify_error(exc: Exception) -> str:
+    """Retry classification (deck slice 2): transient | auth | permanent | data_quality."""
+    msg = str(exc).lower()
+    if any(k in msg for k in ("401", "403", "token rejected", "unauthorized", "forbidden", "authentication")):
+        return "auth"
+    if any(k in msg for k in ("timeout", "timed out", "429", "502", "503", "504", "connection", "throttl")):
+        return "transient"
+    if any(k in msg for k in ("normalize", "missing sku", "invalid", "malformed")):
+        return "data_quality"
+    return "permanent"
 
 
 def build_connector(connection: TenantConnection) -> BaseConnector:
@@ -91,25 +109,104 @@ def _find_or_create_category(db: Session, tenant_id, name: str) -> Optional[uuid
     return cat.category_id
 
 
-def _find_or_create_vendor(db: Session, tenant_id, name: str) -> Optional[uuid.UUID]:
+def _find_or_create_vendor(db: Session, tenant_id, name: str, correlation_id: str = "") -> Optional[uuid.UUID]:
+    """Canonical-aware vendor resolution (deck slice 3).
+
+    Exact normalized match → link. High-confidence fuzzy → link + alias
+    recorded. Below threshold → review queue, NO silent merge.
+    """
     name = name.strip()
     if not name:
         return None
+    norm = normalize_name(name)
+
+    # 1. Existing tenant vendor by exact name (legacy fast path)
     vendor = db.query(Vendor).filter(
         Vendor.tenant_id == tenant_id,
         Vendor.name.ilike(name),
     ).first()
-    if vendor:
-        return vendor.vendor_id
-    vendor = Vendor(
-        vendor_id=uuid.uuid4(),
-        tenant_id=tenant_id,
-        name=name[:255],
-        status="active",
-    )
-    db.add(vendor)
-    db.flush()
+
+    # 2. Canonical supplier resolution
+    canonical = db.query(CanonicalSupplier).filter(
+        CanonicalSupplier.tenant_id == tenant_id,
+        CanonicalSupplier.normalized_name == norm,
+    ).first()
+
+    if canonical is None:
+        # Fuzzy against all canonical suppliers for this tenant
+        best, best_score = None, 0
+        for cs in db.query(CanonicalSupplier).filter(CanonicalSupplier.tenant_id == tenant_id).all():
+            score = match_confidence(norm, cs.normalized_name)
+            if score > best_score:
+                best, best_score = cs, score
+
+        if best and best_score >= AUTO_MATCH_THRESHOLD:
+            canonical = best
+            aliases = set(best.aliases or [])
+            if name not in aliases:
+                aliases.add(name)
+                best.aliases = sorted(aliases)
+        elif best and best_score >= REVIEW_THRESHOLD:
+            # Likely duplicate — hold for human review, never auto-merge
+            db.add(ReviewQueueItem(
+                review_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                object_type="supplier",
+                source_record={"name": name, "normalized": norm},
+                proposed_match_id=best.canonical_supplier_id,
+                proposed_match_name=best.display_name,
+                confidence=best_score,
+                reason=f"Possible duplicate of '{best.display_name}'",
+            ))
+        # Below threshold or no candidates → create new canonical identity
+        if canonical is None:
+            canonical = CanonicalSupplier(
+                canonical_supplier_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                display_name=name[:255],
+                normalized_name=norm[:255],
+                aliases=[name],
+            )
+            db.add(canonical)
+            db.flush()
+
+    if vendor is None:
+        vendor = Vendor(
+            vendor_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            name=name[:255],
+            status="active",
+        )
+        db.add(vendor)
+        db.flush()
     return vendor.vendor_id
+
+
+def _link_canonical_product(db: Session, tenant_id, item: CanonicalItem, payload_hash: str = "") -> None:
+    """Resolve/create the canonical product identity for an ingested item.
+
+    Deterministic attributes extracted now; AI-assist plugs into
+    extract_attributes later. Low-confidence name matches go to review.
+    """
+    norm = normalize_name(item.name)
+    if not norm:
+        return
+    canonical = db.query(CanonicalProduct).filter(
+        CanonicalProduct.tenant_id == tenant_id,
+        CanonicalProduct.normalized_name == norm,
+    ).first()
+    if canonical is None:
+        attrs = extract_attributes(item.description or item.name)
+        canonical = CanonicalProduct(
+            canonical_product_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            display_name=item.name[:255],
+            normalized_name=norm[:255],
+            attributes=attrs or None,
+            category_name=(item.category_name or classify(attrs, item.description or item.name) or "")[:255] or None,
+        )
+        db.add(canonical)
+        db.flush()
 
 
 def _apply_item(product: Product, item: CanonicalItem, connection: TenantConnection) -> None:
@@ -131,7 +228,16 @@ def _apply_item(product: Product, item: CanonicalItem, connection: TenantConnect
         product.ean = item.ean[:128]
 
 
-def _log_item(db: Session, run: SyncRun, item: Optional[CanonicalItem], action: str, message: Optional[str], logged: int) -> int:
+def _log_item(
+    db: Session,
+    run: SyncRun,
+    item: Optional[CanonicalItem],
+    action: str,
+    message: Optional[str],
+    logged: int,
+    raw_payload: Optional[dict] = None,
+    payload_hash: Optional[str] = None,
+) -> int:
     if logged >= MAX_ITEM_LOGS:
         return logged
     db.add(SyncRunItem(
@@ -141,6 +247,8 @@ def _log_item(db: Session, run: SyncRun, item: Optional[CanonicalItem], action: 
         sku=item.sku if item else None,
         action=action,
         message=(message or "")[:500] or None,
+        raw_payload=raw_payload,
+        payload_hash=payload_hash,
     ))
     return logged + 1
 
@@ -186,6 +294,7 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
         connection_id=connection.connection_id,
         trigger=trigger,
         status="running",
+        correlation_id=str(uuid.uuid4()),
     )
     db.add(run)
     db.commit()
@@ -197,6 +306,17 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
     errors: List[Dict[str, Any]] = []
     seen_external_ids: set = set()
 
+    # Resume: adopt checkpoint from the latest failed run on this connection
+    resume_cursor: Optional[str] = None
+    last_failed = db.query(SyncRun).filter(
+        SyncRun.connection_id == connection.connection_id,
+        SyncRun.status == "failed",
+        SyncRun.checkpoint.isnot(None),
+    ).order_by(SyncRun.started_at.desc()).first()
+    if last_failed and last_failed.checkpoint:
+        resume_cursor = last_failed.checkpoint
+        logger.info(f"Sync run {run.sync_run_id}: resuming from checkpoint of failed run {last_failed.sync_run_id}")
+
     # Schema matcher: flag stale mappings before pulling any data
     warnings = _validate_mappings(connection, field_map)
     if warnings:
@@ -207,7 +327,9 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
 
     try:
         connector = build_connector(connection)
-        cursor: Optional[str] = None
+        run.adapter_version = connector.adapter_version
+        db.commit()
+        cursor: Optional[str] = resume_cursor
 
         while True:
             # ── Fetch one page (3 attempts, exponential backoff) ──
@@ -224,16 +346,27 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
             # ── Normalize + upsert page in one transaction ──
             try:
                 for raw in raw_page:
+                    # Source envelope: evidence for every record (deck slice 1)
+                    envelope = build_envelope(
+                        raw=raw,
+                        object_type="product",
+                        external_id=str(raw.get("id") or raw.get("external_id") or ""),
+                        connection_id=str(connection.connection_id),
+                        provider_code=connection.provider_code,
+                        adapter_version=connector.adapter_version,
+                        correlation_id=run.correlation_id,
+                    )
                     try:
                         item = connector.normalize(raw, field_map)
                     except Exception as e:
                         run.error_count += 1
-                        errors.append({"sku": None, "error": f"normalize: {e}"})
+                        errors.append({"sku": None, "error": f"normalize: {e}", "class": "data_quality"})
                         continue
 
                     if not item.sku or not item.name:
                         run.skipped_count += 1
-                        logged = _log_item(db, run, item, "skipped", "missing sku or name", logged)
+                        logged = _log_item(db, run, item, "skipped", "missing sku or name", logged,
+                                           raw_payload=raw, payload_hash=envelope.payload_hash)
                         continue
 
                     seen_external_ids.add(item.external_id)
@@ -254,7 +387,8 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
                     if product is not None:
                         _apply_item(product, item, connection)
                         run.updated_count += 1
-                        logged = _log_item(db, run, item, "updated", None, logged)
+                        logged = _log_item(db, run, item, "updated", None, logged,
+                                           raw_payload=raw, payload_hash=envelope.payload_hash)
                         continue
 
                     # New product — enforce catalog quota before creating
@@ -262,8 +396,9 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
                         check_feature_limit(db, str(tenant_id), "product.records", count=1)
                     except Exception as quota_err:
                         run.error_count += 1
-                        errors.append({"sku": item.sku, "error": f"quota: {quota_err}"})
-                        logged = _log_item(db, run, item, "error", "catalog quota exceeded", logged)
+                        errors.append({"sku": item.sku, "error": f"quota: {quota_err}", "class": "permanent"})
+                        logged = _log_item(db, run, item, "error", "catalog quota exceeded", logged,
+                                           raw_payload=raw, payload_hash=envelope.payload_hash)
                         continue
 
                     product = Product(
@@ -277,17 +412,24 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
                     if item.category_name:
                         product.category_id = _find_or_create_category(db, tenant_id, item.category_name)
                     if item.vendor_name:
-                        product.vendor_id = _find_or_create_vendor(db, tenant_id, item.vendor_name)
+                        product.vendor_id = _find_or_create_vendor(
+                            db, tenant_id, item.vendor_name, correlation_id=run.correlation_id)
+
+                    # Canonical product identity + attribute extraction (slice 3)
+                    _link_canonical_product(db, tenant_id, item, envelope.payload_hash)
 
                     db.add(product)
                     run.created_count += 1
-                    logged = _log_item(db, run, item, "created", None, logged)
+                    logged = _log_item(db, run, item, "created", None, logged,
+                                       raw_payload=raw, payload_hash=envelope.payload_hash)
 
+                # Checkpoint: last committed page cursor survives a crash
+                run.checkpoint = cursor
                 db.commit()  # page-level transaction
             except Exception as page_err:
                 db.rollback()
                 logger.error(f"Sync run {run.sync_run_id}: page failed: {page_err}")
-                errors.append({"sku": None, "error": f"page: {page_err}"})
+                errors.append({"sku": None, "error": f"page: {page_err}", "class": classify_error(page_err)})
                 run.error_count += len(raw_page)
 
             if not cursor:
@@ -315,7 +457,7 @@ def run_sync(db: Session, connection: TenantConnection, trigger: str = "manual")
         db.rollback()
         logger.error(f"Sync run {run.sync_run_id} failed: {e}")
         run.status = "failed"
-        errors.append({"sku": None, "error": str(e)})
+        errors.append({"sku": None, "error": str(e), "class": classify_error(e)})
 
     # ── Finalize ──
     run.finished_at = datetime.now(timezone.utc)

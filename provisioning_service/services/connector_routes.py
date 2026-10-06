@@ -3,6 +3,7 @@
 # Gated on the `erp.integration` plan feature (Standard Integration Pack).
 # ==================================================================================
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -404,18 +405,44 @@ def refresh_connection_schema(
 def list_connection_tables(
     tenant_id: str,
     connection_id: str,
+    refresh: bool = Query(False, description="Bypass the 24h cache"),
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
 ):
-    """List queryable tables/record types in the source ERP (table picker)."""
+    """List queryable tables/record types in the source ERP (table picker).
+
+    The provider catalogue can be slow (NetSuite metadata catalog reads
+    60s+), so a successful live result is cached on the connection for 24h.
+    """
     _check_tenant(ctx, tenant_id)
     _require_erp_feature(db, tenant_id)
     connection = _get_connection(db, tenant_id, connection_id)
+
+    cfg = dict(connection.config or {})
+    cache = cfg.get("_tables_cache") or {}
+    if not refresh and cache.get("tables") and cache.get("cached_at"):
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(cache["cached_at"])
+            if age < timedelta(hours=24):
+                return {"tables": cache["tables"], "count": len(cache["tables"]),
+                        "source": "live", "cached": True}
+        except (ValueError, TypeError):
+            pass
+
     try:
-        tables = build_connector(connection).list_tables()
+        tables, source = build_connector(connection).list_tables()
     except ConnectorError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"tables": tables, "count": len(tables)}
+
+    if source == "live":
+        cfg["_tables_cache"] = {
+            "tables": tables,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+        }
+        connection.config = cfg
+        db.commit()
+
+    return {"tables": tables, "count": len(tables), "source": source, "cached": False}
 
 
 @router.get("/tenants/{tenant_id}/connections/{connection_id}/preview")
@@ -534,3 +561,62 @@ def get_sync_run_items(
         SyncRunItemOut(external_id=i.external_id, sku=i.sku, action=i.action, message=i.message)
         for i in items
     ]
+
+
+# ── Contract lifecycle: capabilities / health / revoke (deck slice 1) ──
+
+@router.get("/tenants/{tenant_id}/connections/{connection_id}/capabilities")
+def get_connection_capabilities(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Machine-readable adapter capability declaration (write gate 1 input)."""
+    _check_tenant(ctx, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    return build_connector(connection).discover_capabilities()
+
+
+@router.get("/tenants/{tenant_id}/connections/{connection_id}/health")
+def get_connection_health(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Live adapter health: connectivity + latency + last sync outcome."""
+    _check_tenant(ctx, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    health = build_connector(connection).get_health()
+    last_run = db.query(Models.SyncRun).filter(
+        Models.SyncRun.connection_id == connection.connection_id,
+    ).order_by(Models.SyncRun.started_at.desc()).first()
+    health["last_sync"] = {
+        "status": last_run.status,
+        "finished_at": last_run.finished_at.isoformat() if last_run.finished_at else None,
+    } if last_run else None
+    health["connection_status"] = connection.status
+    return health
+
+
+@router.post("/tenants/{tenant_id}/connections/{connection_id}/revoke")
+def revoke_connection(
+    tenant_id: str,
+    connection_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("catalog.manage")),
+):
+    """Revoke provider credentials best-effort, then disable the connection."""
+    _check_tenant(ctx, tenant_id)
+    connection = _get_connection(db, tenant_id, connection_id)
+    ok, message = build_connector(connection).revoke_connection()
+    connection.status = "revoked"
+    connection.credentials_ref = None
+    connection.credentials_enc = None
+    try:
+        unschedule_connection(str(connection.connection_id))
+    except Exception:
+        pass
+    db.commit()
+    return {"ok": ok, "message": message, "status": "revoked"}

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, APIRouter, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
@@ -282,14 +283,30 @@ async def list_cost_centres(
         site_id: Optional[str] = Query(None),
         store_id: Optional[str] = Query(None),
         year_id: Optional[str] = Query(None, description="Financial year UUID — adds budget/used/available for that year"),
-        sort: str = Query("created_at", description="name | code | created_at | budget"),
+        users: Optional[str] = Query(None, description="has_users | no_users"),
+        period: Optional[str] = Query(None, description="weekly | monthly | quarterly | annually | one_time"),
+        sort: str = Query("created_at", description="name | code | status | users | budget (needs year_id) | created_at"),
         order: str = Query("desc", description="asc | desc"),
         db: Session = Depends(get_db),
         limit: int = Query(100, le=1000, ge=1),
         offset: int = Query(0, ge=0)
 ):
     """List cost centres — search, status, scope filters, sort, per-FY budget."""
-    q = db.query(CostCentre)
+    # Users-count subquery — powers Users filter + Users sort at SQL level
+    uc = (
+        db.query(
+            UserCostCentre.cost_centre_id.label("cost_centre_id"),
+            func.count(UserCostCentre.user_budget_id).label("users_count"),
+        )
+        .group_by(UserCostCentre.cost_centre_id)
+        .subquery()
+    )
+    users_count_col = func.coalesce(uc.c.users_count, 0)
+
+    q = (
+        db.query(CostCentre, users_count_col.label("users_count"))
+        .outerjoin(uc, uc.c.cost_centre_id == CostCentre.cost_centre_id)
+    )
 
     if tenant_id:
         q = q.filter(CostCentre.tenant_id == uuid.UUID(tenant_id))
@@ -311,16 +328,57 @@ async def list_cost_centres(
         q = q.filter(CostCentre.site_id == uuid.UUID(site_id))
     if store_id:
         q = q.filter(CostCentre.store_id == uuid.UUID(store_id))
+    if users == "has_users":
+        q = q.filter(users_count_col > 0)
+    elif users == "no_users":
+        q = q.filter(users_count_col == 0)
+    if period:
+        # Frontend values → stored granularity (one_time is stored as "year")
+        granularity = {
+            "weekly": "week", "monthly": "month", "quarterly": "quarter",
+            "annually": "year", "one_time": "year",
+        }.get(period.lower())
+        if granularity:
+            q = q.filter(CostCentre.period_granularity == granularity)
+
+    # Budget sort at SQL level (needs year_id — budget is versioned per FY)
+    budget_sort_col = None
+    if year_id:
+        from provisioning_service.Models import CostCentreBudgetVersion
+        bv = (
+            db.query(
+                CostCentreBudgetVersion.cost_centre_id.label("cost_centre_id"),
+                func.max(CostCentreBudgetVersion.budget_minor).label("budget_minor"),
+            )
+            .filter(
+                CostCentreBudgetVersion.year_id == uuid.UUID(year_id),
+                CostCentreBudgetVersion.period_id.is_(None),
+                CostCentreBudgetVersion.status == "active",
+            )
+            .group_by(CostCentreBudgetVersion.cost_centre_id)
+            .subquery()
+        )
+        q = q.outerjoin(bv, bv.c.cost_centre_id == CostCentre.cost_centre_id)
+        budget_sort_col = func.coalesce(bv.c.budget_minor, 0)
 
     total = q.count()
 
     sort_col = {
         "name": CostCentre.name,
         "code": CostCentre.code,
+        "status": CostCentre.is_active,
+        "users": users_count_col,
         "created_at": CostCentre.created_at,
-    }.get(sort, CostCentre.created_at)
+    }.get(sort)
+    if sort == "budget" and budget_sort_col is not None:
+        sort_col = budget_sort_col
+    if sort_col is None:
+        sort_col = CostCentre.created_at
     q = q.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
-    ccs = q.offset(offset).limit(limit).all()
+    rows = q.offset(offset).limit(limit).all()
+
+    ccs = [r for r, _cnt in rows]
+    users_count_map = {r.cost_centre_id: cnt for r, cnt in rows}
 
     # Resolve scope + parent names in batch
     names = _cc_scope_names(db, ccs)
@@ -391,14 +449,11 @@ async def list_cost_centres(
             "owner_user_id": str(cc.owner_user_id) if cc.owner_user_id else None,
             "is_active": bool(cc.is_active),
             "status": "Active" if cc.is_active else "Archived",
+            "users_count": users_count_map.get(cc.cost_centre_id, 0),
             "budget": budget_map.get(cc.cost_centre_id),
             "period": ({**period_base, "granularity": cc.period_granularity} if period_base else None),
             "created_at": cc.created_at.isoformat()
         })
-
-    # budget sort needs the assembled list
-    if sort == "budget" and year_id:
-        items.sort(key=lambda x: (x["budget"] or {}).get("budget_minor", 0), reverse=(order != "asc"))
 
     return {
         "cost_centres": items,

@@ -31,6 +31,18 @@ TIMEOUT = 60
 # Table names are interpolated into SuiteQL — identifiers only, no exceptions.
 _TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Metadata catalog can take 60s+ on large accounts — give it room.
+CATALOG_TIMEOUT = 150
+
+# Curated fallback when the metadata catalog times out / is unavailable.
+# Covers the tables a procurement setup UI realistically offers.
+COMMON_TABLES = [
+    "account", "classification", "currency", "customer", "department",
+    "employee", "expensecategory", "invoice", "item", "location",
+    "pricelevel", "purchaseorder", "salesorder", "subsidiary", "term",
+    "unitstype", "vendor", "vendorbill",
+]
+
 ITEMS_QUERY = """
 SELECT itemid, displayname, description, purchasedescription,
        lastpurchaseprice, itemtype, isinactive, department, vendorname
@@ -55,6 +67,7 @@ DEFAULT_ITEM_FIELDS = [
 
 class NetSuiteConnector(BaseConnector):
     provider_code = "netsuite"
+    adapter_version = "1.1.0"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -235,31 +248,37 @@ class NetSuiteConnector(BaseConnector):
     # Table catalogue + sample preview (connection setup UI)
     # ------------------------------------------------------------------
 
-    def list_tables(self) -> List[Dict[str, Any]]:
-        """List queryable record types via the REST metadata catalog."""
+    def list_tables(self) -> Tuple[List[Dict[str, Any]], str]:
+        """List queryable record types via the REST metadata catalog.
+
+        Returns (tables, source) — source is "live" or "fallback".
+        The catalog endpoint is slow on big accounts (60s+ reads); on any
+        failure we return a curated list of common tables so the setup UI
+        stays usable.
+        """
         url = f"{self._base_url()}/services/rest/record/v1/metadata-catalog"
         try:
             resp = requests.get(
                 url,
                 headers={"Authorization": self._auth_header("GET", url)},
-                timeout=TIMEOUT,
+                timeout=CATALOG_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
-        except ConnectorError:
-            raise
-        except requests.RequestException as e:
-            raise ConnectorError(f"NetSuite metadata catalog failed: {e}")
-        except ValueError as e:
-            raise ConnectorError(f"NetSuite metadata catalog response malformed: {e}")
+        except Exception as e:
+            from provisioning_service.utils.logger import logger
+            logger.warning(f"NetSuite metadata catalog unavailable, using curated table list: {e}")
+            return ([{"name": t} for t in COMMON_TABLES], "fallback")
 
         tables = [
             {"name": it["name"]}
             for it in (data.get("items") or [])
             if isinstance(it, dict) and it.get("name")
         ]
+        if not tables:
+            return ([{"name": t} for t in COMMON_TABLES], "fallback")
         tables.sort(key=lambda t: t["name"])
-        return tables
+        return (tables, "live")
 
     def preview_table(self, table: str, limit: int = 15) -> List[Dict[str, Any]]:
         """Return up to ``limit`` sample rows from a SuiteQL table.
@@ -352,3 +371,121 @@ class NetSuiteConnector(BaseConnector):
                 item.currency = cfg_ccy.upper()[:3]
 
         return item
+
+    # ------------------------------------------------------------------
+    # Contract: capabilities
+    # ------------------------------------------------------------------
+
+    def discover_capabilities(self) -> Dict[str, Any]:
+        caps = super().discover_capabilities()
+        caps["reads"].update({
+            "suppliers": True,
+            "org_dimensions": True,
+            "locations": True,
+            "supplier_product": True,
+            "changes_since": True,
+        })
+        caps["writes"]["create_purchase_order"] = True
+        caps["preview"] = True
+        caps["table_catalog"] = True
+        return caps
+
+    # ------------------------------------------------------------------
+    # Contract: additional reads (SuiteQL)
+    # ------------------------------------------------------------------
+
+    def _paged(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Shared SuiteQL paging. cursor = numeric offset as string."""
+        offset = int(cursor) if cursor else 0
+        body = self._query(query, offset=offset)
+        items = body.get("items", [])
+        has_more = bool(body.get("hasMore"))
+        next_cursor = str(offset + PAGE_SIZE) if has_more else None
+        return items, next_cursor
+
+    def read_suppliers(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        return self._paged(
+            "SELECT entityid, companyname, email, phone, currency, subsidiary, "
+            "isinactive, lastmodifieddate FROM vendor ORDER BY entityid",
+            cursor,
+        )
+
+    def read_org_dimensions(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        return self._paged(
+            "SELECT name, fullname, parent, isinactive, lastmodifieddate FROM department ORDER BY name",
+            cursor,
+        )
+
+    def read_locations(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        return self._paged(
+            "SELECT name, address1, city, country, isinactive, lastmodifieddate FROM location ORDER BY name",
+            cursor,
+        )
+
+    def read_supplier_products(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        # itemvendor join: vendor ↔ item with vendor's own part code
+        return self._paged(
+            "SELECT iv.vendor, iv.item, iv.vendorcode, iv.purchaseprice "
+            "FROM itemvendor iv ORDER BY iv.vendor",
+            cursor,
+        )
+
+    def read_changes_since(
+        self, object_type: str, since_iso: str, cursor: Optional[str]
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Incremental read via lastmodifieddate high-water mark."""
+        table = {
+            "product": "item",
+            "supplier": "vendor",
+            "org_dimension": "department",
+            "location": "location",
+        }.get(object_type)
+        if not table or not _TABLE_NAME_RE.match(table):
+            raise ConnectorError(f"readChangesSince: unsupported object_type {object_type!r}")
+        # SuiteQL date literal — since_iso expected as ISO-8601 string
+        since = (since_iso or "").replace("'", "")[:25]
+        q = (
+            f"SELECT * FROM {table} "
+            f"WHERE lastmodifieddate >= TO_DATE('{since}', 'YYYY-MM-DD\"T\"HH24:MI:SS') "
+            f"ORDER BY lastmodifieddate"
+        )
+        return self._paged(q, cursor)
+
+    # ------------------------------------------------------------------
+    # Contract: governed write — createPurchaseOrder (slice 5)
+    # ------------------------------------------------------------------
+
+    def create_purchase_order(self, po: Dict[str, Any], idempotency_key: str) -> Dict[str, Any]:
+        """Create a PO via the REST record API.
+
+        Idempotency: the ZeroQue PO id is sent as the NetSuite ``externalId``.
+        A retry with the same key upserts the same record — no duplicates.
+        """
+        if not idempotency_key:
+            raise ConnectorError("create_purchase_order requires an idempotency_key")
+        url = f"{self._base_url()}/services/rest/record/v1/purchaseOrder"
+        try:
+            resp = requests.post(
+                url,
+                params={"externalId": idempotency_key},
+                headers={
+                    "Authorization": self._auth_header("POST", url),
+                    "Content-Type": "application/json",
+                },
+                json=po,
+                timeout=TIMEOUT,
+            )
+            if resp.status_code in (200, 201, 204):
+                return {
+                    "ok": True,
+                    "external_id": idempotency_key,
+                    "netsuite_internal_id": resp.headers.get("x-n-internal-id") or resp.headers.get("X-N-Internal-Id"),
+                    "location": resp.headers.get("Location"),
+                }
+            raise ConnectorError(
+                f"NetSuite createPurchaseOrder rejected ({resp.status_code}): {resp.text[:300]}"
+            )
+        except ConnectorError:
+            raise
+        except requests.RequestException as e:
+            raise ConnectorError(f"NetSuite createPurchaseOrder failed: {e}")

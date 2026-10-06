@@ -6,6 +6,7 @@ sees CanonicalItem objects — provider quirks stay inside the connector.
 """
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,40 @@ class CanonicalItem(BaseModel):
     unit: Optional[str] = None
     ean: Optional[str] = None
     is_active: bool = True
+    raw: Dict[str, Any] = {}
+
+
+class CanonicalSupplier(BaseModel):
+    """Provider-agnostic supplier record."""
+    external_id: str
+    name: str
+    normalized_name: Optional[str] = None    # set by the resolution layer
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    currency: Optional[str] = None
+    subsidiary: Optional[str] = None
+    is_active: bool = True
+    raw: Dict[str, Any] = {}
+
+
+class CanonicalOrgDimension(BaseModel):
+    """Provider-agnostic org unit (department / cost centre dimension)."""
+    external_id: str
+    name: str
+    dimension_type: str = "department"       # department | cost_centre | location
+    code: Optional[str] = None
+    parent_external_id: Optional[str] = None
+    is_active: bool = True
+    raw: Dict[str, Any] = {}
+
+
+class CanonicalSupplierProduct(BaseModel):
+    """Supplier ↔ product relationship."""
+    supplier_external_id: str
+    product_external_id: str
+    supplier_sku: Optional[str] = None
+    purchase_price_minor: Optional[int] = None
+    currency: Optional[str] = None
     raw: Dict[str, Any] = {}
 
 
@@ -73,9 +108,16 @@ CANONICAL_FIELDS: List[Dict[str, str]] = [
 
 
 class BaseConnector(ABC):
-    """Contract every ERP provider connector fulfils."""
+    """Contract every ERP provider connector fulfils (deck slide 15).
+
+    Lifecycle: configure, test, capabilities, schema, health, revoke.
+    Reads: suppliers, products, locations, org dimensions, supplier–product,
+           changesSince.
+    Write: createPurchaseOrder only (slice 5).
+    """
 
     provider_code: str = ""
+    adapter_version: str = "0.1.0"
 
     def __init__(self, config: Dict[str, Any], credentials: Dict[str, Any]):
         self.config = config or {}
@@ -105,13 +147,14 @@ class BaseConnector(ABC):
         """
         return []
 
-    def list_tables(self) -> List[Dict[str, Any]]:
+    def list_tables(self) -> Tuple[List[Dict[str, Any]], str]:
         """List queryable tables/record types in the source system.
 
+        Returns (tables, source) where source is "live" or "fallback".
         Used by the connection setup UI to offer a table picker.
         Default: empty list (provider does not support a catalogue).
         """
-        return []
+        return ([], "unsupported")
 
     def preview_table(self, table: str, limit: int = 15) -> List[Dict[str, Any]]:
         """Return up to ``limit`` sample rows from a source table.
@@ -120,6 +163,80 @@ class BaseConnector(ABC):
         typically interpolated into a query string.
         """
         raise ConnectorError(f"{self.provider_code or 'This provider'} does not support table preview")
+
+    # ------------------------------------------------------------------
+    # Contract: capabilities / health / revoke
+    # ------------------------------------------------------------------
+
+    def discover_capabilities(self) -> Dict[str, Any]:
+        """Machine-readable capability declaration for this adapter.
+
+        Drives write gate 1 (Declared) and the setup UI. Default: read
+        products only, no writes.
+        """
+        return {
+            "provider_code": self.provider_code,
+            "adapter_version": self.adapter_version,
+            "reads": {
+                "products": True,
+                "suppliers": False,
+                "org_dimensions": False,
+                "locations": False,
+                "supplier_product": False,
+                "changes_since": False,
+            },
+            "writes": {"create_purchase_order": False},
+            "preview": False,
+            "table_catalog": False,
+        }
+
+    def get_health(self) -> Dict[str, Any]:
+        """Live adapter health: connectivity + latency. Sync-run stats are
+        added by the route layer (they need the DB)."""
+        started = time.monotonic()
+        ok, message = self.test_connection()
+        return {
+            "ok": ok,
+            "message": message,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "adapter_version": self.adapter_version,
+        }
+
+    def revoke_connection(self) -> Tuple[bool, str]:
+        """Best-effort credential revocation at the provider. Default: nothing
+        to revoke (tokens expire on their own)."""
+        return True, "Nothing to revoke provider-side"
+
+    # ------------------------------------------------------------------
+    # Contract: additional reads (default = not supported)
+    # ------------------------------------------------------------------
+
+    def read_suppliers(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        raise ConnectorError(f"{self.provider_code} does not support readSuppliers")
+
+    def read_org_dimensions(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        raise ConnectorError(f"{self.provider_code} does not support readOrganisationDimensions")
+
+    def read_locations(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        raise ConnectorError(f"{self.provider_code} does not support readLocations")
+
+    def read_supplier_products(self, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        raise ConnectorError(f"{self.provider_code} does not support readSupplierProductRelationships")
+
+    def read_changes_since(
+        self, object_type: str, since_iso: str, cursor: Optional[str]
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Incremental read: records of ``object_type`` changed after ``since_iso``."""
+        raise ConnectorError(f"{self.provider_code} does not support readChangesSince")
+
+    # ------------------------------------------------------------------
+    # Contract: governed write (slice 5 — default = not declared)
+    # ------------------------------------------------------------------
+
+    def create_purchase_order(self, po: Dict[str, Any], idempotency_key: str) -> Dict[str, Any]:
+        """Create a PO in the ERP. MUST honour idempotency_key — a retry with
+        the same key must not create a second PO."""
+        raise ConnectorError(f"{self.provider_code} does not declare createPurchaseOrder")
 
     def normalize(self, raw: Dict[str, Any], field_map: Dict[str, str]) -> CanonicalItem:
         """Default normalizer: apply field_map (canonical_field <- provider_field).

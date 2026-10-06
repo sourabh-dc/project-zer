@@ -43,6 +43,8 @@ from provisioning_service.services.advanced_access_routes import router as advan
 from provisioning_service.services.integration_pack_routes import router as integration_pack_router
 from provisioning_service.services.branding_routes import router as branding_router
 from provisioning_service.services.connector_routes import router as connector_router
+from provisioning_service.services.po_write_routes import router as po_write_router
+from provisioning_service.services.review_routes import router as review_router
 from provisioning_service.services.setup_status_routes import router as setup_status_router
 from provisioning_service.services.google_places_routes import router as google_places_router
 from provisioning_service.services.creditsafe_routes import router as creditsafe_router
@@ -176,6 +178,8 @@ app.include_router(advanced_access_router)
 app.include_router(integration_pack_router)
 app.include_router(branding_router)
 app.include_router(connector_router)
+app.include_router(po_write_router)
+app.include_router(review_router)
 app.include_router(setup_status_router)
 app.include_router(google_places_router)
 app.include_router(creditsafe_router)

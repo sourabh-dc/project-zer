@@ -5,6 +5,7 @@ from typing import Dict, Type
 
 from provisioning_service.core.connectors.base import BaseConnector
 from provisioning_service.core.connectors.dynamics_bc import DynamicsBCConnector
+from provisioning_service.core.connectors.mock_erp import MockERPConnector
 from provisioning_service.core.connectors.netsuite import NetSuiteConnector
 from provisioning_service.core.connectors.oracle_erp import OracleERPConnector
 from provisioning_service.core.connectors.sap_b1 import SapB1Connector
@@ -14,6 +15,7 @@ CONNECTORS: Dict[str, Type[BaseConnector]] = {
     "sap_b1": SapB1Connector,
     "netsuite": NetSuiteConnector,
     "oracle_erp": OracleERPConnector,
+    "mockerp": MockERPConnector,
 }
 
 
