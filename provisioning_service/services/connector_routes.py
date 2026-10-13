@@ -225,6 +225,33 @@ def create_connection(
     if not provider:
         raise HTTPException(status_code=404, detail=f"Unknown provider '{req.provider_code}'")
 
+    # Reconnect path: a revoked/disabled row with the same (tenant, provider, name)
+    # is resurrected with fresh credentials instead of violating the unique index.
+    existing = db.query(Models.TenantConnection).filter(
+        Models.TenantConnection.tenant_id == tenant_id,
+        Models.TenantConnection.provider_code == req.provider_code,
+        Models.TenantConnection.name == req.name,
+    ).first()
+    if existing and existing.status in ("revoked", "disabled"):
+        existing.config = req.config
+        existing.field_map = req.field_map or provider.default_field_map
+        existing.schedule_cron = req.schedule_cron
+        existing.deactivate_missing = req.deactivate_missing
+        store_credentials(existing, _prepare_credentials(req.provider_code, req.credentials))
+        ok, message = build_connector(existing).test_connection()
+        if not ok:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=f"Connection test failed: {message}")
+        existing.status = "active"
+        db.commit()
+        db.refresh(existing)
+        schedule_connection(existing)
+        discover_and_store_schema(db, existing)
+        logger.info(f"Connection reconnected: {existing.connection_id} ({req.provider_code}) for tenant {tenant_id}")
+        return _conn_out(existing)
+    if existing:
+        raise HTTPException(status_code=409, detail="A connection with this name already exists for this provider")
+
     connection = Models.TenantConnection(
         connection_id=uuid.uuid4(),
         tenant_id=uuid.UUID(tenant_id),
@@ -344,7 +371,7 @@ def test_connection(
     if not ok and connection.status == "active":
         connection.status = "error"
         db.commit()
-    elif ok and connection.status == "error":
+    elif ok and connection.status in ("error", "revoked") and (connection.credentials_ref or connection.credentials_enc):
         connection.status = "active"
         db.commit()
     if ok:
@@ -406,6 +433,9 @@ def list_connection_tables(
     tenant_id: str,
     connection_id: str,
     refresh: bool = Query(False, description="Bypass the 24h cache"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(50, ge=1, le=500, description="Tables per page"),
+    search: Optional[str] = Query(None, description="Filter by table name (case-insensitive)"),
     db: Session = Depends(get_db),
     ctx=Depends(check_user_authorization("catalog.manage")),
 ):
@@ -413,10 +443,15 @@ def list_connection_tables(
 
     The provider catalogue can be slow (NetSuite metadata catalog reads
     60s+), so a successful live result is cached on the connection for 24h.
+    The full catalogue is fetched once, then paginated server-side.
     """
     _check_tenant(ctx, tenant_id)
     _require_erp_feature(db, tenant_id)
     connection = _get_connection(db, tenant_id, connection_id)
+
+    tables: List[Dict[str, Any]] = []
+    source = "live"
+    cached = False
 
     cfg = dict(connection.config or {})
     cache = cfg.get("_tables_cache") or {}
@@ -424,25 +459,44 @@ def list_connection_tables(
         try:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(cache["cached_at"])
             if age < timedelta(hours=24):
-                return {"tables": cache["tables"], "count": len(cache["tables"]),
-                        "source": "live", "cached": True}
+                tables = cache["tables"]
+                cached = True
         except (ValueError, TypeError):
             pass
 
-    try:
-        tables, source = build_connector(connection).list_tables()
-    except ConnectorError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    if not cached:
+        try:
+            tables, source = build_connector(connection).list_tables()
+        except ConnectorError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
-    if source == "live":
-        cfg["_tables_cache"] = {
-            "tables": tables,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-        }
-        connection.config = cfg
-        db.commit()
+        if source == "live":
+            cfg["_tables_cache"] = {
+                "tables": tables,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }
+            connection.config = cfg
+            db.commit()
 
-    return {"tables": tables, "count": len(tables), "source": source, "cached": False}
+    # Optional name filter, then paginate
+    if search:
+        needle = search.strip().lower()
+        tables = [t for t in tables if needle in str(t.get("name", "")).lower()]
+
+    total = len(tables)
+    start = (page - 1) * page_size
+    page_tables = tables[start:start + page_size]
+
+    return {
+        "tables": page_tables,
+        "count": total,                      # total across all pages
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total else 0,
+        "returned": len(page_tables),        # rows on this page
+        "source": source,
+        "cached": cached,
+    }
 
 
 @router.get("/tenants/{tenant_id}/connections/{connection_id}/preview")

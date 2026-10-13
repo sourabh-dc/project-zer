@@ -1,22 +1,25 @@
 """
-API key authentication + Redis rate limiting middleware.
+JWT Bearer authentication + Redis rate limiting middleware.
 
-Protected paths: /intelligence/*
-Auth header:     X-API-Key: <value>
+AUTH MODEL
+  Primary:  Authorization: Bearer <jwt>  — token issued by provisioning_service.
+            Decoded with the shared JWT_SECRET (HS256) or JWKS (asymmetric).
+            Claims carry: sub (user_id), tenant_id, roles, permissions, email.
+  Fallback: X-API-Key: <value>          — service-to-service / dev key.
+            Accepted when INTELLIGENCE_API_KEY is configured.
+
+  A request is authenticated when EITHER credential is valid.
+  When neither is configured (local dev), auth is disabled.
+
+  Decoded JWT claims are stored on request.state.user_claims so endpoints
+  can read user_id / tenant_id / roles / permissions without re-decoding.
+
+  /health and /metrics are public. OPTIONS (CORS preflight) is public.
 
 RATE LIMITING (Redis sliding window):
-  Uses a per-tenant, per-minute counter stored in Redis.
-  Key: ratelimit:{tenant_id}:{minute_bucket}
-  Tenant ID is extracted from the request body (best-effort JSON parse).
-  Falls back to IP-based limiting if no tenant_id in body.
-
-  When REDIS_URL is not set, rate limiting is disabled (dev mode).
-  When INTELLIGENCE_API_KEY is empty, auth is disabled (dev mode).
-
-WHY sliding window via Redis INCR?
-  INCR is atomic — no race conditions across multiple instances.
-  TTL of 60s ensures the counter auto-expires at the end of the window.
-  This is the standard pattern: simple, correct, zero extra dependencies.
+  Per-tenant, per-minute counter. Key: ratelimit:{tenant_id}:{minute_bucket}
+  Tenant ID comes from the JWT claim, else the request body, else client IP.
+  Disabled when REDIS_URL is unset or RATE_LIMIT_RPM is 0.
 """
 import json
 import os
@@ -29,6 +32,7 @@ from starlette.responses import JSONResponse
 
 from data_intelligence_service.core.config import SETTINGS
 from data_intelligence_service.core.logger import logger
+from data_intelligence_service.core.user_auth import decode_bearer_token
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +57,7 @@ def _make_redis():
 
 _redis = _make_redis()
 
-_PROTECTED_PREFIXES = ("/intelligence/",)
+_PUBLIC_PATHS = ("/health", "/metrics", "/docs", "/openapi.json", "/redoc")
 
 
 # ---------------------------------------------------------------------------
@@ -61,37 +65,31 @@ _PROTECTED_PREFIXES = ("/intelligence/",)
 # ---------------------------------------------------------------------------
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """Authenticates every request via JWT Bearer token or X-API-Key."""
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        if not any(path.startswith(p) for p in _PROTECTED_PREFIXES):
+        # Public endpoints + CORS preflight never require auth.
+        if request.method == "OPTIONS" or any(path.startswith(p) for p in _PUBLIC_PATHS):
             return await call_next(request)
 
-        # ── Auth check ────────────────────────────────────────────────────────
-        configured_key = SETTINGS.INTELLIGENCE_API_KEY
-        if configured_key:
-            provided_key = request.headers.get("X-API-Key", "")
-            if not provided_key:
-                logger.warning(f"[Auth] Missing X-API-Key for {path}")
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "X-API-Key header required"},
-                )
-            if provided_key != configured_key:
-                logger.warning(f"[Auth] Invalid X-API-Key for {path}")
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Invalid API key"},
-                )
+        claims = await self._authenticate(request)
+        if claims is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required: Bearer token or X-API-Key"},
+            )
+        # claims == {} means API-key auth (no JWT claims available)
+        request.state.user_claims = claims
 
-        # ── Rate limiting (Redis sliding window) ──────────────────────────────
+        # ── Rate limiting (Redis sliding window) ─────────────────────────────
         if _redis and SETTINGS.RATE_LIMIT_RPM > 0:
-            tenant_id = await _extract_tenant_id(request)
-            bucket_key = _rate_limit_key(tenant_id, request)
+            tenant_id = claims.get("tenant_id") or await _extract_tenant_id(request)
+            bucket_key = _rate_limit_key(str(tenant_id), request)
             try:
                 count = _redis.incr(bucket_key)
                 if count == 1:
-                    # First request in this window — set TTL
                     _redis.expire(bucket_key, 60)
 
                 if count > SETTINGS.RATE_LIMIT_RPM:
@@ -116,6 +114,31 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
         return await call_next(request)
 
+    async def _authenticate(self, request: Request) -> Optional[dict]:
+        """Return JWT claims dict, {} for API-key auth, or None if unauthenticated."""
+        # ── Primary: Bearer JWT ───────────────────────────────────────────────
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header:
+            try:
+                return await decode_bearer_token(auth_header)
+            except Exception as exc:
+                logger.warning(f"[Auth] JWT decode failed for {request.url.path}: {exc}")
+                return None
+
+        # ── Fallback: X-API-Key ───────────────────────────────────────────────
+        configured_key = SETTINGS.INTELLIGENCE_API_KEY
+        if configured_key:
+            provided_key = request.headers.get("X-API-Key", "")
+            if provided_key and provided_key == configured_key:
+                return {}
+            if provided_key:
+                logger.warning(f"[Auth] Invalid X-API-Key for {request.url.path}")
+                return None
+            return None  # key configured but not provided
+
+        # ── Dev mode: nothing configured ──────────────────────────────────────
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -136,7 +159,6 @@ async def _extract_tenant_id(request: Request) -> str:
                 return str(tid)
     except Exception:
         pass
-    # Fallback: client IP (covers non-JSON endpoints or missing tenant_id)
     client = request.client
     return client.host if client else "unknown"
 

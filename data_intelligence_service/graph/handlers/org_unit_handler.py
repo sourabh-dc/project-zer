@@ -20,8 +20,10 @@ def handle(event: dict):
         _create(tid, oid, payload)
     elif action == "updated":
         _update(oid, payload)
-    elif action == "deleted":
+    elif action in ("deleted", "deactivated"):
         _soft_delete(oid)
+    elif action in ("activated", "reactivated"):
+        _reactivate(oid)
     elif action == "assign_user":
         _assign_user(oid, payload)
     elif action == "remove_user":
@@ -102,6 +104,15 @@ def _soft_delete(org_unit_id: str):
             oid=org_unit_id,
         )
     logger.info(f"Graph: OrgUnit soft-deleted {org_unit_id}")
+
+
+def _reactivate(org_unit_id: str):
+    with get_session() as session:
+        session.run(
+            "MATCH (d:OrgUnit {org_unit_id: $oid}) SET d.status = 'active', d.updated_at = datetime()",
+            oid=org_unit_id,
+        )
+    logger.info(f"Graph: OrgUnit reactivated {org_unit_id}")
 
 
 def _assign_user(org_unit_id: str, payload: dict):

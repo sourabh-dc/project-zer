@@ -90,10 +90,6 @@ def _make_llm(temperature: float = 1.0) -> AzureChatOpenAI:
       before producing output. These count against max_completion_tokens, not
       max_tokens. Without headroom for reasoning tokens, the model returns an
       empty response with finish_reason='length'. 8000 gives enough room.
-
-    WHY no temperature parameter?
-      Reasoning models reject explicit temperature — they always use their default.
-      Passing temperature=0.0 raises a 400 error from the API.
     """
     return AzureChatOpenAI(
         azure_endpoint=SETTINGS.AZURE_OPENAI_ENDPOINT,
@@ -351,45 +347,22 @@ async def node_guardrail(state: AgentState) -> AgentState:
             qt.guardrail_tier = 1
             return {**state, "trace": qt, "error": result.reason, "answer": result.reason, "next": "error"}
 
-        # ── Permission enforcement — build user context from graph ─────────────
-        # Runs AFTER regex safety (cheap gate first) and BEFORE LLM safety
-        # (we want permission check even if LLM check is skipped for short questions)
+        # ── User context — build from graph for data scoping (no permission gate) ──
+        # /intelligence/query is available to every authenticated user.
+        # The graph context is used ONLY to scope results (approved product
+        # filter, role-based intent boundaries) — never to allow/deny access.
         user_ctx = {}
         approved_ids: Any = "__all__"
         try:
             from data_intelligence_service.intelligence.permissions.context import (
                 build_user_permission_context, get_approved_ids,
             )
-            from data_intelligence_service.intelligence.permissions.policy_client import (
-                check_intelligence_permission,
-            )
 
             user_ctx    = build_user_permission_context(user_id, tenant_id)
             approved_ids = get_approved_ids(user_ctx)
-
-            perm_result = check_intelligence_permission(
-                user_ctx=user_ctx,
-                question=question,
-                correlation_id=qt.query_id if hasattr(qt, "query_id") else None,
-            )
-            if not perm_result["allowed"]:
-                reason = perm_result["reason"]
-                logger.warning(f"[Agent] Permission DENIED user={user_id}: {reason}")
-                _metrics.record_guardrail_block(category="permission_denied", tier=1)
-                qt.guardrail_passed = False
-                qt.guardrail_tier = 1
-                return {
-                    **state,
-                    "trace": qt,
-                    "user_context": user_ctx,
-                    "approved_ids": approved_ids,
-                    "error": reason,
-                    "answer": reason,
-                    "next": "error",
-                }
         except Exception as exc:
             # Fail-open: graph unavailable does not block the query.
-            # API key auth is sufficient. Log for monitoring.
+            # JWT/API-key auth is sufficient. Log for monitoring.
             logger.warning(f"[Agent] Permission context build failed (fail-open): {exc}")
 
         # ── Content safety Tier 2: LLM — only for suspicious patterns ─────────

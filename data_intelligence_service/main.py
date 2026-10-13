@@ -3,7 +3,8 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from data_intelligence_service.core.config import SETTINGS
@@ -56,6 +57,7 @@ def _register_handlers():
     register_handler("vendor", vendor_handler.handle)
     register_handler("role", role_handler.handle)
     register_handler("role_permission", role_handler.handle)
+    register_handler("user_role", role_handler.handle)
     register_handler("cost_centre", cost_centre_handler.handle)
     register_handler("approved_range", approved_range_handler.handle)
     register_handler("policy", policy_handler.handle)
@@ -117,6 +119,17 @@ app = FastAPI(
 )
 
 app.add_middleware(ApiKeyMiddleware)
+
+# Added last so it is the outermost middleware and answers OPTIONS
+# before ApiKeyMiddleware or the router. Browsers omit X-API-Key on preflight.
+_allow_origins = [o.strip() for o in SETTINGS.ALLOW_ORIGINS.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 # ── Health ──────────────────────────────────────────────────────────
@@ -246,15 +259,21 @@ class QueryResponse(BaseModel):
     session_id: Optional[str] = None      # echo for client tracking
 
 @app.post("/intelligence/query", response_model=QueryResponse)
-async def query(req: QueryRequest):
+async def query(req: QueryRequest, request: Request):
     if not SETTINGS.AZURE_OPENAI_API_KEY:
         raise HTTPException(503, "Intelligence service not configured — AZURE_OPENAI_API_KEY required")
+
+    # Prefer the authenticated JWT identity over client-supplied values.
+    # The middleware sets request.state.user_claims; {} means API-key auth.
+    claims = getattr(request.state, "user_claims", None) or {}
+    tenant_id = claims.get("tenant_id") or req.tenant_id
+    user_id = claims.get("sub") or req.user_id
 
     try:
         result = await run_agent(
             question=req.question,
-            tenant_id=req.tenant_id,
-            user_id=req.user_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             session_id=req.session_id,
             current_object=req.current_object.model_dump() if req.current_object else None,
         )

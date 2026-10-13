@@ -88,6 +88,7 @@ _NEO4J_PASSWORD = _secret("neo4jPassword", "NEO4J_PASSWORD", "password")
 _NEO4J_DATABASE = _secret("neo4jDatabase", "NEO4J_DATABASE", "neo4j")
 
 _INTELLIGENCE_API_KEY = _secret("intelligenceApiKey", "INTELLIGENCE_API_KEY", "")
+_JWT_SECRET           = _secret("jwt-secret",         "JWT_SECRET",           "mock-secret")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -126,9 +127,23 @@ class Settings(BaseSettings):
     # ── Service ───────────────────────────────────────────────────
     PORT: int = 80
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    # Comma-separated browser origins. "*" is fine here: auth is an API key
+    # header, not a cookie, so credentials stay off and the wildcard is valid.
+    ALLOW_ORIGINS: str = Field(default="*", description="Comma-separated CORS origins")
 
     # ── Intelligence ──────────────────────────────────────────────
     INTELLIGENCE_API_KEY: str = Field(default=_INTELLIGENCE_API_KEY, description="API key for intelligence endpoint")
+
+    # ── JWT (same issuer/secret as provisioning_service) ──────────
+    # Tokens are issued by provisioning_service /authentication endpoints.
+    # DIS only decodes + enforces them — it never issues tokens.
+    JWT_SECRET: str = Field(default=_JWT_SECRET, description="JWT signing secret (shared with provisioning)")
+    JWT_ALGORITHM: str = Field(default="HS256", description="JWT signing algorithm")
+    JWT_ISSUER: str = Field(default=os.getenv("JWT_ISSUER", "http://mock-idp"))
+    JWT_AUDIENCE: str = Field(default=os.getenv("JWT_AUDIENCE", "zeroque-api"))
+    JWT_JWKS_URL: Optional[str] = Field(default=os.getenv("JWT_JWKS_URL"))
+    JWT_CACHE_SECONDS: int = 300
+    JWT_EXPIRY_MINUTES: int = 60
     VECTOR_SIMILARITY_THRESHOLD: float = Field(default=0.30, description="Min cosine similarity score to include vector results")
     PLAN_CACHE_TTL_SECONDS: int = Field(default=300, description="TTL in seconds for in-memory query plan cache")
     LLM_MAX_RETRIES: int = Field(default=3, description="Max retry attempts for LLM calls")

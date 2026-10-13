@@ -21,8 +21,10 @@ def handle(event: dict):
         _create(tid, ccid, payload)
     elif action == "updated":
         _update(ccid, payload)
-    elif action == "deleted":
+    elif action in ("deleted", "deactivated"):
         _soft_delete(ccid)
+    elif action in ("activated", "reactivated"):
+        _reactivate(ccid)
     elif action == "assign_user" or etype == "cost_centre.user_assigned":
         _assign_user(ccid, payload)
 
@@ -94,6 +96,15 @@ def _soft_delete(cc_id: str):
             ccid=cc_id,
         )
     logger.info(f"Graph: CostCentre soft-deleted {cc_id}")
+
+
+def _reactivate(cc_id: str):
+    with get_session() as session:
+        session.run(
+            "MATCH (cc:CostCentre {cost_centre_id: $ccid}) SET cc.status = 'active', cc.updated_at = datetime()",
+            ccid=cc_id,
+        )
+    logger.info(f"Graph: CostCentre reactivated {cc_id}")
 
 
 def _assign_user(cc_id: str, payload: dict):

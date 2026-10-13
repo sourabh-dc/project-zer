@@ -13,17 +13,20 @@ def handle(event: dict):
     etype = event["event_type"]
     payload = event["payload"]
 
-    if etype == "role.assigned":
+    # Accept both the DIS-side names and the names provisioning actually emits.
+    # provisioning emits: user_role.assigned / user_role.removed (users_routes.py)
+    #                     role_permission.added / role_permission.removed (internal_routes.py)
+    if etype in ("role.assigned", "user_role.assigned"):
         _assign_role(payload)
-    elif etype == "role.removed":
+    elif etype in ("role.removed", "user_role.removed"):
         _remove_role(payload)
     elif etype == "role.created":
         _create_role(payload)
     elif etype == "role.deleted":
         _delete_role(payload)
-    elif etype == "role_permission.created":
+    elif etype in ("role_permission.created", "role_permission.added"):
         _add_permission(payload)
-    elif etype == "role_permission.deleted":
+    elif etype in ("role_permission.deleted", "role_permission.removed"):
         _remove_permission(payload)
 
 
