@@ -263,6 +263,12 @@ _PLAN_FEATURE_MAP: List[Tuple[str, str, bool, dict]] = [
     ("distributor", "shared.integration.hub", True, None),
     ("distributor", "cross.tenant.analytics", True, None),
     ("distributor", "white.label", True, None),
+    # Core platform records — parity with enterprise (frontend expects these)
+    ("distributor", "evidence.trail", True, None),
+    ("distributor", "org.memory", True, None),
+    ("distributor", "supplier.records", True, {"max_value": 1000}),
+    ("distributor", "cost.centres", True, {"max_value": 500}),
+    ("distributor", "multi.location", True, None),
 ]
 
 

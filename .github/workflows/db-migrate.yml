@@ -1,0 +1,86 @@
+name: Database Migrations (Alembic)
+
+# Centralized schema management — ONE workflow for the shared platform DB.
+# Runs BEFORE service deploys: service workflows must wait for a successful
+# migration run when db/** changed (see workflow_run ordering note below).
+
+on:
+  push:
+    paths:
+      - "db/**"
+      - "provisioning_service/Models.py"
+      - "procurement_service/core/db_config.py"
+  pull_request:
+    paths:
+      - "db/**"
+      - "provisioning_service/Models.py"
+      - "procurement_service/core/db_config.py"
+  workflow_dispatch:
+
+jobs:
+  # ── PR gate: migrations apply cleanly + models match migrations ──
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: zeroque
+          POSTGRES_PASSWORD: zeroque
+          POSTGRES_DB: zeroque_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U zeroque"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://zeroque:zeroque@localhost:5432/zeroque_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install alembic==1.13.2 sqlalchemy==2.0.23 psycopg2-binary==2.9.9
+
+      - name: Apply all migrations on empty database
+        run: alembic -c db/alembic.ini upgrade head
+
+      - name: Drift check — models must match migrations
+        # Fails if a model change was committed without a migration.
+        run: alembic -c db/alembic.ini check
+
+  # ── Apply migrations to the target environment ───────────────────
+  migrate:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # DATABASE_URL comes from a single repo-level secret
+    # (Settings → Secrets and variables → Actions → DATABASE_URL).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install alembic==1.13.2 sqlalchemy==2.0.23 psycopg2-binary==2.9.9
+
+      - name: Show current revision
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: alembic -c db/alembic.ini current
+
+      - name: alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: alembic -c db/alembic.ini upgrade head
+
+      - name: Confirm head reached
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: alembic -c db/alembic.ini heads

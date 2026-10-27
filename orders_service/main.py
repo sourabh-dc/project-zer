@@ -6,7 +6,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from orders_service.Models import Base
 from orders_service.core.db_config import engine
 from orders_service.core.sb_client import messaging_service
 from orders_service.services.orders_routes import router as orders_router
@@ -21,8 +20,10 @@ from orders_service.utils.logger import logger
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Orders service tables initialized")
+        # Schema is managed centrally by Alembic (db/ at repo root).
+        # orders_service holds shadow read-models of provisioning-owned tables
+        # and must never create or alter schema.
+        logger.info("Schema managed by Alembic (db/) — skipping create_all")
     except Exception as e:
         logger.error(f"Orders service table initialization failed: {e}")
 

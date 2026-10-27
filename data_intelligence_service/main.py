@@ -42,6 +42,10 @@ from data_intelligence_service.intelligence.observability import metrics as _met
 from data_intelligence_service.intelligence.derived import handlers as derived_handlers
 from data_intelligence_service.intelligence.derived.store import ensure_table_exists
 from data_intelligence_service.intelligence.cost import tracker as _cost
+from data_intelligence_service.intelligence.chat.store import ensure_chat_tables
+from data_intelligence_service.intelligence.chat.routes import router as ask_que_router
+from data_intelligence_service.intelligence.chat.store import ensure_chat_tables
+from data_intelligence_service.intelligence.chat.routes import router as ask_que_router
 
 
 def _register_handlers():
@@ -97,6 +101,9 @@ async def lifespan(app: FastAPI):
     # Cost monitoring table — create if not exists
     _cost.ensure_usage_table()
 
+    # AskQue chat tables — sessions, messages, feedback (idempotent)
+    ensure_chat_tables()
+
     # Intelligence init
     if not SETTINGS.AZURE_OPENAI_API_KEY:
         logger.warning("AZURE_OPENAI_API_KEY not set — LLM queries will fail")
@@ -130,6 +137,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# AskQue public chat API
+app.include_router(ask_que_router)
 
 
 # ── Health ──────────────────────────────────────────────────────────

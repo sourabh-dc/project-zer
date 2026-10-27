@@ -753,7 +753,7 @@ async def node_execute(state: AgentState) -> AgentState:
     return {**state, "trace": qt, "step_results": ordered_results, "next": "summarize"}
 
 
-def node_summarize(state: AgentState) -> AgentState:
+async def node_summarize(state: AgentState) -> AgentState:
     """LLM formats raw DB results into a plain-English answer.
 
     WHY LLM for summarization?
@@ -808,7 +808,9 @@ def node_summarize(state: AgentState) -> AgentState:
     try:
         with span_llm_call("summarize", deployment_for_tier(_summarize_tier),
                            {"result.steps": len(step_results), "gateway.tier": _summarize_tier.value}) as span:
-            response = llm.invoke(messages)
+            # ainvoke keeps the call async so astream_events can emit
+            # per-token chunks for the SSE endpoint (sync invoke would buffer).
+            response = await llm.ainvoke(messages)
             answer = response.content
             token_usage = record_token_usage(span, response)
             qt.tokens_prompt     += token_usage["prompt"]
@@ -997,7 +999,22 @@ async def run_agent(
     """
     qt = QueryTrace()
 
-    initial_state: AgentState = {
+    initial_state: AgentState = _initial_state(question, tenant_id, user_id, session_id, current_object, qt)
+
+    final_state = await _AGENT.ainvoke(initial_state)
+
+    return _build_result(final_state, qt, tenant_id, user_id, session_id, question)
+
+
+def _initial_state(
+    question: str,
+    tenant_id: str,
+    user_id: Optional[str],
+    session_id: Optional[str],
+    current_object: Optional[Dict],
+    qt: "QueryTrace",
+) -> "AgentState":
+    return {
         "question":           question,
         "tenant_id":          tenant_id,
         "user_id":            user_id,
@@ -1019,8 +1036,15 @@ async def run_agent(
         "next":               "guardrail",
     }
 
-    final_state = await _AGENT.ainvoke(initial_state)
 
+def _build_result(
+    final_state: "AgentState",
+    qt: "QueryTrace",
+    tenant_id: str,
+    user_id: Optional[str],
+    session_id: Optional[str],
+    question: str,
+) -> Dict[str, Any]:
     final_trace: QueryTrace = final_state.get("trace") or qt
     if not final_trace.latency_ms:
         final_trace.finish()
@@ -1073,3 +1097,72 @@ async def run_agent(
         "error":      final_state.get("error"),
         "session_id": session_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Streaming entry point — SSE token stream for AskQue
+# ---------------------------------------------------------------------------
+
+# Node → user-facing status label (streamed as "status" events)
+_NODE_STATUS = {
+    "guardrail":    "Checking request",
+    "classify":     "Understanding question",
+    "plan":         "Planning query",
+    "schema_check": "Validating query",
+    "execute":      "Fetching data",
+    "summarize":    "Writing answer",
+}
+
+
+async def stream_agent(
+    question: str,
+    tenant_id: str,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    current_object: Optional[Dict] = None,
+):
+    """Async generator — streams agent progress + answer tokens.
+
+    Event shapes (dicts, SSE-serialised by the route):
+      {"type": "status", "node": "execute", "label": "Fetching data"}
+      {"type": "token",  "content": "The"}
+      {"type": "done",   ...full result payload...}
+      {"type": "error",  "message": "..."}
+
+    Tokens come only from the summarize node (the user-facing answer).
+    Plan/safety LLM calls stay buffered — their output is not prose.
+    """
+    qt = QueryTrace()
+    initial_state = _initial_state(question, tenant_id, user_id, session_id, current_object, qt)
+    final_state: Optional[Dict] = None
+
+    try:
+        async for ev in _AGENT.astream_events(initial_state, version="v2"):
+            kind = ev.get("event")
+            name = ev.get("name") or ""
+
+            if kind == "on_chain_start" and name in _NODE_STATUS:
+                yield {"type": "status", "node": name, "label": _NODE_STATUS[name]}
+
+            elif kind == "on_chat_model_stream":
+                node = (ev.get("metadata") or {}).get("langgraph_node", "")
+                if node == "summarize":
+                    chunk = ev.get("data", {}).get("chunk")
+                    content = getattr(chunk, "content", "") if chunk is not None else ""
+                    if content:
+                        yield {"type": "token", "content": content}
+
+            elif kind == "on_chain_end" and name == "LangGraph":
+                final_state = (ev.get("data") or {}).get("output")
+
+    except Exception as exc:
+        logger.error(f"[Agent] stream failed: {exc}", exc_info=True)
+        yield {"type": "error", "message": f"Query execution failed: {exc}"}
+        return
+
+    if final_state is None:
+        yield {"type": "error", "message": "Query execution failed: no final state"}
+        return
+
+    result = _build_result(final_state, qt, tenant_id, user_id, session_id, question)
+    yield {"type": "done", **result}

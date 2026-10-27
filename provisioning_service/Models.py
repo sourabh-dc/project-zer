@@ -36,6 +36,7 @@ class Tenant(Base):
     support_contact_email = Column(String, nullable=True)
     strict_sod_enabled = Column(Boolean, nullable=False, default=False)  # Phase 4 — Segregation of Duties toggle
     parent_tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="SET NULL"), nullable=True, index=True)  # Phase 6 — sub-tenant hierarchy
+    legal_org_id = Column(SQLUUID(as_uuid=True), ForeignKey("legal_organisations.legal_org_id", ondelete="SET NULL"), nullable=True)  # S0 — link to real legal entity
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -1253,6 +1254,67 @@ class VendorUser(Base):
     __table_args__ = (
         Index('ix_vendor_users_vendor_email_unique', 'vendor_id', 'email', unique=True),
     )
+
+
+# ==================================================================================
+# SUPPLIER MARKETPLACE MODELS (S0)
+# ==================================================================================
+
+class LegalOrganisation(Base):
+    """Platform-scoped real company — registration and screening facts.
+
+    Shared across tenants: a buyer tenant and a supplier org may both point
+    at the same legal organisation. Commercial facts never live here.
+    """
+    __tablename__ = "legal_organisations"
+
+    legal_org_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    legal_name = Column(String(255), nullable=False)
+    registration_number = Column(String(100), nullable=True)
+    registration_authority = Column(String(100), nullable=True)  # e.g. companies_house
+    country_code = Column(String(2), nullable=True)
+    screening_status = Column(String(30), nullable=False, default="pending")  # pending | clear | flagged
+    screening_facts = Column(JSONB, nullable=True)  # reg / screening evidence
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ux_legal_orgs_reg",
+            "registration_authority", "registration_number",
+            unique=True,
+            postgresql_where=text("registration_number IS NOT NULL"),
+        ),
+    )
+
+
+class SupplierProfile(Base):
+    """Supplier org profile — one per tenant with tenant_type='supplier'.
+
+    Owns lifecycle (draft → submitted → approved → suspended), trading name
+    and connectivity. Only 'approved' suppliers are discoverable to buyers.
+    """
+    __tablename__ = "supplier_profiles"
+
+    LIFECYCLE_STATUSES = ("draft", "submitted", "approved", "suspended")
+
+    supplier_profile_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    legal_org_id = Column(SQLUUID(as_uuid=True), ForeignKey("legal_organisations.legal_org_id", ondelete="SET NULL"), nullable=True)
+    trading_name = Column(String(255), nullable=True)
+    lifecycle_status = Column(String(30), nullable=False, default="draft", index=True)
+    contact_email = Column(String(255), nullable=True)
+    connectivity = Column(JSONB, nullable=True)  # protocol / api / cxml / edi / webhook profile
+
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
 # ==================================================================================

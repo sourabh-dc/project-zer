@@ -52,7 +52,12 @@ class ProcurementOrderDetail(Base):
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    """Postgres schema is managed centrally by Alembic (db/ at repo root).
+
+    Local SQLite dev databases (no Alembic there) still auto-create tables.
+    """
+    if SETTINGS.DATABASE_URL.startswith("sqlite"):
+        Base.metadata.create_all(bind=engine)
 
 
 def get_db():

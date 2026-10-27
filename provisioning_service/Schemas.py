@@ -905,6 +905,58 @@ class VendorUserCreate(BaseModel):
     active: bool = True
 
 
+# ==================================================================================
+# SUPPLIER MARKETPLACE SCHEMAS (S0)
+# ==================================================================================
+
+class LegalOrgCreate(BaseModel):
+    """Create a platform-scoped legal organisation"""
+    legal_name: str = Field(min_length=1, max_length=255)
+    registration_number: Optional[str] = Field(None, max_length=100)
+    registration_authority: Optional[str] = Field(None, max_length=100, description="e.g. companies_house")
+    country_code: Optional[str] = Field(None, min_length=2, max_length=2)
+    screening_facts: Optional[Dict[str, Any]] = None
+
+
+class LegalOrgUpdate(BaseModel):
+    """Update a legal organisation — all fields optional"""
+    legal_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    registration_number: Optional[str] = Field(None, max_length=100)
+    registration_authority: Optional[str] = Field(None, max_length=100)
+    country_code: Optional[str] = Field(None, min_length=2, max_length=2)
+    screening_status: Optional[str] = Field(None, description="pending | clear | flagged")
+    screening_facts: Optional[Dict[str, Any]] = None
+
+
+class SupplierCreate(BaseModel):
+    """Create a supplier org — tenant (type=supplier) + profile atomically.
+
+    Link an existing legal org via legal_org_id, or pass inline legal_org
+    fields to create one in the same call.
+    """
+    tenant_name: str = Field(min_length=1, max_length=255, description="Supplier organisation name")
+    email: EmailStr = Field(description="Organisation contact email")
+    legal_org_id: Optional[str] = Field(None, description="Existing LegalOrganisation UUID")
+    legal_org: Optional[LegalOrgCreate] = Field(None, description="Inline legal org to create (ignored if legal_org_id set)")
+    trading_name: Optional[str] = Field(None, max_length=255)
+    contact_email: Optional[EmailStr] = None
+    connectivity: Optional[Dict[str, Any]] = Field(None, description="protocol / api / cxml / edi / webhook profile")
+
+
+class SupplierUpdate(BaseModel):
+    """Update a supplier profile — all fields optional"""
+    trading_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    contact_email: Optional[EmailStr] = None
+    connectivity: Optional[Dict[str, Any]] = None
+    legal_org_id: Optional[str] = None
+
+
+class SupplierLifecycleRequest(BaseModel):
+    """Lifecycle transition: submit | approve | suspend | reject"""
+    action: str = Field(description="submit | approve | suspend | reject")
+    reason: Optional[str] = Field(None, max_length=500)
+
+
 class SubscribeRequest(BaseModel):
     """Request to subscribe to a plan"""
     plan_code: str = Field(description="Plan code to subscribe to")

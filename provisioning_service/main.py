@@ -6,7 +6,6 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from provisioning_service.Models import Base
 from provisioning_service.core.db_config import engine
 from provisioning_service.core.helpers.load_permissions import seed_roles_and_permissions, seed_job_functions
 from provisioning_service.core.helpers.load_product_features import load_product_features_on_startup
@@ -45,9 +44,11 @@ from provisioning_service.services.branding_routes import router as branding_rou
 from provisioning_service.services.connector_routes import router as connector_router
 from provisioning_service.services.po_write_routes import router as po_write_router
 from provisioning_service.services.review_routes import router as review_router
+from provisioning_service.services.report_routes import router as report_router
 from provisioning_service.services.setup_status_routes import router as setup_status_router
 from provisioning_service.services.google_places_routes import router as google_places_router
 from provisioning_service.services.creditsafe_routes import router as creditsafe_router
+from provisioning_service.services.suppliers_routes import router as suppliers_router
 from provisioning_service.core.helpers.load_connectors import seed_connector_providers
 from provisioning_service.core.connectors.scheduler import start_scheduler, stop_scheduler
 from provisioning_service.utils.logger import logger
@@ -68,12 +69,11 @@ async def lifespan(app: FastAPI):
         except Exception as ex:
             logger.warning(f"Messaging service failed to start: {ex}")
 
-        # Create tables and load initial data
-        try:
-            Base.metadata.create_all(bind=engine)
-            logger.info("✅ Database tables initialized")
-        except Exception as e:
-            logger.error(f"❌ Table initialization failed: {e}")
+        # Schema is managed centrally by Alembic (db/ at repo root).
+        # Do NOT call Base.metadata.create_all here — it causes replica races
+        # and silently masks missing migrations. Run:
+        #   alembic -c db/alembic.ini upgrade head
+        logger.info("Schema managed by Alembic (db/) — skipping create_all")
 
         # Load static data (roles/permissions/plans/features/job functions)
         try:
@@ -180,9 +180,11 @@ app.include_router(branding_router)
 app.include_router(connector_router)
 app.include_router(po_write_router)
 app.include_router(review_router)
+app.include_router(report_router)
 app.include_router(setup_status_router)
 app.include_router(google_places_router)
 app.include_router(creditsafe_router)
+app.include_router(suppliers_router)
 
 
 @app.get("/health")

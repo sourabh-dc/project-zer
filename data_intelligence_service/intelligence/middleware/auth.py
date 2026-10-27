@@ -136,8 +136,10 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 return None
             return None  # key configured but not provided
 
-        # ── Dev mode: nothing configured ──────────────────────────────────────
-        return {}
+        # No Bearer token and no API key configured/provided → unauthenticated.
+        # (JWT is always available — JWT_SECRET has a dev default — so there is
+        # no legitimate "nothing configured" path. All endpoints require auth.)
+        return None
 
 
 # ---------------------------------------------------------------------------

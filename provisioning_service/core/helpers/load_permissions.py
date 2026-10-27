@@ -84,6 +84,16 @@ ALL_PERMISSIONS: List[Tuple[str, str]] = [
     ("delegation.create", "Create delegated authority"),
     ("delegation.manage", "Manage delegated authority records"),
     ("delegation.view", "View delegation records"),
+    # ── Supplier marketplace (S0) — platform ops ───────────────────
+    ("legal_orgs.manage", "Manage legal organisations (platform ops)"),
+    ("suppliers.manage", "Create and manage supplier organisations"),
+    ("suppliers.approve", "Approve or suspend supplier organisations"),
+    # ── Supplier marketplace (S0) — supplier side ──────────────────
+    ("suppliers.profile.manage", "Manage own supplier profile and connectivity"),
+    ("suppliers.users.manage", "Invite and manage users on the supplier org"),
+    ("catalogue.listings.manage", "Manage supplier product listings and list prices"),
+    ("supplier_orders.manage", "View and action supplier order inbox (ack / ship)"),
+    ("supplier_invoices.manage", "Manage invoice metadata on supplier orders"),
 ]
 
 # ═══════════════════════════════════════════════════════════════════
@@ -173,6 +183,21 @@ ROLES: List[Tuple[str, str, List[str]]] = [
     ("hr_user", "HR User — day-to-day HR procurement activity", [
         "catalog.products.view",
         "approvals.requests.create", "approvals.requests.view",
+    ]),
+    # ── Supplier marketplace (S0) ──────────────────────────────────
+    ("supplier_admin", "Supplier admin — org, users, connectivity", [
+        "suppliers.profile.manage", "suppliers.users.manage",
+        "catalogue.listings.manage", "supplier_orders.manage", "supplier_invoices.manage",
+        "audit.view",
+    ]),
+    ("catalogue_manager", "Catalogue manager — listings, media, list prices", [
+        "catalogue.listings.manage",
+    ]),
+    ("fulfilment", "Fulfilment — order inbox, ack, ship", [
+        "supplier_orders.manage",
+    ]),
+    ("finance", "Finance — invoice metadata (no payment rails)", [
+        "supplier_invoices.manage",
     ]),
 ]
 
