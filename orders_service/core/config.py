@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     POOL_TIMEOUT: int = 30
 
     SB_NAMESPACE: str = Field(default="zeroque.servicebus.windows.net")
-    QUEUE_NAME: str = Field(default="outbox-task-queue")
+    QUEUE_NAME: str = Field(default="orders-notification-queue")
     EMAIL_CONNECTION_STRING: str = Field(default=os.getenv("AZURE_EMAIL_CONNECTION_STRING", ""))
     EMAIL_SENDER_ADDRESS: str = Field(default=os.getenv("EMAIL_SENDER_ADDRESS", "DoNotReply@zeroque.com"))
     ORDERS_BASE_URL: str = Field(default=os.getenv("ORDERS_BASE_URL", "http://localhost:8008"))
