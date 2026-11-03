@@ -52,15 +52,45 @@ _OUTBOX_WORKER_EVENT_TYPES = frozenset({
     'mandate.activated',
 })
 
+# Event prefixes the data intelligence service (graph + vector + derived) consumes.
+# DIS delivery is decoupled from event status: most events are audit-completed for
+# the emitting service but must still reach the knowledge-graph sync poller.
+_DIS_CONSUMER_PREFIXES = frozenset({
+    'tenant',
+    'site',
+    'store',
+    'store_product',
+    'user',
+    'user_role',
+    'org_unit',
+    'org_unit_assignment',
+    'product',
+    'category',
+    'vendor',
+    'role',
+    'role_permission',
+    'cost_centre',
+    'user_cost_centre',
+    'approved_range',
+    'approval_policy',
+    'policy',
+    'policy_rule',
+    'policy_assignment',
+    'mandate',
+    'budget',
+    'supplier',
+})
+
 def _determine_consumers(event_type: str, aggregate_type: str) -> list:
-    """Return the list of consumer names that should receive delivery rows."""
+    """Return the list of internal worker consumers for pending events.
+
+    Data-intelligence delivery is handled separately in create_outbox_event
+    (status-independent, see _DIS_CONSUMER_PREFIXES).
+    """
     consumers = []
 
     if event_type in _OUTBOX_WORKER_EVENT_TYPES:
         consumers.append('outbox_worker')
-
-    # data_intelligence_service (graph + vector merged) gets ALL pending events
-    consumers.append('data_intelligence_service')
 
     return consumers
 
@@ -154,6 +184,19 @@ def create_outbox_event(
     # Flush so the row is visible within the same transaction but callers can
     # still include it in a larger commit.
     db.flush()
+
+    # Data intelligence delivery: created regardless of event status so that
+    # audit-completed events (org units, stores, users, roles, catalog, ...)
+    # still reach the graph/vector sync poller.
+    if event.aggregate_type in _DIS_CONSUMER_PREFIXES:
+        db.add(OutboxEventDelivery(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            consumer='data_intelligence_service',
+            status='pending',
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.flush()
 
     # Create delivery rows for each consumer that should process this event
     if status == "pending":

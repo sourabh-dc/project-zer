@@ -957,6 +957,11 @@ class SupplierLifecycleRequest(BaseModel):
     reason: Optional[str] = Field(None, max_length=500)
 
 
+class SupplierConnectRequest(BaseModel):
+    """Connect a buyer tenant to an approved supplier org"""
+    supplier_tenant_id: str = Field(description="Tenant ID of the supplier org (tenant_type=supplier)")
+
+
 class SubscribeRequest(BaseModel):
     """Request to subscribe to a plan"""
     plan_code: str = Field(description="Plan code to subscribe to")

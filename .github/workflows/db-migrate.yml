@@ -45,7 +45,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install alembic==1.13.2 sqlalchemy==2.0.23 psycopg2-binary==2.9.9
+        run: pip install -r requirements_db.txt
 
       - name: Apply all migrations on empty database
         run: alembic -c db/alembic.ini upgrade head
@@ -56,7 +56,8 @@ jobs:
 
   # ── Apply migrations to the target environment ───────────────────
   migrate:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Same gating as other deploy workflows: production / develop only.
+    if: github.ref == 'refs/heads/production' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # DATABASE_URL comes from a single repo-level secret
     # (Settings → Secrets and variables → Actions → DATABASE_URL).
@@ -68,7 +69,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install alembic==1.13.2 sqlalchemy==2.0.23 psycopg2-binary==2.9.9
+        run: pip install -r requirements_db.txt
 
       - name: Show current revision
         env:

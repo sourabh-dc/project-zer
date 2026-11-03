@@ -335,6 +335,10 @@ async def token_exchange(req: TokenExchangeRequest, response: Response, db: Sess
         logger.info(f"Invitation accepted: {identity.email} joined tenant {user.tenant_id}")
 
         try:
+            create_outbox_event(db, user.tenant_id, "user.created", {
+                "user_id": str(user.user_id), "email": identity.email,
+                "display_name": user.display_name,
+            })
             create_outbox_event(db, user.tenant_id, "user.invitation_accepted", {
                 "user_id": str(user.user_id), "email": identity.email,
                 "invitation_id": str(matched_inv.invitation_id),

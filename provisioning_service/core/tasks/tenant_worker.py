@@ -4,6 +4,7 @@ from typing import Any
 
 from provisioning_service.Models import User, UserIdentity, Role, Permission, RolePermission, UserRole, OutboxEvent
 from sqlalchemy.orm import Session
+from provisioning_service.core.helpers.outbox_helpers import create_outbox_event
 from provisioning_service.utils.logger import logger
 
 
@@ -113,6 +114,22 @@ async def handle_tenant_provisioning(db: Session, payload_id: str) -> None:
 
     # commit all DB changes
     db.commit()
+
+    # ── Emit events so data-intelligence graph learns about the admin user ──
+    try:
+        create_outbox_event(db, tenant_id, "user.created", {
+            "user_id": str(user.user_id),
+            "email": admin_email,
+            "display_name": display_name,
+        })
+        create_outbox_event(db, tenant_id, "user_role.assigned", {
+            "user_id": str(user.user_id),
+            "role_id": str(role.role_id),
+            "role_code": role.code,
+        })
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox failed for tenant admin user events: {_oe}")
 
     # ── Send welcome emails via communication module ────────────────
     try:

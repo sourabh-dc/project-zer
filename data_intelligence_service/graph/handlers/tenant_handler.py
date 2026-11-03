@@ -14,7 +14,7 @@ def handle(event: dict):
     payload = event["payload"]
     tid = str(event["tenant_id"])
 
-    if action == "created":
+    if action in ("created", "signup"):
         _create_tenant(tid, payload)
     elif action == "updated":
         _update_tenant(tid, payload)
@@ -35,8 +35,8 @@ def _create_tenant(tenant_id: str, payload: dict):
                 t.created_at = datetime()
             """,
             tid=tenant_id,
-            name=payload.get("name", ""),
-            domain=payload.get("domain", ""),
+            name=payload.get("name") or payload.get("tenant_name", ""),
+            domain=payload.get("domain") or payload.get("primary_domain", ""),
         )
     logger.info(f"Graph: Tenant created {tenant_id}")
 

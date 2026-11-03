@@ -23,6 +23,14 @@ def handle(event: dict):
         _update(aid, payload)
     elif etype == "policy.deleted":
         _soft_delete(aid)
+    elif etype == "approval_policy.created":
+        _create(tid, aid, {**payload, "policy_type": payload.get("policy_type") or "approval"})
+    elif etype == "approval_policy.updated":
+        _update(aid, payload)
+    elif etype == "approval_policy.deactivated":
+        _update(aid, {"status": "inactive"})
+    elif etype == "approval_policy.deleted":
+        _soft_delete(aid)
     elif etype == "policy_assignment.created":
         _create_assignment(aid, payload)
     elif etype == "policy_assignment.deleted":

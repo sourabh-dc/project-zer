@@ -342,6 +342,17 @@ async def activate_mandate(
         outbox = create_outbox_event(
             db, tenant.tenant_id, "tenant.signup", event_data, status="pending",
         )
+        # Audit event so data-intelligence can enrich the Tenant node and link
+        # it to the subscribed Plan (mandate_handler consumes "mandate.activated").
+        create_outbox_event(
+            db, tenant.tenant_id, "mandate.activated", {
+                "tenant_id": str(tenant.tenant_id),
+                "mandate_id": str(mandate.mandate_id),
+                "plan_code": mandate.plan_code,
+                "is_trial": True,
+                "stripe_customer_id": mandate.stripe_customer_id,
+            },
+        )
         db.commit()
 
         # ── Seed default financial calendar + active FY (best-effort) ──

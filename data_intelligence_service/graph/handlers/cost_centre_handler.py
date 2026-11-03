@@ -17,7 +17,10 @@ def handle(event: dict):
     ccid = str(event["aggregate_id"])
     tid = str(event["tenant_id"])
 
-    if action == "created":
+    if etype == "user_cost_centre.assigned":
+        # aggregate_id is the user; the cost centre id lives in the payload
+        _assign_user(str(payload.get("cost_centre_id") or ""), payload)
+    elif action == "created":
         _create(tid, ccid, payload)
     elif action == "updated":
         _update(ccid, payload)

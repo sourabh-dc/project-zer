@@ -17,10 +17,19 @@ _AGGREGATE_ID_KEYS = (
 )
 
 
+# Event prefixes the data intelligence service (derived-facts engine) consumes.
+# DIS polls for the consumer name 'data_intelligence_service'; delivery is
+# decoupled from event status so audit-completed events still reach DIS.
+_DIS_CONSUMER_PREFIXES = frozenset({"purchase_request", "approval_task"})
+
+
 def _determine_consumers(event_type: str, aggregate_type: str) -> list:
-    consumers = ["graph_service"]
-    if aggregate_type in {"purchase_request", "approval_task"}:
-        consumers.append("intelligence_service")
+    """Internal worker consumers for pending events.
+
+    Data-intelligence delivery is handled separately in create_outbox_event
+    (status-independent, see _DIS_CONSUMER_PREFIXES).
+    """
+    consumers = []
     if event_type == "purchase_request.vendor_notification":
         consumers.append("notification_worker")
     return consumers
@@ -79,6 +88,20 @@ def create_outbox_event(
     )
     db.add(event)
     db.flush()
+
+    # Data intelligence delivery: created regardless of event status so that
+    # audit-completed events still reach the DIS sync poller.
+    if event.aggregate_type in _DIS_CONSUMER_PREFIXES:
+        db.add(
+            OutboxEventDelivery(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                consumer="data_intelligence_service",
+                status="pending",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        db.flush()
 
     if status == "pending":
         for consumer_name in _determine_consumers(event_type, event.aggregate_type):

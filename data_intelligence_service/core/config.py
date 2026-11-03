@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     # Comma-separated browser origins. "*" is fine here: auth is an API key
     # header, not a cookie, so credentials stay off and the wildcard is valid.
-    ALLOW_ORIGINS: str = Field(default="*", description="Comma-separated CORS origins")
+    ALLOW_ORIGINS: str = os.getenv("ALLOW_ORIGINS", "https://www.zeroque.com")
 
     # ── Intelligence ──────────────────────────────────────────────
     INTELLIGENCE_API_KEY: str = Field(default=_INTELLIGENCE_API_KEY, description="API key for intelligence endpoint")

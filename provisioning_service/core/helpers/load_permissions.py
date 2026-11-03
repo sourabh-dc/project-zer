@@ -88,6 +88,8 @@ ALL_PERMISSIONS: List[Tuple[str, str]] = [
     ("legal_orgs.manage", "Manage legal organisations (platform ops)"),
     ("suppliers.manage", "Create and manage supplier organisations"),
     ("suppliers.approve", "Approve or suspend supplier organisations"),
+    # ── Supplier marketplace (S1) — buyer side ─────────────────────
+    ("suppliers.connect", "Connect or disconnect suppliers for a buyer tenant"),
     # ── Supplier marketplace (S0) — supplier side ──────────────────
     ("suppliers.profile.manage", "Manage own supplier profile and connectivity"),
     ("suppliers.users.manage", "Invite and manage users on the supplier org"),
@@ -113,6 +115,7 @@ ROLES: List[Tuple[str, str, List[str]]] = [
         "approvals.chains.manage", "budgets.manage",
         "audit.view", "audit.export", "sod.configure",
         "delegation.create", "delegation.manage", "delegation.view",
+        "suppliers.connect",
     ]),
     ("site_manager", "Site Manager — operational oversight for assigned sites", [
         "sites.manage", "stores.manage",
@@ -144,7 +147,7 @@ ROLES: List[Tuple[str, str, List[str]]] = [
         "approvals.requests.create", "approvals.requests.view", "approvals.requests.respond",
         "approvals.chains.manage",
         "budget.approve", "budgets.manage.subordinates",
-        "vendors.manage",
+        "vendors.manage", "suppliers.connect",
         "audit.view",
     ]),
     ("procurement_user", "Procurement User — day-to-day procurement activity", [

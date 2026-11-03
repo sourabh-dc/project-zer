@@ -10,10 +10,23 @@ from data_intelligence_service.core.logger import logger
 
 
 def handle(event: dict):
-    action = event["event_type"].split(".")[-1]
+    etype = event["event_type"]
+    action = etype.split(".")[-1]
     payload = event["payload"]
     vid = str(event["aggregate_id"])
     tid = str(event["tenant_id"])
+
+    if etype.startswith("supplier."):
+        # A supplier is an organisation that onboarded as a tenant; the payload
+        # carries tenant_name, and the buyer relationship is not known from this
+        # event — create the Vendor node without a HAS_VENDOR edge.
+        if action == "created":
+            _create_supplier(vid, payload)
+        elif action == "updated":
+            _update(vid, {**payload, "name": payload.get("name") or payload.get("tenant_name")})
+        elif action == "deleted":
+            _soft_delete(vid)
+        return
 
     if action == "created":
         _create(tid, vid, payload)
@@ -21,6 +34,21 @@ def handle(event: dict):
         _update(vid, payload)
     elif action == "deleted":
         _soft_delete(vid)
+
+
+def _create_supplier(vendor_id: str, payload: dict):
+    with get_session() as session:
+        session.run(
+            """
+            MERGE (v:Vendor {vendor_id: $vid})
+            SET v.name       = $name,
+                v.status     = 'active',
+                v.created_at = datetime()
+            """,
+            vid=vendor_id,
+            name=payload.get("name") or payload.get("tenant_name", ""),
+        )
+    logger.info(f"Graph: Supplier Vendor created {vendor_id}")
 
 
 def _create(tenant_id: str, vendor_id: str, payload: dict):

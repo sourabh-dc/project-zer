@@ -11,12 +11,20 @@ from data_intelligence_service.core.logger import logger
 
 
 def handle(event: dict):
-    action = event["event_type"].split(".")[-1]
+    etype = event["event_type"]
+    action = etype.split(".")[-1]
     payload = event["payload"]
     oid = str(event["aggregate_id"])
     tid = str(event["tenant_id"])
 
-    if action == "created":
+    # org_unit_assignment.* must be matched by full event type first: its
+    # actions (created/removed) collide with org-unit actions, and its
+    # aggregate_id is the user — the org unit id lives in the payload.
+    if etype == "org_unit_assignment.created":
+        _assign_user(str(payload.get("org_unit_id") or ""), payload)
+    elif etype == "org_unit_assignment.removed":
+        _remove_user(str(payload.get("org_unit_id") or ""), payload)
+    elif action == "created":
         _create(tid, oid, payload)
     elif action == "updated":
         _update(oid, payload)

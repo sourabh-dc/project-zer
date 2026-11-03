@@ -1317,6 +1317,32 @@ class SupplierProfile(Base):
     updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
 
 
+class TenantSupplierConnection(Base):
+    """Buyer tenant ↔ supplier org association (marketplace connection).
+
+    A buyer tenant picks suppliers from the approved list; the connection
+    gates downstream commercial objects (offers, prices, orders).
+    Soft-deleted via status to preserve audit history.
+    """
+    __tablename__ = "tenant_supplier_connections"
+
+    CONNECTION_STATUSES = ("connected", "disconnected")
+
+    connection_id = Column(SQLUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    supplier_tenant_id = Column(SQLUUID(as_uuid=True), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="connected", index=True)  # connected | disconnected
+    connected_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(SQLUUID(as_uuid=True), ForeignKey("users.user_id"), nullable=True)
+
+    __table_args__ = (
+        Index("ux_tenant_supplier_pair", "buyer_tenant_id", "supplier_tenant_id", unique=True),
+    )
+
+
 # ==================================================================================
 # CARRIER & GOVERNANCE MODELS
 # ==================================================================================

@@ -63,10 +63,14 @@ def _register_handlers():
     register_handler("role_permission", role_handler.handle)
     register_handler("user_role", role_handler.handle)
     register_handler("cost_centre", cost_centre_handler.handle)
+    register_handler("user_cost_centre", cost_centre_handler.handle)
+    register_handler("org_unit_assignment", org_unit_handler.handle)
     register_handler("approved_range", approved_range_handler.handle)
     register_handler("policy", policy_handler.handle)
     register_handler("policy_rule", policy_handler.handle)
     register_handler("policy_assignment", policy_handler.handle)
+    register_handler("approval_policy", policy_handler.handle)
+    register_handler("supplier", vendor_handler.handle)
     register_handler("mandate", mandate_handler.handle)
     
     # Vector handlers

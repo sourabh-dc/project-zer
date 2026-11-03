@@ -14,10 +14,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from provisioning_service.Models import Tenant, LegalOrganisation, SupplierProfile
+from provisioning_service.Models import (
+    Tenant, LegalOrganisation, SupplierProfile, TenantSupplierConnection,
+)
 from provisioning_service.Schemas import (
     LegalOrgCreate, LegalOrgUpdate,
     SupplierCreate, SupplierUpdate, SupplierLifecycleRequest,
+    SupplierConnectRequest,
 )
 from provisioning_service.core.db_config import get_db
 from provisioning_service.core.user_auth import check_user_authorization
@@ -89,6 +92,24 @@ def _audit(db: Session, ctx: dict, event_type: str, event_data: dict) -> None:
         db.commit()
     except Exception as _oe:
         logger.warning(f"Outbox event failed for {event_type}: {_oe}")
+
+
+def _connection_dict(
+    conn: TenantSupplierConnection,
+    supplier_tenant: Tenant,
+    profile: Optional[SupplierProfile],
+) -> dict:
+    return {
+        "connection_id": str(conn.connection_id),
+        "buyer_tenant_id": str(conn.buyer_tenant_id),
+        "supplier_tenant_id": str(conn.supplier_tenant_id),
+        "status": conn.status,
+        "supplier_name": supplier_tenant.tenant_name if supplier_tenant else None,
+        "trading_name": profile.trading_name if profile else None,
+        "lifecycle_status": profile.lifecycle_status if profile else None,
+        "created_at": conn.created_at.isoformat() if conn.created_at else None,
+        "updated_at": conn.updated_at.isoformat() if conn.updated_at else None,
+    }
 
 
 def _get_supplier(db: Session, tenant_id: str):
@@ -552,3 +573,239 @@ async def supplier_lifecycle(
 
     logger.info(f"✅ Supplier {tenant_id}: {previous} → {target}")
     return _supplier_dict(tenant, profile)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tenant ↔ Supplier connections (buyer marketplace associations)
+# ────────────────────────────────────────────────────────────────────
+
+def _load_connection(db: Session, buyer_tenant_id: uuid.UUID, supplier_tenant_id: uuid.UUID):
+    return db.query(TenantSupplierConnection).filter(
+        TenantSupplierConnection.buyer_tenant_id == buyer_tenant_id,
+        TenantSupplierConnection.supplier_tenant_id == supplier_tenant_id,
+    ).first()
+
+
+def _validate_buyer(db: Session, tenant_id: str) -> Tenant:
+    """Buyer must exist and must NOT be a supplier org."""
+    try:
+        tid = uuid.UUID(tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid tenant ID format")
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tid).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Buyer tenant not found")
+    if tenant.tenant_type == "supplier":
+        raise HTTPException(status_code=400, detail="Supplier orgs cannot hold supplier connections")
+    return tenant
+
+
+@router.post("/tenants/{tenant_id}/suppliers", status_code=201)
+async def connect_supplier(
+    tenant_id: str,
+    req: SupplierConnectRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("suppliers.connect")),
+    policy=Depends(require_policy("tenant_supplier.connect")),
+):
+    """Connect a buyer tenant to an approved supplier org."""
+    start = datetime.now()
+    try:
+        req_total.labels(operation="connect_supplier", status="start").inc()
+
+        buyer = _validate_buyer(db, tenant_id)
+        supplier_tenant, profile = _get_supplier(db, req.supplier_tenant_id)
+
+        # Guards
+        if str(buyer.tenant_id) == str(supplier_tenant.tenant_id):
+            raise HTTPException(status_code=400, detail="Tenant cannot connect to itself")
+        if profile.lifecycle_status != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Supplier is '{profile.lifecycle_status}' — only approved suppliers can be connected",
+            )
+
+        existing = _load_connection(db, buyer.tenant_id, supplier_tenant.tenant_id)
+        if existing:
+            if existing.status == "connected":
+                raise HTTPException(status_code=409, detail="Supplier already connected to this tenant")
+            raise HTTPException(
+                status_code=409,
+                detail="Connection exists but is disconnected — use the reconnect endpoint",
+            )
+
+        connected_by = None
+        if ctx.get("user_id"):
+            try:
+                connected_by = uuid.UUID(ctx["user_id"])
+            except (ValueError, TypeError):
+                pass
+
+        conn = TenantSupplierConnection(
+            connection_id=uuid.uuid4(),
+            buyer_tenant_id=buyer.tenant_id,
+            supplier_tenant_id=supplier_tenant.tenant_id,
+            status="connected",
+            connected_by=connected_by,
+        )
+        db.add(conn)
+        db.commit()
+        db.refresh(conn)
+
+        try:
+            create_outbox_event(
+                db, str(buyer.tenant_id), "tenant_supplier.connected",
+                {
+                    "connection_id": str(conn.connection_id),
+                    "buyer_tenant_id": str(buyer.tenant_id),
+                    "supplier_tenant_id": str(supplier_tenant.tenant_id),
+                },
+            )
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox event failed for tenant_supplier.connected: {_oe}")
+
+        req_total.labels(operation="connect_supplier", status="success").inc()
+        req_duration.labels(operation="connect_supplier").observe(
+            (datetime.now() - start).total_seconds()
+        )
+        logger.info(f"Connected tenant {buyer.tenant_id} → supplier {supplier_tenant.tenant_id}")
+        return _connection_dict(conn, supplier_tenant, profile)
+    except HTTPException:
+        req_total.labels(operation="connect_supplier", status="error").inc()
+        raise
+    except IntegrityError:
+        db.rollback()
+        req_total.labels(operation="connect_supplier", status="error").inc()
+        raise HTTPException(status_code=409, detail="Supplier already connected to this tenant")
+    except Exception as e:
+        db.rollback()
+        req_total.labels(operation="connect_supplier", status="error").inc()
+        logger.error(f"❌ Supplier connect failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/tenants/{tenant_id}/suppliers")
+async def list_tenant_suppliers(
+    tenant_id: str,
+    status: Optional[str] = Query(None, description="connected | disconnected (default: all)"),
+    limit: int = Query(100, le=1000, ge=1),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List suppliers associated with a buyer tenant."""
+    buyer = _validate_buyer(db, tenant_id)
+
+    if status and status not in TenantSupplierConnection.CONNECTION_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of {TenantSupplierConnection.CONNECTION_STATUSES}",
+        )
+
+    q = (
+        db.query(TenantSupplierConnection, Tenant, SupplierProfile)
+        .join(Tenant, Tenant.tenant_id == TenantSupplierConnection.supplier_tenant_id)
+        .outerjoin(SupplierProfile, SupplierProfile.tenant_id == Tenant.tenant_id)
+        .filter(TenantSupplierConnection.buyer_tenant_id == buyer.tenant_id)
+    )
+    if status:
+        q = q.filter(TenantSupplierConnection.status == status)
+
+    total = q.count()
+    rows = (
+        q.order_by(TenantSupplierConnection.created_at.desc())
+        .limit(limit).offset(offset).all()
+    )
+    return {
+        "tenant_id": str(buyer.tenant_id),
+        "suppliers": [_connection_dict(c, t, p) for c, t, p in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.delete("/tenants/{tenant_id}/suppliers/{supplier_tenant_id}", status_code=204)
+async def disconnect_supplier(
+    tenant_id: str,
+    supplier_tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("suppliers.connect")),
+    policy=Depends(require_policy("tenant_supplier.disconnect", resource_from="none")),
+):
+    """Disconnect a supplier from a buyer tenant (soft — preserves history)."""
+    buyer = _validate_buyer(db, tenant_id)
+    try:
+        sid = uuid.UUID(supplier_tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid supplier tenant ID format")
+
+    conn = _load_connection(db, buyer.tenant_id, sid)
+    if not conn or conn.status != "connected":
+        raise HTTPException(status_code=404, detail="Active connection not found")
+
+    conn.status = "disconnected"
+    conn.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    try:
+        create_outbox_event(
+            db, str(buyer.tenant_id), "tenant_supplier.disconnected",
+            {
+                "connection_id": str(conn.connection_id),
+                "buyer_tenant_id": str(buyer.tenant_id),
+                "supplier_tenant_id": supplier_tenant_id,
+            },
+        )
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox event failed for tenant_supplier.disconnected: {_oe}")
+
+    logger.info(f"Disconnected tenant {buyer.tenant_id} ← supplier {supplier_tenant_id}")
+    return Response(status_code=204)
+
+
+@router.post("/tenants/{tenant_id}/suppliers/{supplier_tenant_id}/reconnect")
+async def reconnect_supplier(
+    tenant_id: str,
+    supplier_tenant_id: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(check_user_authorization("suppliers.connect")),
+    policy=Depends(require_policy("tenant_supplier.connect", resource_from="none")),
+):
+    """Reconnect a previously disconnected supplier (supplier must still be approved)."""
+    buyer = _validate_buyer(db, tenant_id)
+    supplier_tenant, profile = _get_supplier(db, supplier_tenant_id)
+
+    conn = _load_connection(db, buyer.tenant_id, supplier_tenant.tenant_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="No connection exists — use the connect endpoint")
+    if conn.status == "connected":
+        raise HTTPException(status_code=409, detail="Connection is already active")
+    if profile.lifecycle_status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Supplier is '{profile.lifecycle_status}' — only approved suppliers can be reconnected",
+        )
+
+    conn.status = "connected"
+    conn.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conn)
+
+    try:
+        create_outbox_event(
+            db, str(buyer.tenant_id), "tenant_supplier.connected",
+            {
+                "connection_id": str(conn.connection_id),
+                "buyer_tenant_id": str(buyer.tenant_id),
+                "supplier_tenant_id": supplier_tenant_id,
+                "reconnected": True,
+            },
+        )
+        db.commit()
+    except Exception as _oe:
+        logger.warning(f"Outbox event failed for tenant_supplier.connected: {_oe}")
+
+    logger.info(f"Reconnected tenant {buyer.tenant_id} → supplier {supplier_tenant_id}")
+    return _connection_dict(conn, supplier_tenant, profile)

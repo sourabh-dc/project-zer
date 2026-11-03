@@ -81,6 +81,16 @@ async def create_site(
 
         logger.info(f"Created site: {site.site_id} ({site.name}) for tenant: {req.tenant_id}")
 
+        try:
+            create_outbox_event(db, req.tenant_id, "site.created", {
+                "site_id": str(site.site_id),
+                "name": site.name,
+                "site_type": site.site_type,
+            })
+            db.commit()
+        except Exception as _oe:
+            logger.warning(f"Outbox failed for site.created: {_oe}")
+
         return {
             "site_id": str(site.site_id),
             "name": site.name,
