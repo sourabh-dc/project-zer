@@ -24,46 +24,21 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from data_intelligence_service.core.outbox_consumer import start_polling, register_handler
+from data_intelligence_service.core.outbox_consumer import start_polling
 from data_intelligence_service.core.config import SETTINGS
+from data_intelligence_service.core.handler_registry import register_all_handlers
 from data_intelligence_service.core.logger import logger
-
-# Import all handlers
-from data_intelligence_service.graph.handlers import (
-    tenant_handler, site_handler, store_handler, store_product_handler,
-    user_handler, org_unit_handler, product_handler, category_handler,
-    vendor_handler, role_handler, cost_centre_handler, approved_range_handler,
-    policy_handler, mandate_handler,
-)
-from data_intelligence_service.vector.handlers.product_embedding_handler import handle as vector_product_handler
 
 logger.setLevel(logging.INFO)
 
 
 def _register_handlers():
-    """Register all event handlers for outbox processing."""
-    # Graph handlers
-    register_handler("tenant", tenant_handler.handle)
-    register_handler("site", site_handler.handle)
-    register_handler("store", store_handler.handle)
-    register_handler("store_product", store_product_handler.handle)
-    register_handler("user", user_handler.handle)
-    register_handler("org_unit", org_unit_handler.handle)
-    register_handler("product", product_handler.handle)
-    register_handler("category", category_handler.handle)
-    register_handler("vendor", vendor_handler.handle)
-    register_handler("role", role_handler.handle)
-    register_handler("role_permission", role_handler.handle)
-    register_handler("cost_centre", cost_centre_handler.handle)
-    register_handler("approved_range", approved_range_handler.handle)
-    register_handler("policy", policy_handler.handle)
-    register_handler("policy_rule", policy_handler.handle)
-    register_handler("policy_assignment", policy_handler.handle)
-    register_handler("mandate", mandate_handler.handle)
-    
-    # Vector handlers
-    register_handler("product", vector_product_handler)
-    
+    """Register all event handlers for outbox processing.
+
+    Delegates to the shared registry (core/handler_registry.py) so the worker
+    and the API process register identical handlers.
+    """
+    register_all_handlers()
     logger.info("✅ All event handlers registered")
 
 

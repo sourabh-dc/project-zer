@@ -132,6 +132,35 @@ def _format_object_context(current_object: Optional[Dict]) -> str:
     )
 
 
+def _format_user_context(user_id: Optional[str], user_ctx: Optional[Dict]) -> str:
+    """Format the session user's identity + governance context as a prompt block.
+
+    WHY inject this?
+      The guardrail node already fetched roles/permissions/org units from the
+      graph. Injecting them lets the planner answer 'me / my / current user'
+      questions with a correctly-scoped query (or no query at all) instead of
+      guessing — and it always knows the concrete user_id value.
+    """
+    if not user_id:
+        return ""
+    user_ctx = user_ctx or {}
+    lines = ["\n━━━ CURRENT USER (from session) ━━━", f"user_id: {user_id}"]
+    roles = [r.get("code") for r in (user_ctx.get("roles") or []) if r.get("code")]
+    if roles:
+        lines.append(f"roles: {', '.join(roles[:20])}")
+    perms = user_ctx.get("permissions") or []
+    if perms:
+        shown = ", ".join(perms[:40])
+        lines.append(f"permissions: {shown}" + (" …" if len(perms) > 40 else ""))
+    org_units = [o.get("name") for o in (user_ctx.get("org_units") or []) if o.get("name")]
+    if org_units:
+        lines.append(f"org_units: {', '.join(org_units[:10])}")
+    if user_ctx.get("is_admin"):
+        lines.append("is_admin: true")
+    lines.append("━━━ (End of current user) ━━━\n")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Agent state — passed between nodes
 # ---------------------------------------------------------------------------
@@ -199,11 +228,15 @@ fetches the exact data needed to answer it accurately.
 6. Parameterise user values: :param_name (SQL), $param_name (Cypher).
 7. Never string-concatenate user input into queries.
 8. Max 6 steps per plan.
-9. PRODUCT GOVERNANCE: When querying products (tables: products, order_items, approved_range_products)
+9. PRODUCT GOVERNANCE: When querying products (tables: products, purchase_requests, approved_range_products)
    and the question is about what a specific user can see or order, add:
    AND p.product_id = ANY(CAST(:approved_ids AS UUID[]))
    The :approved_ids param contains the user's pre-approved product list.
    Omit this filter for admin/aggregate queries (counts, spend totals by tenant).
+10. CURRENT USER: Questions about "me / my / current user" refer to the session
+   user shown in the CURRENT USER block. Filter with $user_id (Cypher) or
+   :user_id (SQL) — this parameter is ALWAYS supplied on every engine.
+   Never invent a user id value, never ask the user for it.
 
 ━━━ ENGINE GUIDE ━━━
 sql    → exact data: product details, spend totals, counts, budgets, order history,
@@ -253,7 +286,9 @@ Q: "What is the org hierarchy for Operations?"
 → graph: OrgUnit CHILD_OF traversal.
 
 Q: "How much did we spend on PPE last quarter?"
-→ sql: purchase_requests / order_items JOIN products JOIN categories WHERE category='PPE'.
+→ sql: purchase_requests JOIN categories ON category_id WHERE c.name='PPE'
+  (there is no order_items table — line items live in purchase_requests.line_items JSONB;
+   unpack with jsonb_array_elements when per-product detail is needed).
 
 Q: "Find eco-friendly cleaning products"
 → vector: semantic search — enrich the text: "eco-friendly green sustainable biodegradable cleaning products environmentally safe".
@@ -295,7 +330,11 @@ Given raw query results, write a clear, concise natural language answer.
 Rules:
 - Use bullet points for lists of items.
 - Include specific names, numbers, and currency amounts.
-- If a step returned an error, acknowledge what data is missing and why.
+- If a step failed, say that this data could not be retrieved right now and
+  suggest trying again. NEVER quote raw error messages, parameter names,
+  SQL, Cypher, table names, or any technical internals in the answer.
+- tenant_id and user_id come from the user's session automatically.
+  NEVER ask the user to provide them.
 - If data is empty, say so and explain what it means in business terms.
 - NEVER make up data — only report what is in the results.
 - Keep the answer focused and professional.
@@ -551,6 +590,9 @@ def node_plan(state: AgentState) -> AgentState:
     current_object = state.get("current_object")
     object_section = _format_object_context(current_object)
 
+    # Inject session user identity + governance context (roles/permissions)
+    user_section = _format_user_context(state.get("user_id"), state.get("user_context"))
+
     if schema_errors and plan_attempts > 0:
         # Correction mode — feed schema errors back to LLM for self-correction
         # Skip derived context on retry to keep the prompt focused on the fix
@@ -559,6 +601,7 @@ def node_plan(state: AgentState) -> AgentState:
             HumanMessage(content=(
                 f"{schema_block}\n{hint_line}\n"
                 f"Tenant ID: {tenant_id}\n"
+                f"{user_section}"
                 f"{context_section}"
                 f"Question: {question}\n\nGenerate the query plan as JSON."
             )),
@@ -572,6 +615,7 @@ def node_plan(state: AgentState) -> AgentState:
         messages.append(HumanMessage(content=(
             f"{schema_block}\n{hint_line}\n"
             f"Tenant ID: {tenant_id}\n"
+            f"{user_section}"
             f"{context_section}"
             f"{object_section}"
             f"{derived_context}"
@@ -772,7 +816,18 @@ async def node_summarize(state: AgentState) -> AgentState:
     plan       = state.get("plan", {})
     step_results = state.get("step_results", [])
 
-    results_text = json.dumps(step_results, indent=2, default=str)
+    # Sanitise step errors before they reach the LLM: raw driver exceptions
+    # (SQL state, Neo4j error classes) are developer diagnostics — if the LLM
+    # sees them, it echoes them into the user-facing answer. Raw errors are
+    # already in the trace/logs.
+    prompt_steps = []
+    for s in step_results:
+        s2 = {k: v for k, v in s.items() if k != "error"}
+        if s.get("error"):
+            s2["failed"] = True
+        prompt_steps.append(s2)
+
+    results_text = json.dumps(prompt_steps, indent=2, default=str)
     if len(results_text) > 12_000:
         results_text = results_text[:12_000] + "\n... (truncated)"
 
@@ -819,7 +874,7 @@ async def node_summarize(state: AgentState) -> AgentState:
             _metrics.record_llm_tokens("summarize", token_usage["prompt"], token_usage["completion"])
     except Exception as exc:
         logger.error(f"[Agent] summarization failed: {exc}")
-        answer = f"Query executed but summarization failed: {exc}\n\nRaw results: {results_text[:2000]}"
+        answer = "I retrieved the data but couldn't put together the answer right now. Please try again."
 
     # Save this turn to session memory
     engine = (plan.get("query_type") or state.get("engine_hint") or "unknown")
@@ -867,7 +922,12 @@ async def _run_step(
             return execute_readonly_sql(query, params), None
 
         elif engine == "graph":
-            graph_params = {k: v for k, v in params.items() if k in ("tenant_id", "prior_ids")}
+            # Whitelist: tenant scoping, current-user scoping ($user_id),
+            # chained-step IDs, and the governance product filter.
+            graph_params = {k: v for k, v in params.items()
+                            if k in ("tenant_id", "user_id", "prior_ids")}
+            if approved_ids != "__all__" and approved_ids:
+                graph_params["approved_ids"] = approved_ids
             return execute_readonly_cypher(query, graph_params), None
 
         elif engine == "vector":
@@ -975,6 +1035,7 @@ async def run_agent(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     current_object: Optional[Dict] = None,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """Run the ZeroQue intelligence agent end-to-end.
 
@@ -987,15 +1048,16 @@ async def run_agent(
                          {object_type: "product"|"supplier"|"request"|"order"|"contract",
                           object_id: "...", object_data: {...}}
                          Injected into planner + summarizer so "this" / "it" resolve correctly.
+        debug          — Include developer diagnostics (query_plan, trace,
+                         raw step errors). Never enable for end users.
 
     Returns:
-        answer       — Natural language answer
-        data         — Raw step results
-        query_plan   — Execution plan
-        routing_meta — Tier, engine, confidence
-        blocked      — True if guardrail blocked the question
-        error        — Error message if something failed
-        session_id   — Echo of session_id for client tracking
+        answer         — Natural language answer
+        data           — Step results (errors sanitised unless debug)
+        permission_meta— User roles/scope summary
+        blocked        — True if guardrail blocked the question
+        session_id     — Echo of session_id for client tracking
+        (debug only: query_plan, routing_meta, trace, error)
     """
     qt = QueryTrace()
 
@@ -1003,7 +1065,7 @@ async def run_agent(
 
     final_state = await _AGENT.ainvoke(initial_state)
 
-    return _build_result(final_state, qt, tenant_id, user_id, session_id, question)
+    return _build_result(final_state, qt, tenant_id, user_id, session_id, question, debug=debug)
 
 
 def _initial_state(
@@ -1044,7 +1106,14 @@ def _build_result(
     user_id: Optional[str],
     session_id: Optional[str],
     question: str,
+    debug: bool = False,
 ) -> Dict[str, Any]:
+    """Assemble the API response.
+
+    debug=False (default) returns only end-user fields. Developer diagnostics
+    (query plan, raw SQL/Cypher, step errors, trace, routing internals) are
+    gated behind debug=True — they must never reach the frontend by default.
+    """
     final_trace: QueryTrace = final_state.get("trace") or qt
     if not final_trace.latency_ms:
         final_trace.finish()
@@ -1081,22 +1150,43 @@ def _build_result(
     except Exception as _cost_exc:
         logger.debug(f"[Agent] cost recording skipped: {_cost_exc}")
 
-    return {
-        "answer":       final_state.get("answer", ""),
-        "data":         final_state.get("step_results", []),
-        "query_plan":   final_state.get("plan"),
-        "routing_meta": {
+    # Sanitise step errors for non-debug callers (raw errors stay in logs/trace)
+    data_steps = []
+    for s in final_state.get("step_results", []):
+        item = {
+            "step":        s.get("step"),
+            "engine":      s.get("engine"),
+            "description": s.get("description", ""),
+            "data":        s.get("data", []),
+            "row_count":   s.get("row_count", 0),
+        }
+        if s.get("error"):
+            item["error"] = s["error"] if debug else "Data lookup failed"
+        data_steps.append(item)
+
+    result: Dict[str, Any] = {
+        "answer":          final_state.get("answer", ""),
+        "data":            data_steps,
+        "permission_meta": permission_meta,
+        "blocked":         is_blocked,
+        "session_id":      session_id,
+    }
+    # Guardrail block reasons are written for end users — safe to return.
+    if is_blocked:
+        result["error"] = final_state.get("error")
+
+    if debug:
+        result["query_plan"] = final_state.get("plan")
+        result["routing_meta"] = {
             "tier":       final_state.get("routing_tier"),
             "engine":     final_state.get("engine_hint"),
             "confidence": final_state.get("routing_confidence"),
             "attempts":   final_state.get("plan_attempts"),
-        },
-        "permission_meta": permission_meta,
-        "trace":      final_trace.to_dict(),
-        "blocked":    is_blocked,
-        "error":      final_state.get("error"),
-        "session_id": session_id,
-    }
+        }
+        result["trace"] = final_trace.to_dict()
+        result["error"] = final_state.get("error")
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1120,6 +1210,7 @@ async def stream_agent(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     current_object: Optional[Dict] = None,
+    debug: bool = False,
 ):
     """Async generator — streams agent progress + answer tokens.
 
@@ -1157,12 +1248,13 @@ async def stream_agent(
 
     except Exception as exc:
         logger.error(f"[Agent] stream failed: {exc}", exc_info=True)
-        yield {"type": "error", "message": f"Query execution failed: {exc}"}
+        # Raw exception is logged server-side; clients get a generic message.
+        yield {"type": "error", "message": "Query execution failed. Please try again."}
         return
 
     if final_state is None:
-        yield {"type": "error", "message": "Query execution failed: no final state"}
+        yield {"type": "error", "message": "Query execution failed. Please try again."}
         return
 
-    result = _build_result(final_state, qt, tenant_id, user_id, session_id, question)
+    result = _build_result(final_state, qt, tenant_id, user_id, session_id, question, debug=debug)
     yield {"type": "done", **result}

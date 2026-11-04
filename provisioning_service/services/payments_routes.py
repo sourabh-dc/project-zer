@@ -88,7 +88,6 @@ async def create_checkout_session(
 
         session = stripe.checkout.Session.create(
             customer=stripe_customer_id,
-            payment_method_types=["card"],
             mode="subscription",
             line_items=line_items,
             success_url="http://127.0.0.1:8000/payments/success",
@@ -179,7 +178,6 @@ def _build_pack_checkout_session(db: Session, tenant_id: str, pack_code: str, em
 
     session = stripe.checkout.Session.create(
         customer=customer_id,
-        payment_method_types=["card"],
         mode="subscription",
         line_items=[{"price": pack.stripe_price_id, "quantity": 1}],
         success_url="http://127.0.0.1:8000/payments/success",
@@ -248,7 +246,6 @@ def _build_seat_block_checkout_session(db: Session, tenant_id: str, quantity: in
 
     session = stripe.checkout.Session.create(
         customer=customer_id,
-        payment_method_types=["card"],
         mode="subscription",
         line_items=[{
             "price_data": {

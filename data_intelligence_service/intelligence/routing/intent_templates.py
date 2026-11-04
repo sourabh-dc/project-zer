@@ -338,15 +338,17 @@ def _top_products_query(entities) -> str:
     limit = entities.get("limit", 10)
     return f"""
 SELECT p.display_name, p.sku,
-       COUNT(oi.id)           AS order_count,
-       SUM(oi.quantity)       AS total_qty,
-       SUM(oi.total_amount)   AS total_spend
-FROM   order_items oi
-JOIN   products    p  ON p.product_id   = oi.product_id
-JOIN   orders      o  ON o.id           = oi.order_id
-WHERE  o.tenant_id = :tenant_id
-  AND  o.status NOT IN ('deleted', 'cancelled')
-  {date_clause.replace('created_at', 'o.created_at')}
+       COUNT(DISTINCT pr.request_id)       AS order_count,
+       SUM((item->>'qty')::numeric)        AS total_qty,
+       SUM((item->>'qty')::numeric
+           * (item->>'unit_price_minor')::numeric) / 100.0 AS total_spend
+FROM   purchase_requests pr
+CROSS JOIN LATERAL jsonb_array_elements(pr.line_items) AS item
+JOIN   products p ON p.product_id = (item->>'product_id')::uuid
+WHERE  pr.tenant_id = :tenant_id
+  AND  pr.status NOT IN ('cancelled', 'rejected')
+  AND  pr.line_items IS NOT NULL
+  {date_clause.replace('created_at', 'pr.created_at')}
 GROUP BY p.product_id, p.display_name, p.sku
 ORDER BY total_spend DESC
 LIMIT {int(limit)}

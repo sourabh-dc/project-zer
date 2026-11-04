@@ -92,7 +92,6 @@ async def create_mandate(
 
         setup_intent = stripe.SetupIntent.create(
             customer=stripe_customer.id,
-            payment_method_types=["card"],
             usage="off_session",
             metadata={
                 "plan_code": req.plan_code,
@@ -264,7 +263,6 @@ async def activate_mandate(
             }],
             "trial_period_days": 7,  # mandatory 7-day trial — non-bypassable
             "payment_settings": {
-                "payment_method_types": ["card"],
                 "save_default_payment_method": "on_subscription",
             },
             "metadata": {

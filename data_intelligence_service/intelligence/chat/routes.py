@@ -63,6 +63,7 @@ class StreamRequest(BaseModel):
     question: str = Field(min_length=1)
     session_id: Optional[str] = None   # server session id OR client ref
     current_object: Optional[ObjectContext] = None
+    debug: bool = False                # developer diagnostics in the done event
 
 
 class FeedbackRequest(BaseModel):
@@ -86,7 +87,8 @@ async def stream(req: StreamRequest, request: Request):
     Event types:
       status — {"type":"status","node":"execute","label":"Fetching data"}
       token  — {"type":"token","content":"The"}
-      done   — full result: answer, data, query_plan, trace, session_id, message_id
+      done   — answer, data, session_id, message_id
+               (+ query_plan, routing_meta, trace when debug=true)
       error  — {"type":"error","message":"..."}
     """
     if not SETTINGS.AZURE_OPENAI_API_KEY:
@@ -109,12 +111,16 @@ async def stream(req: StreamRequest, request: Request):
         yield _sse({"type": "session", "session_id": session_id})
 
         done_payload: Optional[Dict[str, Any]] = None
+        # debug=True so the server can persist diagnostics (engine, trace) to
+        # the chat store — those fields are stripped before events reach the
+        # client stream below.
         async for event in stream_agent(
             question=req.question,
             tenant_id=tenant_id,
             user_id=user_id,
             session_id=session_id,
             current_object=req.current_object.model_dump() if req.current_object else None,
+            debug=True,
         ):
             if event.get("type") == "done":
                 # Persist the turn, then attach ids so the client can anchor feedback
@@ -129,6 +135,14 @@ async def stream(req: StreamRequest, request: Request):
                     )
                     event["session_id"] = thread["id"]
                     event["message_id"] = message_id
+                # Strip developer-only diagnostics from the client payload
+                # (kept when the caller explicitly opts in with debug=true)
+                if not req.debug:
+                    for _k in ("query_plan", "trace", "routing_meta", "error"):
+                        event.pop(_k, None)
+                    for _step in event.get("data", []):
+                        if _step.get("error"):
+                            _step["error"] = "Data lookup failed"
                 done_payload = event
                 yield _sse(event)
             else:

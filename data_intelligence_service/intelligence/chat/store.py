@@ -246,9 +246,11 @@ def get_messages(session_id: str) -> List[Dict[str, Any]]:
     """Full message history for a session, oldest first."""
     session = _get_session()
     try:
+        # trace is developer diagnostics stored for ops — never returned to
+        # clients (it can contain raw step errors and query internals).
         rows = session.execute(
             text("""
-                SELECT id, role, content, engine, trace, created_at
+                SELECT id, role, content, engine, created_at
                 FROM chat_messages
                 WHERE session_id = :sid
                 ORDER BY created_at ASC
@@ -257,11 +259,10 @@ def get_messages(session_id: str) -> List[Dict[str, Any]]:
         ).fetchall()
         out = []
         for r in rows:
-            trace = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else None)
             out.append({
                 "id": str(r[0]), "role": r[1], "content": r[2],
-                "engine": r[3], "trace": trace,
-                "created_at": r[5].isoformat() if r[5] else None,
+                "engine": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
             })
         return out
     except Exception as exc:

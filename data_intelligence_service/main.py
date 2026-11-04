@@ -13,15 +13,10 @@ from data_intelligence_service.intelligence.middleware.auth import ApiKeyMiddlew
 from data_intelligence_service.core.neo4j_client import init_constraints, close_driver
 from data_intelligence_service.vector.pg_vector import init_pgvector, similarity_search
 from data_intelligence_service.vector.embeddings import embed_text
-from data_intelligence_service.core.outbox_consumer import start_polling, register_handler
+from data_intelligence_service.core.outbox_consumer import start_polling
 
-# Graph handlers
-from data_intelligence_service.graph.handlers import (
-    tenant_handler, site_handler, store_handler, store_product_handler,
-    user_handler, org_unit_handler, product_handler, category_handler,
-    vendor_handler, role_handler, cost_centre_handler, approved_range_handler,
-    policy_handler, mandate_handler,
-)
+# Handler registration (shared with the standalone worker)
+from data_intelligence_service.core.handler_registry import register_all_handlers
 
 # Graph queries
 from data_intelligence_service.graph.queries.approved_universe import (
@@ -32,14 +27,10 @@ from data_intelligence_service.graph.queries.store_products import (
     get_products_for_store, get_stores_for_product, get_tenant_topology,
 )
 
-# Vector handler
-from data_intelligence_service.vector.handlers.product_embedding_handler import handle as vector_product_handler
-
 # Intelligence agent (LangGraph) + memory + derived knowledge
 from data_intelligence_service.intelligence.agents.agent import run_agent
 from data_intelligence_service.intelligence.agents import memory as _mem
 from data_intelligence_service.intelligence.observability import metrics as _metrics
-from data_intelligence_service.intelligence.derived import handlers as derived_handlers
 from data_intelligence_service.intelligence.derived.store import ensure_table_exists
 from data_intelligence_service.intelligence.cost import tracker as _cost
 from data_intelligence_service.intelligence.chat.store import ensure_chat_tables
@@ -49,43 +40,9 @@ from data_intelligence_service.intelligence.chat.routes import router as ask_que
 
 
 def _register_handlers():
-    # Graph handlers
-    register_handler("tenant", tenant_handler.handle)
-    register_handler("site", site_handler.handle)
-    register_handler("store", store_handler.handle)
-    register_handler("store_product", store_product_handler.handle)
-    register_handler("user", user_handler.handle)
-    register_handler("org_unit", org_unit_handler.handle)
-    register_handler("product", product_handler.handle)
-    register_handler("category", category_handler.handle)
-    register_handler("vendor", vendor_handler.handle)
-    register_handler("role", role_handler.handle)
-    register_handler("role_permission", role_handler.handle)
-    register_handler("user_role", role_handler.handle)
-    register_handler("cost_centre", cost_centre_handler.handle)
-    register_handler("user_cost_centre", cost_centre_handler.handle)
-    register_handler("org_unit_assignment", org_unit_handler.handle)
-    register_handler("approved_range", approved_range_handler.handle)
-    register_handler("policy", policy_handler.handle)
-    register_handler("policy_rule", policy_handler.handle)
-    register_handler("policy_assignment", policy_handler.handle)
-    register_handler("approval_policy", policy_handler.handle)
-    register_handler("supplier", vendor_handler.handle)
-    register_handler("mandate", mandate_handler.handle)
-    
-    # Vector handlers
-    register_handler("product", vector_product_handler)
-
-    # Derived knowledge handlers — recompute precomputed facts when data changes.
-    # These run AFTER the graph/vector handlers so the graph is already updated
-    # when facts that depend on graph data (approved_product_count) are computed.
-    register_handler("purchase_request", derived_handlers.handle_purchase_request)
-    register_handler("approved_range",   derived_handlers.handle_approved_range)
-    register_handler("budget",           derived_handlers.handle_budget)
-    register_handler("policy",           derived_handlers.handle_policy)
-    register_handler("org_unit",         derived_handlers.handle_org_unit)
-    register_handler("vendor",           derived_handlers.handle_vendor)
-    register_handler("product",          derived_handlers.handle_product)
+    # Delegates to the shared registry (core/handler_registry.py) so the API
+    # process and the standalone worker register identical handlers.
+    register_all_handlers()
 
 
 @asynccontextmanager
@@ -262,6 +219,7 @@ class QueryRequest(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None   # pass same value across turns for memory
     current_object: Optional[ObjectContext] = None  # object context auto-inheritance (spec §13.2)
+    debug: bool = False                # developer diagnostics (query_plan, trace, raw errors)
 
 class QueryResponse(BaseModel):
     answer: str
@@ -290,6 +248,7 @@ async def query(req: QueryRequest, request: Request):
             user_id=user_id,
             session_id=req.session_id,
             current_object=req.current_object.model_dump() if req.current_object else None,
+            debug=req.debug,
         )
         if result.get("blocked"):
             raise HTTPException(400, result.get("error", "Request not permitted"))
@@ -306,7 +265,7 @@ async def query(req: QueryRequest, request: Request):
         raise
     except Exception as exc:
         logger.error(f"Query failed: {exc}", exc_info=True)
-        raise HTTPException(500, f"Query execution failed: {exc}")
+        raise HTTPException(500, "Query execution failed. Please try again.")
 
 
 @app.delete("/intelligence/session/{session_id}")

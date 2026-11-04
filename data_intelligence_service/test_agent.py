@@ -134,7 +134,7 @@ async def run_tests(tenant_id: str, questions: list):
         _print_separator()
         t0 = time.time()
         try:
-            result = await run_agent(q, tenant_id=tenant_id)
+            result = await run_agent(q, tenant_id=tenant_id, debug=True)
         except Exception as exc:
             result = {"answer": f"EXCEPTION: {exc}", "blocked": False, "error": str(exc), "data": [], "query_plan": None, "routing_meta": {}}
         elapsed = time.time() - t0

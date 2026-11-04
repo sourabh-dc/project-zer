@@ -56,16 +56,15 @@ def compute_top_categories_by_spend(tenant_id: str) -> Optional[DerivedFact]:
     try:
         result = session.execute(text("""
             SELECT
-                c.name                         AS category_name,
-                SUM(oi.unit_price * oi.quantity) AS total_spend,
-                COUNT(DISTINCT oi.order_id)      AS order_count
-            FROM order_items oi
-            JOIN products   p  ON p.product_id  = oi.product_id
-            JOIN categories c  ON c.category_id = p.category_id
-            JOIN orders     o  ON o.order_id     = oi.order_id
-            WHERE o.tenant_id = :tid
-              AND o.created_at >= date_trunc('quarter', NOW())
-              AND o.status NOT IN ('cancelled', 'rejected')
+                c.name                                    AS category_name,
+                COALESCE(SUM(pr.amount_minor), 0) / 100.0 AS total_spend,
+                COUNT(DISTINCT pr.request_id)             AS order_count
+            FROM purchase_requests pr
+            JOIN categories c ON c.category_id = pr.category_id
+            WHERE pr.tenant_id = :tid
+              AND pr.created_at >= date_trunc('quarter', NOW())
+              AND pr.status NOT IN ('cancelled', 'rejected')
+              AND pr.category_id IS NOT NULL
             GROUP BY c.name
             ORDER BY total_spend DESC
             LIMIT 10
@@ -97,18 +96,20 @@ def compute_approval_policy_summary(tenant_id: str) -> Optional[DerivedFact]:
     session = _db_session()
     try:
         result = session.execute(text("""
-            SELECT p.name, p.approval_required, p.auto_approve_threshold_minor, p.status
-            FROM policies p
-            WHERE p.tenant_id = :tid AND p.status = 'active'
-            ORDER BY p.auto_approve_threshold_minor ASC NULLS LAST
+            SELECT p.name, p.routing_mode, p.is_active,
+                   (SELECT COUNT(*) FROM approval_stages s
+                     WHERE s.policy_id = p.policy_id) AS stage_count
+            FROM approval_policies p
+            WHERE p.tenant_id = :tid AND p.is_active
+            ORDER BY p.name ASC
             LIMIT 20
         """), {"tid": tenant_id})
         rows = result.fetchall()
         payload: Dict[str, Any] = {
             "active_policy_count": len(rows),
             "policies": [
-                {"name": row[0], "approval_required": bool(row[1]),
-                 "threshold_minor": row[2], "status": row[3]}
+                {"name": row[0], "routing_mode": row[1],
+                 "is_active": bool(row[2]), "stage_count": int(row[3] or 0)}
                 for row in rows
             ],
         }
@@ -127,19 +128,40 @@ def compute_org_unit_budget_status(tenant_id: str) -> Optional[DerivedFact]:
     from sqlalchemy import text
     session = _db_session()
     try:
+        # Budgets live on cost centres (cost_center_budget). Map to org units
+        # via user assignments: org_unit → user_org_assignments →
+        # user_cc_assignments → cost_center_budget. DISTINCT prevents double
+        # counting when several users in a dept share one cost centre.
         result = session.execute(text("""
+            WITH dept_budgets AS (
+                SELECT DISTINCT
+                    ou.org_unit_id,
+                    ou.name               AS org_unit_name,
+                    b.budget_id,
+                    b.budget_amount_minor,
+                    b.total_spent_minor
+                FROM cost_center_budget b
+                JOIN user_cc_assignments ucca
+                     ON ucca.cost_centre_id = b.cost_centre_id
+                    AND ucca.is_active
+                JOIN user_org_assignments uoa
+                     ON uoa.user_id = ucca.user_id
+                JOIN org_units ou
+                     ON ou.org_unit_id = uoa.org_unit_id
+                WHERE b.tenant_id = :tid
+                  AND b.period_start <= CURRENT_DATE
+                  AND b.period_end   >= CURRENT_DATE
+                  AND b.status = 'active'
+            )
             SELECT
-                ou.name AS org_unit_name,
-                b.allocated_minor AS allocated,
-                b.spent_minor AS spent,
-                CASE WHEN b.allocated_minor > 0
-                     THEN ROUND((b.spent_minor::numeric / b.allocated_minor) * 100, 1)
+                org_unit_name,
+                SUM(budget_amount_minor) AS allocated,
+                SUM(total_spent_minor)   AS spent,
+                CASE WHEN SUM(budget_amount_minor) > 0
+                     THEN ROUND((SUM(total_spent_minor)::numeric / SUM(budget_amount_minor)) * 100, 1)
                      ELSE 0 END AS utilization_pct
-            FROM budgets b
-            JOIN org_units ou ON ou.org_unit_id = b.org_unit_id
-            WHERE b.tenant_id = :tid
-              AND b.period_start <= NOW() AND b.period_end >= NOW()
-              AND b.status = 'active'
+            FROM dept_budgets
+            GROUP BY org_unit_name
             ORDER BY utilization_pct DESC
             LIMIT 20
         """), {"tid": tenant_id})
@@ -171,13 +193,13 @@ def compute_vendor_activity_summary(tenant_id: str) -> Optional[DerivedFact]:
     session = _db_session()
     try:
         result = session.execute(text("""
-            SELECT v.name, COUNT(DISTINCT o.order_id) AS order_count,
-                   MAX(o.created_at)::date AS last_order_date
-            FROM orders o
-            JOIN vendors v ON v.vendor_id = o.vendor_id
-            WHERE o.tenant_id = :tid
-              AND o.created_at >= NOW() - INTERVAL '90 days'
-              AND o.status NOT IN ('cancelled')
+            SELECT v.name, COUNT(DISTINCT pr.request_id) AS order_count,
+                   MAX(pr.created_at)::date AS last_order_date
+            FROM purchase_requests pr
+            JOIN vendors v ON v.vendor_id = pr.vendor_id
+            WHERE pr.tenant_id = :tid
+              AND pr.created_at >= NOW() - INTERVAL '90 days'
+              AND pr.status NOT IN ('cancelled', 'rejected')
             GROUP BY v.name ORDER BY order_count DESC LIMIT 20
         """), {"tid": tenant_id})
         active_rows = result.fetchall()
@@ -185,8 +207,9 @@ def compute_vendor_activity_summary(tenant_id: str) -> Optional[DerivedFact]:
             SELECT COUNT(*) FROM vendors v
             WHERE v.tenant_id = :tid AND v.status = 'active'
               AND v.vendor_id NOT IN (
-                SELECT DISTINCT vendor_id FROM orders
+                SELECT DISTINCT vendor_id FROM purchase_requests
                 WHERE tenant_id = :tid AND created_at >= NOW() - INTERVAL '90 days'
+                  AND vendor_id IS NOT NULL
               )
         """), {"tid": tenant_id})
         inactive_count = inactive_result.scalar() or 0
@@ -257,7 +280,11 @@ def compute_approved_product_count(tenant_id: str) -> Optional[DerivedFact]:
 # ---------------------------------------------------------------------------
 
 def compute_supplier_performance(tenant_id: str) -> Optional[DerivedFact]:
-    """Supplier performance metrics: on-time delivery rate, avg lead time, defect rate.
+    """Supplier performance metrics: acceptance rate + response speed.
+
+    purchase_requests has no delivery tracking, so performance is measured on
+    the vendor's response to requests (accepted / rejected / pending) and how
+    fast they respond.
 
     Payload shape:
       {
@@ -281,28 +308,28 @@ def compute_supplier_performance(tenant_id: str) -> Optional[DerivedFact]:
             SELECT
                 v.vendor_id::text                          AS vendor_id,
                 v.name                                     AS vendor_name,
-                COUNT(o.order_id)                          AS total_orders,
-                COUNT(o.order_id) FILTER (
-                    WHERE o.actual_delivery_date IS NOT NULL
-                      AND o.actual_delivery_date <= o.expected_delivery_date
-                )                                          AS on_time_count,
+                COUNT(pr.request_id)                       AS total_requests,
+                COUNT(pr.request_id) FILTER (
+                    WHERE pr.vendor_response_status = 'accepted'
+                )                                          AS accepted_count,
                 ROUND(
-                    100.0 * COUNT(o.order_id) FILTER (
-                        WHERE o.actual_delivery_date IS NOT NULL
-                          AND o.actual_delivery_date <= o.expected_delivery_date
-                    ) / NULLIF(COUNT(o.order_id), 0),
-                1)                                         AS on_time_rate_pct,
+                    100.0 * COUNT(pr.request_id) FILTER (
+                        WHERE pr.vendor_response_status = 'accepted'
+                    ) / NULLIF(COUNT(pr.request_id) FILTER (
+                        WHERE pr.vendor_response_status IS NOT NULL
+                    ), 0),
+                1)                                         AS acceptance_rate_pct,
                 ROUND(
-                    AVG(o.actual_delivery_date - o.order_date)::numeric,
-                1)                                         AS avg_lead_time_days
-            FROM orders o
-            JOIN vendors v ON v.vendor_id = o.vendor_id
-            WHERE o.tenant_id = :tid
-              AND o.created_at >= NOW() - INTERVAL '180 days'
-              AND o.status IN ('delivered', 'completed')
+                    AVG(EXTRACT(EPOCH FROM (pr.vendor_response_at - pr.created_at)) / 86400.0)::numeric,
+                1)                                         AS avg_response_days
+            FROM purchase_requests pr
+            JOIN vendors v ON v.vendor_id = pr.vendor_id
+            WHERE pr.tenant_id = :tid
+              AND pr.created_at >= NOW() - INTERVAL '180 days'
+              AND pr.status NOT IN ('cancelled', 'rejected', 'draft')
             GROUP BY v.vendor_id, v.name
-            HAVING COUNT(o.order_id) >= 3
-            ORDER BY on_time_rate_pct DESC NULLS LAST
+            HAVING COUNT(pr.request_id) >= 3
+            ORDER BY acceptance_rate_pct DESC NULLS LAST
             LIMIT 30
         """), {"tid": tenant_id})
 
@@ -311,13 +338,13 @@ def compute_supplier_performance(tenant_id: str) -> Optional[DerivedFact]:
             "window_days": 180,
             "suppliers": [
                 {
-                    "vendor_id":          row[0],
-                    "name":               row[1],
-                    "total_orders":       int(row[2] or 0),
-                    "on_time_count":      int(row[3] or 0),
-                    "on_time_rate_pct":   float(row[4] or 0),
-                    "avg_lead_time_days": float(row[5] or 0) if row[5] is not None else None,
-                    "late_orders":        int(row[2] or 0) - int(row[3] or 0),
+                    "vendor_id":           row[0],
+                    "name":                row[1],
+                    "total_requests":      int(row[2] or 0),
+                    "accepted_count":      int(row[3] or 0),
+                    "acceptance_rate_pct": float(row[4] or 0),
+                    "avg_response_days":   float(row[5] or 0) if row[5] is not None else None,
+                    "declined_or_pending": int(row[2] or 0) - int(row[3] or 0),
                 }
                 for row in rows
             ],
@@ -335,11 +362,11 @@ def compute_supplier_performance(tenant_id: str) -> Optional[DerivedFact]:
 
 
 def compute_supplier_risk(tenant_id: str) -> Optional[DerivedFact]:
-    """Composite supplier risk score (0-100) combining lateness, concentration, and defects.
+    """Composite supplier risk score (0-100) combining rejection rate and spend concentration.
 
-    Risk formula (spec §5 SupplierRisk example):
-      score = late_rate * 40 + defect_rate * 40 + concentration_pct * 20
-      where late_rate and defect_rate are [0,1] and concentration_pct = vendor's share of total spend
+    Risk formula (adapted — no delivery/defect tracking in purchase_requests):
+      score = reject_rate * 40 + concentration_pct * 20
+      where reject_rate is [0,1] and concentration_pct = vendor's share of total spend
 
     Payload shape:
       {
@@ -360,21 +387,23 @@ def compute_supplier_risk(tenant_id: str) -> Optional[DerivedFact]:
     from sqlalchemy import text
     session = _db_session()
     try:
+        # No delivery tracking in purchase_requests — vendor rejection rate is
+        # used as the reliability signal, plus spend concentration.
         result = session.execute(text("""
             WITH vendor_stats AS (
                 SELECT
                     v.vendor_id::text                       AS vendor_id,
                     v.name                                  AS vendor_name,
-                    COUNT(o.order_id)                       AS total_orders,
-                    COALESCE(SUM(oi.unit_price * oi.quantity), 0) AS total_spend,
-                    COUNT(o.order_id) FILTER (
-                        WHERE o.actual_delivery_date > o.expected_delivery_date
-                    )                                       AS late_count
-                FROM orders o
-                JOIN vendors v ON v.vendor_id = o.vendor_id
-                LEFT JOIN order_items oi ON oi.order_id = o.order_id
-                WHERE o.tenant_id = :tid
-                  AND o.created_at >= NOW() - INTERVAL '90 days'
+                    COUNT(pr.request_id)                    AS total_requests,
+                    COALESCE(SUM(pr.amount_minor), 0)       AS total_spend,
+                    COUNT(pr.request_id) FILTER (
+                        WHERE pr.vendor_response_status = 'rejected'
+                    )                                       AS rejected_count
+                FROM purchase_requests pr
+                JOIN vendors v ON v.vendor_id = pr.vendor_id
+                WHERE pr.tenant_id = :tid
+                  AND pr.created_at >= NOW() - INTERVAL '90 days'
+                  AND pr.status NOT IN ('cancelled', 'draft')
                 GROUP BY v.vendor_id, v.name
             ),
             totals AS (
@@ -383,13 +412,13 @@ def compute_supplier_risk(tenant_id: str) -> Optional[DerivedFact]:
             SELECT
                 vs.vendor_id,
                 vs.vendor_name,
-                vs.total_orders,
+                vs.total_requests,
                 vs.total_spend,
-                ROUND(100.0 * vs.late_count / NULLIF(vs.total_orders, 0), 2) AS late_rate_pct,
-                ROUND(100.0 * vs.total_spend / NULLIF(t.grand_total, 0), 2)  AS spend_share_pct
+                ROUND(100.0 * vs.rejected_count / NULLIF(vs.total_requests, 0), 2) AS reject_rate_pct,
+                ROUND(100.0 * vs.total_spend / NULLIF(t.grand_total, 0), 2)        AS spend_share_pct
             FROM vendor_stats vs, totals t
-            WHERE vs.total_orders > 0
-            ORDER BY late_rate_pct DESC NULLS LAST
+            WHERE vs.total_requests > 0
+            ORDER BY reject_rate_pct DESC NULLS LAST
             LIMIT 30
         """), {"tid": tenant_id})
 
@@ -397,21 +426,21 @@ def compute_supplier_risk(tenant_id: str) -> Optional[DerivedFact]:
         suppliers = []
         high_risk = 0
         for row in rows:
-            late_rate    = float(row[4] or 0) / 100.0
+            reject_rate   = float(row[4] or 0) / 100.0
             concentration = float(row[5] or 0) / 100.0
-            score = round(late_rate * 40 + concentration * 20, 1)
+            score = round(reject_rate * 40 + concentration * 20, 1)
             score = min(score, 100.0)
             risk_level = "high" if score >= 50 else ("medium" if score >= 25 else "low")
             if risk_level == "high":
                 high_risk += 1
             suppliers.append({
-                "vendor_id":        row[0],
-                "name":             row[1],
-                "total_orders":     int(row[2] or 0),
-                "risk_score":       score,
-                "risk_level":       risk_level,
-                "late_rate_pct":    float(row[4] or 0),
-                "spend_share_pct":  float(row[5] or 0),
+                "vendor_id":       row[0],
+                "name":            row[1],
+                "total_requests":  int(row[2] or 0),
+                "risk_score":      score,
+                "risk_level":      risk_level,
+                "reject_rate_pct": float(row[4] or 0),
+                "spend_share_pct": float(row[5] or 0),
             })
 
         payload: Dict[str, Any] = {
@@ -448,14 +477,23 @@ def compute_spend_by_department(tenant_id: str) -> Optional[DerivedFact]:
     from sqlalchemy import text
     session = _db_session()
     try:
+        # users have no org_unit_id column — resolve the department via the
+        # latest user_org_assignments row, falling back to home_org_unit_id.
         result = session.execute(text("""
             SELECT
-                ou.name                                           AS dept_name,
-                COUNT(DISTINCT pr.request_id)                     AS request_count,
-                COALESCE(SUM(pr.total_amount_minor) / 100.0, 0)  AS total_spend
+                ou.name                                        AS dept_name,
+                COUNT(DISTINCT pr.request_id)                  AS request_count,
+                COALESCE(SUM(pr.amount_minor) / 100.0, 0)      AS total_spend
             FROM purchase_requests pr
-            JOIN users u       ON u.user_id       = pr.requester_id
-            JOIN org_units ou  ON ou.org_unit_id  = u.org_unit_id
+            JOIN users u ON u.user_id = pr.requester_id
+            JOIN org_units ou ON ou.org_unit_id = COALESCE(
+                (SELECT uoa.org_unit_id
+                   FROM user_org_assignments uoa
+                  WHERE uoa.user_id = u.user_id
+                  ORDER BY uoa.assigned_at DESC
+                  LIMIT 1),
+                u.home_org_unit_id
+            )
             WHERE pr.tenant_id = :tid
               AND pr.created_at >= date_trunc('quarter', NOW())
               AND pr.status NOT IN ('cancelled', 'rejected')
@@ -514,19 +552,31 @@ def compute_product_substitution_map(tenant_id: str) -> Optional[DerivedFact]:
     from sqlalchemy import text
     session = _db_session()
     try:
+        # No order_items table — purchase_requests.line_items is JSONB shaped
+        # [{product_id, qty, unit_price_minor, description}]; unpack it for the
+        # order-frequency ranking.
         result = session.execute(text("""
             SELECT
                 c.name                             AS category_name,
                 p.product_id::text                 AS product_id,
-                p.name                             AS product_name,
+                p.display_name                     AS product_name,
                 p.sku                              AS sku,
-                p.unit_of_measure                  AS unit,
-                COUNT(DISTINCT oi.order_id)        AS order_count
+                COALESCE(cnt.order_count, 0)       AS order_count
             FROM products p
-            JOIN categories c  ON c.category_id = p.category_id
-            LEFT JOIN order_items oi ON oi.product_id = p.product_id
-            WHERE p.tenant_id = :tid AND p.status = 'active'
-            GROUP BY c.name, p.product_id, p.name, p.sku, p.unit_of_measure
+            JOIN categories c ON c.category_id = p.category_id
+            LEFT JOIN (
+                SELECT (item->>'product_id')::uuid AS product_id,
+                       COUNT(DISTINCT pr.request_id) AS order_count
+                FROM purchase_requests pr
+                CROSS JOIN LATERAL jsonb_array_elements(pr.line_items) AS item
+                WHERE pr.tenant_id = :tid
+                  AND pr.created_at >= NOW() - INTERVAL '90 days'
+                  AND pr.status NOT IN ('cancelled', 'rejected')
+                  AND pr.line_items IS NOT NULL
+                GROUP BY (item->>'product_id')
+            ) cnt ON cnt.product_id = p.product_id
+            WHERE p.tenant_id = :tid AND p.active
+            GROUP BY c.name, p.product_id, p.display_name, p.sku, cnt.order_count
             ORDER BY c.name, order_count DESC
         """), {"tid": tenant_id})
 
@@ -542,8 +592,7 @@ def compute_product_substitution_map(tenant_id: str) -> Optional[DerivedFact]:
                 "product_id":  row[1],
                 "name":        row[2],
                 "sku":         row[3],
-                "unit":        row[4],
-                "order_count": int(row[5] or 0),
+                "order_count": int(row[4] or 0),
             })
 
         # Only include categories with 2+ products (substitution only makes sense then)
